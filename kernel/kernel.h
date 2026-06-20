@@ -320,6 +320,7 @@ static inline char *strchr(const char *s, int c) {
     while (*s) { if (*s == (char)c) return (char*)s; s++; }
     return NULL;
 }
+char *strstr(const char *haystack, const char *needle);
 static inline char *strtok(char *str, const char *delim) {
     static char *next = NULL;
     if (str) next = str;

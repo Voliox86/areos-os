@@ -147,6 +147,10 @@ static void cmd_kill(int argc, char** argv);
 static void cmd_which(int argc, char** argv);
 static void cmd_head(int argc, char** argv);
 static void cmd_tree(int argc, char** argv);
+static void cmd_env(int argc, char** argv);
+static void cmd_export(int argc, char** argv);
+static void cmd_find(int argc, char** argv);
+static void cmd_history(int argc, char** argv);
 
 static const command_t commands[] = {
     {"help",      cmd_help,      "Show this help", false},
@@ -188,6 +192,10 @@ static const command_t commands[] = {
     {"which",     cmd_which,     "Show path of a command: which <name>", false},
     {"head",      cmd_head,      "Show first lines of a file: head <file> [lines]", false},
     {"tree",      cmd_tree,      "Show filesystem tree: tree [path]", false},
+    {"env",       cmd_env,       "Show environment variables", false},
+    {"export",    cmd_export,    "Set env variable: export <name>=<value>", false},
+    {"find",      cmd_find,      "Find files by name: find <name> [path]", false},
+    {"history",   cmd_history,   "Show command history", false},
     {NULL, NULL, NULL, false}
 };
 
@@ -325,6 +333,84 @@ static void cmd_tree(int argc, char** argv) {
         de = vfs_readdir(fd);
     }
     vfs_close(fd);
+}
+
+static char* env_vars[16];
+static char env_buf[16][64];
+static int env_count = 0;
+
+static void cmd_env(int argc, char** argv) {
+    (void)argc; (void)argv;
+    printf("Environment variables:\n");
+    for (int i = 0; i < env_count; i++) {
+        printf("  %s\n", env_vars[i]);
+    }
+    printf("  (%d variables)\n", env_count);
+}
+
+static void cmd_export(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: export <name>=<value>\n"); return; }
+    if (env_count >= 16) { printf("export: too many variables\n"); return; }
+    strncpy(env_buf[env_count], argv[1], 63);
+    env_buf[env_count][63] = '\0';
+    env_vars[env_count] = env_buf[env_count];
+    env_count++;
+    printf("  %s\n", argv[1]);
+}
+
+static void cmd_find(int argc, char** argv) {
+    const char* name = (argc >= 2) ? argv[1] : NULL;
+    const char* start = (argc >= 3) ? argv[2] : vfs_getcwd();
+    if (!name) { printf("Usage: find <name> [path]\n"); return; }
+    int fd = vfs_open(start, 0, 0);
+    if (fd < 0) { printf("find: cannot access '%s'\n", start); return; }
+    dirent_t* de = vfs_readdir(fd);
+    while (de) {
+        if (strstr(de->name, name)) {
+            printf("%s/%s\n", start, de->name);
+        }
+        if (de->type == 1) {
+            char subpath[256];
+            snprintf(subpath, sizeof(subpath), "%s/%s", start, de->name);
+            int sfd = vfs_open(subpath, 0, 0);
+            if (sfd >= 0) {
+                dirent_t* sde = vfs_readdir(sfd);
+                while (sde) {
+                    if (strstr(sde->name, name)) {
+                        printf("%s/%s\n", subpath, sde->name);
+                    }
+                    sde = vfs_readdir(sfd);
+                }
+                vfs_close(sfd);
+            }
+        }
+        de = vfs_readdir(fd);
+    }
+    vfs_close(fd);
+}
+
+#define HIST_MAX 10
+static char history[HIST_MAX][256];
+static int hist_count = 0;
+
+static void cmd_history(int argc, char** argv) {
+    (void)argc; (void)argv;
+    printf("Command history:\n");
+    int start = (hist_count > HIST_MAX) ? (hist_count - HIST_MAX) : 0;
+    for (int i = start; i < hist_count; i++) {
+        printf("  %d  %s\n", i - start + 1, history[i % HIST_MAX]);
+    }
+}
+
+// Add history entry (called from shell loop)
+static void add_history(const char* cmd) {
+    if (hist_count > 0) {
+        int last = (hist_count - 1) % HIST_MAX;
+        if (strcmp(history[last], cmd) == 0) return;
+    }
+    strncpy(history[hist_count % HIST_MAX], cmd, 255);
+    history[hist_count % HIST_MAX][255] = '\0';
+    hist_count++;
 }
 
 static void cmd_mem(int argc, char** argv) {
@@ -1071,6 +1157,7 @@ void launch_shell(void) {
         }
 
         if (strlen(cmd_line) > 0) {
+            add_history(cmd_line);
             char* argv[10];
             int argc = 0;
             char* token = strtok(cmd_line, " ");
@@ -1174,6 +1261,17 @@ int snprintf(char *buf, size_t size, const char *fmt, ...) {
     *p = '\0';
     va_end(args);
     return written;
+}
+
+char *strstr(const char *haystack, const char *needle) {
+    if (!*needle) return (char*)haystack;
+    while (*haystack) {
+        const char *h = haystack, *n = needle;
+        while (*h && *n && *h == *n) { h++; n++; }
+        if (!*n) return (char*)haystack;
+        haystack++;
+    }
+    return NULL;
 }
 
 char* strcasestr(const char *haystack, const char *needle) {
