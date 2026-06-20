@@ -150,6 +150,12 @@ static void cmd_tree(int argc, char** argv);
 static void cmd_env(int argc, char** argv);
 static void cmd_export(int argc, char** argv);
 static void cmd_find(int argc, char** argv);
+static void cmd_grep(int argc, char** argv);
+static void cmd_tail(int argc, char** argv);
+static void cmd_sort(int argc, char** argv);
+static void cmd_wc(int argc, char** argv);
+static void cmd_write(int argc, char** argv);
+extern void cmd_dhcp(int argc, char** argv);
 static void cmd_history(int argc, char** argv);
 
 static const command_t commands[] = {
@@ -195,6 +201,12 @@ static const command_t commands[] = {
     {"env",       cmd_env,       "Show environment variables", false},
     {"export",    cmd_export,    "Set env variable: export <name>=<value>", false},
     {"find",      cmd_find,      "Find files by name: find <name> [path]", false},
+    {"grep",      cmd_grep,      "Search file contents: grep <pattern> <file>", false},
+    {"tail",      cmd_tail,      "Show last lines of a file: tail <file> [lines]", false},
+    {"sort",      cmd_sort,      "Sort lines of a file: sort <file>", false},
+    {"wc",        cmd_wc,        "Count lines/words/chars: wc <file>", false},
+    {"write",     cmd_write,     "Write text to file: write <file> <text>", false},
+    {"dhcp",      cmd_dhcp,      "Request IP via DHCP", false},
     {"history",   cmd_history,   "Show command history", false},
     {NULL, NULL, NULL, false}
 };
@@ -386,6 +398,115 @@ static void cmd_find(int argc, char** argv) {
         }
         de = vfs_readdir(fd);
     }
+    vfs_close(fd);
+}
+
+static void cmd_grep(int argc, char** argv) {
+    if (argc < 3) { printf("Usage: grep <pattern> <file>\n"); return; }
+    int fd = vfs_open(argv[2], 0, 0);
+    if (fd < 0) { printf("grep: cannot open '%s'\n", argv[2]); return; }
+    char buf[2048];
+    int bytes = vfs_read(fd, buf, sizeof(buf) - 1);
+    vfs_close(fd);
+    if (bytes <= 0) return;
+    buf[bytes] = '\0';
+    int line = 1;
+    char *p = buf;
+    while (*p) {
+        char *nl = p;
+        while (*nl && *nl != '\n') nl++;
+        char saved = *nl;
+        *nl = '\0';
+        if (strstr(p, argv[1])) {
+            printf("%s:%d:%s\n", argv[2], line, p);
+        }
+        *nl = saved;
+        if (*nl == '\n') { p = nl + 1; line++; }
+        else break;
+    }
+}
+
+static void cmd_tail(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: tail <file> [lines]\n"); return; }
+    int n = 10;
+    if (argc >= 3) n = atoi(argv[2]);
+    int fd = vfs_open(argv[1], 0, 0);
+    if (fd < 0) { printf("tail: cannot open '%s'\n", argv[1]); return; }
+    char buf[2048];
+    int bytes = vfs_read(fd, buf, sizeof(buf) - 1);
+    vfs_close(fd);
+    if (bytes <= 0) return;
+    buf[bytes] = '\0';
+    int lines = 0;
+    for (int i = 0; buf[i]; i++) if (buf[i] == '\n') lines++;
+    int printed = 0;
+    int start_line = lines - n;
+    if (start_line < 0) start_line = 0;
+    int cur = 0;
+    for (int i = 0; buf[i]; i++) {
+        if (buf[i] == '\n') cur++;
+        if (cur >= start_line && printed < n) {
+            putchar(buf[i]);
+            if (buf[i] == '\n') printed++;
+        }
+    }
+    if (printed > 0 && buf[bytes-1] != '\n') putchar('\n');
+}
+
+static void cmd_sort(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: sort <file>\n"); return; }
+    int fd = vfs_open(argv[1], 0, 0);
+    if (fd < 0) { printf("sort: cannot open '%s'\n", argv[1]); return; }
+    char buf[2048];
+    int bytes = vfs_read(fd, buf, sizeof(buf) - 1);
+    vfs_close(fd);
+    if (bytes <= 0) return;
+    buf[bytes] = '\0';
+    char *lines[128];
+    int lc = 0;
+    lines[lc++] = buf;
+    for (int i = 0; buf[i] && lc < 128; i++) {
+        if (buf[i] == '\n') { buf[i] = '\0'; if (buf[i+1]) lines[lc++] = &buf[i+1]; }
+    }
+    for (int i = 0; i < lc - 1; i++) {
+        for (int j = 0; j < lc - i - 1; j++) {
+            if (strcmp(lines[j], lines[j+1]) > 0) {
+                char *tmp = lines[j]; lines[j] = lines[j+1]; lines[j+1] = tmp;
+            }
+        }
+    }
+    for (int i = 0; i < lc; i++) printf("%s\n", lines[i]);
+}
+
+static void cmd_wc(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: wc <file>\n"); return; }
+    int fd = vfs_open(argv[1], 0, 0);
+    if (fd < 0) { printf("wc: cannot open '%s'\n", argv[1]); return; }
+    char buf[2048];
+    int bytes = vfs_read(fd, buf, sizeof(buf) - 1);
+    vfs_close(fd);
+    if (bytes <= 0) { printf("0 0 0 %s\n", argv[1]); return; }
+    buf[bytes] = '\0';
+    int lines = 0, words = 0, chars = bytes;
+    int in_word = 0;
+    for (int i = 0; buf[i]; i++) {
+        if (buf[i] == '\n') lines++;
+        if (buf[i] == ' ' || buf[i] == '\n' || buf[i] == '\t') { in_word = 0; }
+        else if (!in_word) { in_word = 1; words++; }
+    }
+    printf("%d %d %d %s\n", lines, words, chars, argv[1]);
+}
+
+static void cmd_write(int argc, char** argv) {
+    if (argc < 3) { printf("Usage: write <file> <text>\n"); return; }
+    int fd = vfs_open(argv[1], 0, 0);
+    if (fd < 0) fd = vfs_open(argv[1], 1, 0);
+    if (fd < 0) { printf("write: cannot create '%s'\n", argv[1]); return; }
+    for (int i = 2; i < argc; i++) {
+        vfs_write(fd, argv[i], strlen(argv[i]));
+        if (i < argc - 1) vfs_write(fd, " ", 1);
+    }
+    vfs_write(fd, "\n", 1);
     vfs_close(fd);
 }
 
@@ -1148,6 +1269,42 @@ void launch_shell(void) {
                     putchar(' ');
                     putchar('\b');
                 }
+            } else if (c == '\t') {
+                if (idx > 0) {
+                    char partial[256];
+                    memcpy(partial, cmd_line, idx);
+                    partial[idx] = '\0';
+                    int has_space = 0;
+                    for (int i = 0; i < idx; i++) {
+                        if (cmd_line[i] == ' ') { has_space = 1; break; }
+                    }
+                    if (!has_space) {
+                        int match_count = 0, match_idx = -1;
+                        for (int i = 0; commands[i].name != NULL; i++) {
+                            if (commands[i].hidden) continue;
+                            if (strncmp(commands[i].name, partial, idx) == 0) {
+                                match_count++;
+                                match_idx = i;
+                            }
+                        }
+                        if (match_count == 1) {
+                            int len = strlen(commands[match_idx].name);
+                            for (int j = idx; j < len && j < 255; j++) {
+                                cmd_line[idx++] = commands[match_idx].name[j];
+                                putchar(commands[match_idx].name[j]);
+                            }
+                        } else if (match_count > 1) {
+                            putchar('\n');
+                            for (int i = 0; commands[i].name != NULL; i++) {
+                                if (commands[i].hidden) continue;
+                                if (strncmp(commands[i].name, partial, idx) == 0) {
+                                    printf("  %s", commands[i].name);
+                                }
+                            }
+                            putchar('\n');
+                        }
+                    }
+                }
             } else {
                 if (idx < 255) {
                     cmd_line[idx++] = c;
@@ -1159,10 +1316,30 @@ void launch_shell(void) {
         if (strlen(cmd_line) > 0) {
             add_history(cmd_line);
             char* argv[10];
+            char expanded[10][256];
             int argc = 0;
             char* token = strtok(cmd_line, " ");
             while (token != NULL && argc < 10) {
-                argv[argc++] = token;
+                if (token[0] == '$' && strlen(token) > 1) {
+                    char varname[64];
+                    strncpy(varname, token + 1, 63);
+                    varname[63] = '\0';
+                    int found = 0;
+                    for (int e = 0; e < env_count; e++) {
+                        char *eq = strchr(env_vars[e], '=');
+                        if (eq && strncmp(env_vars[e], varname, eq - env_vars[e]) == 0 && (int)strlen(varname) == (int)(eq - env_vars[e])) {
+                            strncpy(expanded[argc], eq + 1, 255);
+                            expanded[argc][255] = '\0';
+                            argv[argc] = expanded[argc];
+                            found = 1;
+                            break;
+                        }
+                    }
+                    if (!found) argv[argc] = token;
+                } else {
+                    argv[argc] = token;
+                }
+                argc++;
                 token = strtok(NULL, " ");
             }
             if (argc > 0) {
