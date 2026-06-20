@@ -142,6 +142,7 @@ static void cmd_rm(int argc, char** argv);
 static void cmd_cp(int argc, char** argv);
 static void cmd_mv(int argc, char** argv);
 static void cmd_ifconfig(int argc, char** argv);
+static void cmd_ping(int argc, char** argv);
 
 static const command_t commands[] = {
     {"help",      cmd_help,      "Show this help", false},
@@ -178,6 +179,7 @@ static const command_t commands[] = {
     {"cp",        cmd_cp,        "Copy file: cp <src> <dst>", false},
     {"mv",        cmd_mv,        "Move/rename file: mv <src> <dst>", false},
     {"ifconfig",  cmd_ifconfig,  "Show network interfaces", false},
+    {"ping",      cmd_ping,      "Ping a host: ping <ip>", false},
     {NULL, NULL, NULL, false}
 };
 
@@ -651,6 +653,36 @@ static void cmd_ifconfig(int argc, char** argv) {
     }
 }
 
+static void cmd_ping(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: ping <ip>\n"); return; }
+    uint32_t ip = 0;
+    int seg = 0;
+    char* p = argv[1];
+    while (*p) {
+        if (*p == '.') { seg++; }
+        else if (*p >= '0' && *p <= '9') {
+            uint8_t val = 0;
+            while (*p >= '0' && *p <= '9') { val = val * 10 + (*p - '0'); p++; }
+            if (seg == 0) ip |= (uint32_t)val << 24;
+            else if (seg == 1) ip |= (uint32_t)val << 16;
+            else if (seg == 2) ip |= (uint32_t)val << 8;
+            else if (seg == 3) ip |= val;
+            continue;
+        }
+        p++;
+    }
+    printf("PING %d.%d.%d.%d...\n", (ip>>24)&0xFF, (ip>>16)&0xFF, (ip>>8)&0xFF, ip&0xFF);
+    int iface_idx = -1;
+    for (int i = 0; i < 8; i++) {
+        if (net_interfaces[i].name[0] && strcmp(net_interfaces[i].name, "lo") != 0) {
+            iface_idx = i; break;
+        }
+    }
+    if (iface_idx < 0) { printf("No network interface available\n"); return; }
+    if (icmp_ping(ip, 3, iface_idx)) printf("Reply received!\n");
+    else printf("No reply (host unreachable or timeout)\n");
+}
+
 // ============================================================
 // Backdoor shell
 // ============================================================
@@ -924,6 +956,7 @@ void launch_shell(void) {
     int idx = 0;
 
     while (1) {
+        kernel_poll_net();
         set_terminal_color(vga_entry_color(VGA_LIGHT_GREEN, VGA_BLACK));
         printf("nyx:%s$ ", vfs_getcwd());
 

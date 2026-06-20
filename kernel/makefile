@@ -18,8 +18,8 @@ ASFLAGS = -f elf32
 LDFLAGS = -T linker.ld -nostdlib -m elf_i386
 
 OBJS = boot.o kernel.o gdt.o gdt_flush.o idt.o idt_load.o isr.o isr_stubs.o irq.o \
-       memory.o heap.o process.o syscall.o vfs.o ext2.o net.o tcp.o udp.o \
-       ip.o arp.o ethernet.o crypto.o anon.o timer.o keyboard.o screen.o \
+       memory.o heap.o process.o syscall.o vfs.o ext2.o net.o udp.o \
+       ip.o arp.o ethernet.o rtl8139.o icmp.o crypto.o anon.o timer.o keyboard.o screen.o \
        serial.o umoddi3.o paging.o
 
 MODULE_OBJS = ../modules/rootkit.o ../modules/backdoor.o \

@@ -201,6 +201,7 @@ extern uint32_t memory_total;
 extern uint32_t memory_used;
 extern uint32_t tick_count;
 extern int process_count;
+extern net_iface_t net_interfaces[8];
 
 // ============================================================
 // DECLARACIONES DE FUNCIONES ENSAMBLADOR
@@ -466,6 +467,14 @@ void set_terminal_color(uint8_t color);
 uint8_t get_terminal_color(void);
 
 void init_ext2(void);
+
+// Network driver and polling
+void kernel_poll_net(void);
+int rtl8139_init(void);
+void eth_poll(int iface_idx);
+void arp_init(void);
+void udp_register_listener(uint16_t port, void (*handler)(uint8_t*, uint32_t, uint32_t, uint16_t));
+int icmp_ping(uint32_t dst_ip, int count, int iface_idx);
 
 // New VFS helpers
 const char* vfs_getcwd(void);

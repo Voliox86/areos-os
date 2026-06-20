@@ -1,9 +1,5 @@
-// ============================================================
-// net.c - Pila de red de NyxOS
-// ============================================================
 #include "kernel.h"
 
-// Referencia a la variable global definida en kernel.c
 extern net_iface_t net_interfaces[8];
 
 #define MAX_SOCKETS 64
@@ -17,7 +13,7 @@ typedef struct {
     uint16_t local_port;
     uint32_t remote_ip;
     uint16_t remote_port;
-    int state;  // 0=closed, 1=listening, 2=connected
+    int state;
     void* rx_buffer;
     void* tx_buffer;
 } socket_t;
@@ -25,17 +21,34 @@ typedef struct {
 static socket_t sockets[MAX_SOCKETS];
 static int socket_count = 0;
 
+extern int rtl8139_init(void);
+
 void init_net(void) {
     memset_asm(sockets, 0, sizeof(sockets));
     memset_asm(net_interfaces, 0, sizeof(net_interfaces));
-    // Loopback interface
+
     net_iface_t* lo = &net_interfaces[0];
     strcpy(lo->name, "lo");
     lo->ip = 0x7F000001;
     lo->netmask = 0xFF000000;
     lo->mtu = 65536;
     lo->flags = 1;
-    printf("[NET] Network stack initialized (lo: 127.0.0.1)\n");
+    printf("[NET] Loopback: 127.0.0.1\n");
+
+    int ret = rtl8139_init();
+    if (ret == 0) printf("[NET] RTL8139 NIC initialized\n");
+    else printf("[NET] No RTL8139 NIC found (will retry on kernel_poll)\n");
+
+    printf("[NET] Stack ready\n");
+}
+
+void kernel_poll_net(void) {
+    extern void eth_poll(int iface_idx);
+    for (int i = 0; i < 8; i++) {
+        if (net_interfaces[i].name[0] && strcmp(net_interfaces[i].name, "lo") != 0) {
+            eth_poll(i);
+        }
+    }
 }
 
 int net_create_socket(int domain, int type, int protocol) {
