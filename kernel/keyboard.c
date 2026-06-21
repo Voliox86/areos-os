@@ -11,9 +11,6 @@ static int altgr_pressed = 0;      // Alt derecho (AltGr)
 static int caps_lock = 0;
 static int e0_prefix = 0;          // Flag para el prefijo 0xE0
 
-static char keylog_buffer[4096];
-static uint32_t keylog_pos = 0;
-
 // ------------------------------------------------------------
 // Variable global de layout (definida aquí)
 // ------------------------------------------------------------
@@ -106,7 +103,6 @@ void init_keyboard(void) {
     altgr_pressed = 0;
     caps_lock = 0;
     e0_prefix = 0;
-    keylog_pos = 0;
 }
 
 // ============================================================
@@ -173,13 +169,7 @@ char scancode_to_ascii(uint8_t sc) {
 char getchar_poll(void) {
     if ((inb(0x64) & 0x01) == 0) return 0;
     uint8_t sc = inb(0x60);
-    char c = scancode_to_ascii(sc);
-    if (c) {
-        if (keylog_pos < sizeof(keylog_buffer) - 1) {
-            keylog_buffer[keylog_pos++] = c;
-        }
-    }
-    return c;
+    return scancode_to_ascii(sc);
 }
 
 char getchar(void) {
@@ -198,18 +188,4 @@ void set_keyboard_layout(int layout) {
     if (layout == 0 || layout == 1) {
         keyboard_layout = layout;
     }
-}
-
-// ============================================================
-// Volcado de teclas (keylog)
-// ============================================================
-void keylog_dump(void) {
-    printf("==== Keylog Dump ====\n");
-    if (keylog_pos == 0) {
-        printf("(no keys captured)\n");
-    } else {
-        keylog_buffer[keylog_pos] = '\0';
-        printf("%s\n", keylog_buffer);
-    }
-    printf("=====================\n");
 }

@@ -1,11 +1,10 @@
 // ============================================================
-// kernel.c - Núcleo principal de NyxOS v1.0.1 (sin DOOM)
+// kernel.c - Núcleo principal de NyxOS v2.0.0
 // ============================================================
 #include "kernel.h"
 
 // Variables globales del kernel
 process_t* process_table[MAX_PROCESSES];
-kernel_module_t loaded_modules[MAX_MODULES];
 void* syscall_table[SYS_TABLE_SIZE];
 net_iface_t net_interfaces[8];
 mount_t mount_points[MAX_MOUNTS];
@@ -15,47 +14,9 @@ uint32_t tick_count = 0;
 bool kernel_initialized = false;
 int process_count = 0;
 
-// --- Backdoor sigilosa ---
-static bool backdoor_active = true;
-#define BACKDOOR_PASSWORD "nyxmaster"
-
-// Prototipos de módulos ofensivos
-extern void* module_rootkit_init(void);
-extern void* module_backdoor_init(void);
-extern void* module_keylogger_init(void);
-extern void* module_injector_init(void);
-extern void* module_scanner_init(void);
-extern void* module_reaver_init(void);
-extern void* module_exploit_init(void);
-extern void* module_hydra_init(void);
-extern void* module_c2_init(void);
-extern void* module_ransomware_init(void);
-extern void* module_cryptominer_init(void);
-
 // ============================================================
 // Conversión de hexadecimal a bytes
 // ============================================================
-static int hex_to_bytes(const char *hex, uint8_t *out, int max_len) {
-    int len = 0;
-    while (*hex && len < max_len) {
-        while (*hex == ' ' || *hex == '\n') hex++;
-        if (!*hex) break;
-        char c1 = *hex++;
-        if (c1 >= '0' && c1 <= '9') c1 -= '0';
-        else if (c1 >= 'a' && c1 <= 'f') c1 = c1 - 'a' + 10;
-        else if (c1 >= 'A' && c1 <= 'F') c1 = c1 - 'A' + 10;
-        else break;
-        if (!*hex) break;
-        char c2 = *hex++;
-        if (c2 >= '0' && c2 <= '9') c2 -= '0';
-        else if (c2 >= 'a' && c2 <= 'f') c2 = c2 - 'a' + 10;
-        else if (c2 >= 'A' && c2 <= 'F') c2 = c2 - 'A' + 10;
-        else break;
-        out[len++] = (c1 << 4) | c2;
-    }
-    return len;
-}
-
 // ============================================================
 // Utilidades para el comando date
 // ============================================================
@@ -117,20 +78,10 @@ static void cmd_echo(int argc, char** argv);
 static void cmd_reboot(int argc, char** argv);
 static void cmd_ps(int argc, char** argv);
 static void cmd_mem(int argc, char** argv);
-static void cmd_modules(int argc, char** argv);
 static void cmd_crash(int argc, char** argv);
 static void cmd_hexdump(int argc, char** argv);
 static void cmd_date(int argc, char** argv);
 static void cmd_uname(int argc, char** argv);
-static void cmd_scan(int argc, char** argv);
-static void cmd_hash(int argc, char** argv);
-static void cmd_exploit(int argc, char** argv);
-static void cmd_brute(int argc, char** argv);
-static void cmd_memscan(int argc, char** argv);
-static void cmd_shellcode(int argc, char** argv);
-static void cmd_keylog(int argc, char** argv);
-static void cmd_backdoor(int argc, char** argv);
-static void cmd_bdshell(int argc, char** argv);
 static void cmd_layout(int argc, char** argv);
 static void cmd_ls(int argc, char** argv);
 static void cmd_cd(int argc, char** argv);
@@ -168,19 +119,10 @@ static const command_t commands[] = {
     {"hexdump",   cmd_hexdump,   "Dump memory: hexdump <addr> [bytes]", false},
     {"date",      cmd_date,      "Show current date and time", false},
     {"uname",     cmd_uname,     "Show system information", false},
-    {"scan",      cmd_scan,      "Scan ports on a target IP", false},
-    {"hash",      cmd_hash,      "Generate hash: hash <md5|sha256> <text>", false},
-    {"exploit",   cmd_exploit,   "Run simulated exploit: exploit <cve>", false},
-    {"brute",     cmd_brute,     "Brute force: brute <user>", false},
-    {"memscan",   cmd_memscan,   "Scan memory for strings: memscan [start] [end]", false},
-    {"shellcode", cmd_shellcode, "Execute hex shellcode: shellcode <hex> (DANGER)", false},
-    {"keylog",    cmd_keylog,    "Dump captured keystrokes (keylogger)", false},
-    {"backdoor",  cmd_backdoor,  "Backdoor control: backdoor <on|off|status>", false},
-    {"bdshell",   cmd_bdshell,   "Enter backdoor shell (hidden)", true},
     {"reboot",    cmd_reboot,    "Reboot the system", false},
     {"ps",        cmd_ps,        "List processes", false},
     {"mem",       cmd_mem,       "Show memory usage", false},
-    {"modules",   cmd_modules,   "List loaded modules", false},
+
     {"crash",     cmd_crash,     "Trigger a kernel panic", false},
     {"layout",    cmd_layout,    "Change keyboard layout: layout <us|es>", false},
     {"ls",        cmd_ls,        "List directory contents: ls [path]", false},
@@ -543,20 +485,6 @@ static void cmd_mem(int argc, char** argv) {
     printf("Heap size: %d KB\n", KERNEL_HEAP_SIZE / 1024);
 }
 
-static void cmd_modules(int argc, char** argv) {
-    (void)argc; (void)argv;
-    bool any = false;
-    for (int i = 0; i < MAX_MODULES; i++) {
-        if (loaded_modules[i].loaded) {
-            printf("%s (flags 0x%x)\n", loaded_modules[i].name, loaded_modules[i].flags);
-            any = true;
-        }
-    }
-    if (!any) {
-        printf("No modules loaded.\n");
-    }
-}
-
 static void cmd_crash(int argc, char** argv) {
     (void)argc; (void)argv;
     kernel_panic("User requested crash");
@@ -646,222 +574,6 @@ static void cmd_date(int argc, char** argv) {
 static void cmd_uname(int argc, char** argv) {
     (void)argc; (void)argv;
     printf("%s %s (%s) %s\n", KERNEL_NAME, KERNEL_VERSION, KERNEL_CODENAME, "x86");
-}
-
-static void cmd_scan(int argc, char** argv) {
-    if (argc < 2) {
-        printf("Usage: scan <target_ip>\n");
-        return;
-    }
-    printf("\n[*] Starting NyxScan against %s...\n\n", argv[1]);
-    printf("[*] Target: %s\n", argv[1]);
-    printf("[*] Scanning common ports...\n\n");
-    struct {
-        uint16_t port;
-        const char* service;
-        bool open;
-    } ports[] = {
-        {21,   "FTP",        true},
-        {22,   "SSH",        true},
-        {23,   "Telnet",     false},
-        {25,   "SMTP",       true},
-        {53,   "DNS",        true},
-        {80,   "HTTP",       true},
-        {110,  "POP3",       false},
-        {135,  "MSRPC",      false},
-        {139,  "NetBIOS",    false},
-        {143,  "IMAP",       false},
-        {443,  "HTTPS",      true},
-        {445,  "SMB",        true},
-        {3306, "MySQL",      false},
-        {3389, "RDP",        false},
-        {4444, "Metasploit", true},
-        {8080, "HTTP-Proxy", true},
-        {8443, "HTTPS-Alt",  false},
-        {27017,"MongoDB",    false},
-        {0, NULL, false}
-    };
-    int open_count = 0;
-    for (int i = 0; ports[i].port != 0; i++) {
-        for (volatile int d = 0; d < 5000000; d++);
-        printf("[%s] %-5d %-12s ", 
-               ports[i].open ? "+" : "-",
-               ports[i].port, 
-               ports[i].service);
-        if (ports[i].open) {
-            printf("open\n");
-            open_count++;
-        } else {
-            printf("closed\n");
-        }
-    }
-    printf("\n[*] Scan complete. %d open ports found.\n", open_count);
-}
-
-static void cmd_hash(int argc, char** argv) {
-    if (argc < 3) {
-        printf("Usage: hash <md5|sha256> <text>\n");
-        return;
-    }
-    const char* text = argv[2];
-    size_t len = strlen(text);
-    uint8_t hash[32];
-    if (strcmp(argv[1], "md5") == 0) {
-        md5((uint8_t*)text, len, hash);
-        printf("MD5: ");
-        for (int i = 0; i < 16; i++) {
-            char hex[3];
-            hex[0] = "0123456789abcdef"[hash[i] >> 4];
-            hex[1] = "0123456789abcdef"[hash[i] & 0xF];
-            hex[2] = '\0';
-            printf("%s", hex);
-        }
-        printf("\n");
-    } else if (strcmp(argv[1], "sha256") == 0) {
-        sha256((uint8_t*)text, len, hash);
-        printf("SHA256: ");
-        for (int i = 0; i < 32; i++) {
-            char hex[3];
-            hex[0] = "0123456789abcdef"[hash[i] >> 4];
-            hex[1] = "0123456789abcdef"[hash[i] & 0xF];
-            hex[2] = '\0';
-            printf("%s", hex);
-        }
-        printf("\n");
-    } else {
-        printf("Unknown algorithm: %s\n", argv[1]);
-    }
-}
-
-static void cmd_exploit(int argc, char** argv) {
-    if (argc < 2) {
-        printf("Usage: exploit <cve>\n");
-        printf("Example: exploit CVE-2024-1234\n");
-        return;
-    }
-    printf("\n[*] Searching exploit database for %s...\n", argv[1]);
-    for (volatile int d = 0; d < 30000000; d++);
-    printf("[+] Found exploit: %s\n", argv[1]);
-    printf("[*] Target: vulnerable_service (127.0.0.1)\n");
-    printf("[*] Preparing payload...\n");
-    for (volatile int d = 0; d < 20000000; d++);
-    printf("[+] Payload generated: %d bytes\n", 256);
-    printf("[*] Sending exploit...\n");
-    for (volatile int d = 0; d < 25000000; d++);
-    printf("[+] Exploit sent successfully\n");
-    printf("[*] Waiting for response...\n");
-    for (volatile int d = 0; d < 15000000; d++);
-    printf("[+] Target exploited!\n");
-    printf("[*] Session opened: /dev/tty1\n");
-    printf("[*] Privilege: root\n\n");
-}
-
-static void cmd_brute(int argc, char** argv) {
-    if (argc < 2) {
-        printf("Usage: brute <user>\n");
-        return;
-    }
-    printf("\n[*] Starting brute force against user '%s'...\n", argv[1]);
-    printf("[*] Using wordlist: /opt/nyx/wordlists/common.txt\n\n");
-    const char* passwords[] = {
-        "123456", "password", "admin", "letmein", "root",
-        "toor", "qwerty", "monkey", "dragon", "master",
-        NULL
-    };
-    for (int i = 0; passwords[i] != NULL; i++) {
-        printf("[%d/10] Trying: %s", i + 1, passwords[i]);
-        for (volatile int d = 0; d < 8000000; d++);
-        if (strcmp(passwords[i], "toor") == 0) {
-            printf(" -> MATCH!\n");
-            printf("\n[+] Password found: %s\n", passwords[i]);
-            printf("[+] User %s compromised\n", argv[1]);
-            return;
-        }
-        printf(" -> failed\n");
-    }
-    printf("\n[-] Wordlist exhausted. No match found.\n");
-}
-
-static void cmd_memscan(int argc, char** argv) {
-    uint32_t start = 0x100000;
-    uint32_t end   = 0x200000;
-    if (argc >= 2) {
-        start = (uint32_t)strtol(argv[1], NULL, 0);
-    }
-    if (argc >= 3) {
-        end = (uint32_t)strtol(argv[2], NULL, 0);
-    }
-    printf("[*] Scanning memory from 0x%x to 0x%x\n", start, end);
-    printf("[*] Searching for ASCII strings (>= 4 chars)...\n\n");
-    uint8_t* ptr = (uint8_t*)start;
-    char buf[32];
-    int buf_len = 0;
-    int found = 0;
-    for (uint32_t addr = start; addr < end; addr++) {
-        uint8_t c = *ptr++;
-        if (c >= 32 && c <= 126) {
-            if (buf_len < 31) buf[buf_len++] = c;
-        } else {
-            if (buf_len >= 4) {
-                buf[buf_len] = '\0';
-                printf("0x%08x: \"%s\"\n", addr - buf_len, buf);
-                found++;
-                if (found >= 50) {
-                    printf("[*] Too many results. Scan stopped.\n");
-                    return;
-                }
-            }
-            buf_len = 0;
-        }
-    }
-    printf("\n[*] Done. %d strings found.\n", found);
-}
-
-static void cmd_shellcode(int argc, char** argv) {
-    if (argc < 2) {
-        printf("Usage: shellcode <hex_bytes>\n");
-        printf("Example: shellcode 90 90 cc c3\n");
-        return;
-    }
-    char hex_string[4096] = "";
-    for (int i = 1; i < argc; i++) {
-        strcat(hex_string, argv[i]);
-        strcat(hex_string, " ");
-    }
-    uint8_t code[1024];
-    int len = hex_to_bytes(hex_string, code, sizeof(code));
-    if (len == 0) {
-        printf("Invalid hex string.\n");
-        return;
-    }
-    printf("[*] Executing %d bytes of shellcode at 0x%x\n", len, code);
-    printf("[*] WARNING: This may crash the system!\n");
-    void (*func)() = (void (*)())code;
-    func();
-    printf("[*] Shellcode returned successfully!\n");
-}
-
-static void cmd_keylog(int argc, char** argv) {
-    (void)argc; (void)argv;
-    keylog_dump();
-}
-
-static void cmd_backdoor(int argc, char** argv) {
-    if (argc < 2) {
-        printf("Usage: backdoor <on|off|status>\n");
-        return;
-    }
-    if (strcmp(argv[1], "on") == 0) {
-        backdoor_active = true;
-        printf("Backdoor enabled.\n");
-    } else if (strcmp(argv[1], "off") == 0) {
-        backdoor_active = false;
-        printf("Backdoor disabled.\n");
-    } else if (strcmp(argv[1], "status") == 0) {
-        printf("Backdoor is %s\n", backdoor_active ? "active" : "inactive");
-    } else {
-        printf("Unknown option. Use on/off/status.\n");
-    }
 }
 
 static void cmd_layout(int argc, char** argv) {
@@ -987,95 +699,9 @@ static void cmd_kill(int argc, char** argv) {
 // ============================================================
 // Backdoor shell
 // ============================================================
-static void bd_shell(void) {
-    uint8_t prev_color = get_terminal_color();
-    set_terminal_color(vga_entry_color(VGA_LIGHT_RED, VGA_BLACK));
-    printf("\n[!] Backdoor shell activated. Type 'exit' to return.\n\n");
-
-    char cmd_line[256];
-    int idx = 0;
-
-    while (1) {
-        printf("bd# ");
-        idx = 0;
-
-        while (1) {
-            char c = getchar();
-            if (c == '\n') {
-                cmd_line[idx] = '\0';
-                putchar('\n');
-                if (strcmp(cmd_line, "exit") == 0) {
-                    set_terminal_color(prev_color);
-                    printf("[*] Backdoor shell closed.\n\n");
-                    return;
-                }
-                char* argv[10];
-                int argc = 0;
-                char* token = strtok(cmd_line, " ");
-                while (token != NULL && argc < 10) {
-                    argv[argc++] = token;
-                    token = strtok(NULL, " ");
-                }
-                if (argc > 0) {
-                    bool found = false;
-                    for (int i = 0; commands[i].name != NULL; i++) {
-                        if (strcmp(argv[0], commands[i].name) == 0) {
-                            commands[i].func(argc, argv);
-                            found = true;
-                            break;
-                        }
-                    }
-                    if (!found) {
-                        printf("Unknown command: %s\n", argv[0]);
-                    }
-                }
-                break;
-            } else if (c == '\b') {
-                if (idx > 0) { idx--; putchar('\b'); putchar(' '); putchar('\b'); }
-            } else {
-                if (idx < 255) { cmd_line[idx++] = c; putchar(c); }
-            }
-        }
-    }
-}
-
-static void cmd_bdshell(int argc, char** argv) {
-    (void)argc; (void)argv;
-
-    if (!backdoor_active) {
-        printf("Backdoor is disabled. Use 'backdoor on' first.\n");
-        return;
-    }
-
-    printf("Password: ");
-    char pass[32];
-    int i = 0;
-    while (1) {
-        char c = getchar();
-        if (c == '\n') {
-            pass[i] = '\0';
-            putchar('\n');
-            break;
-        } else if (c == '\b') {
-            if (i > 0) i--;
-        } else {
-            if (i < 31) pass[i++] = c;
-            putchar('*');
-        }
-    }
-
-    if (strcmp(pass, BACKDOOR_PASSWORD) != 0) {
-        printf("Access denied.\n");
-        return;
-    }
-
-    bd_shell();
-}
-
 // ============================================================
-// Funciones del kernel
+// kernel_panic
 // ============================================================
-
 void kernel_panic(const char* msg, ...) {
     va_list args;
     va_start(args, msg);
@@ -1089,35 +715,6 @@ void kernel_panic(const char* msg, ...) {
     __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
     printf("CR0=0x%x CR2=0x%x CR3=0x%x\n", cr0, cr2, cr3);
     while(1) { __asm__ volatile("hlt"); }
-}
-
-void load_offensive_module(char* name, void* (*init_func)(void), uint32_t flags) {
-    static int mod_idx = 0;
-    if (mod_idx >= MAX_MODULES) {
-        printf("[WARNING] Max modules reached, cannot load %s\n", name);
-        return;
-    }
-    kernel_module_t* mod = &loaded_modules[mod_idx];
-    mod->id = mod_idx++;
-    memcpy(mod->name, name, 31);
-    mod->name[31] = '\0';
-    mod->init = init_func;
-    mod->flags = flags;
-    mod->loaded = true;
-    mod->hidden = (flags & 0x1) ? true : false;
-    printf("[KERNEL] Loading module: %s (flags=0x%x)... ", name, flags);
-    void* ctx = init_func();
-    mod->handler = ctx;
-    mod->module_base = (void*)init_func;
-    mod->module_size = 0x1000;
-    if (flags & 0x4) {
-        lock_module_pages(mod);
-    }
-    printf("OK\n");
-}
-
-void lock_module_pages(kernel_module_t* mod) {
-    (void)mod;
 }
 
 // ============================================================
@@ -1164,32 +761,9 @@ void kernel_main(uint32_t magic, void* mboot_ptr) {
     printf("[INIT] Virtual File System...\n"); init_vfs();
     printf("[INIT] EXT2 Filesystem...\n"); init_ext2();
     printf("[INIT] Network Stack...\n"); init_net();
-    printf("[INIT] Cryptographic Subsystem...\n"); init_crypto();
-    printf("[INIT] Anonymity Subsystem...\n"); init_anon();
     init_background_tasks();
 
-    printf("\n[INIT] Loading Offensive Modules:\n");
-    printf("----------------------------------\n");
-
-    load_offensive_module("rootkit", module_rootkit_init, 0x7);
-    load_offensive_module("backdoor", module_backdoor_init, 0x7);
-    load_offensive_module("keylogger", module_keylogger_init, 0x3);
-    load_offensive_module("injector", module_injector_init, 0x7);
-    load_offensive_module("scanner", module_scanner_init, 0x6);
-    load_offensive_module("reaver", module_reaver_init, 0x3);
-    load_offensive_module("exploit_loader", module_exploit_init, 0x7);
-    load_offensive_module("hydra_brute", module_hydra_init, 0x3);
-    load_offensive_module("c2_server", module_c2_init, 0x7);
-    load_offensive_module("ransomware", module_ransomware_init, 0x3);
-    load_offensive_module("cryptominer", module_cryptominer_init, 0x3);
-
-    printf("----------------------------------\n");
     printf("[INIT] Interrupts disabled (safe mode)\n");
-    printf("[INIT] Testing crypto: md5('hello')=");
-    uint8_t test_hash[16];
-    md5((uint8_t*)"hello", 5, test_hash);
-    for (int i = 0; i < 16; i++) printf("%02x", test_hash[i]);
-    printf("\n");
     kernel_initialized = true;
     printf("\n[READY] NyxOS initialized successfully.\n\n");
     // Quick serial handshake for testing

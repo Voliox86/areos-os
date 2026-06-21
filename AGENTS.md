@@ -1,7 +1,7 @@
 # NyxOS — Agent Context
 
 ## Goal
-Evolve NyxOS into a functional 32-bit x86 kernel with filesystem, networking, shell, process multitasking, and offensive security modules.
+Evolve NyxOS into a functional 32-bit x86 kernel with filesystem, networking, shell, and process multitasking.
 
 ## Build & Test
 - Cross-compiler: `i686-elf-gcc` at `cross/bin/` (WSL)
@@ -12,10 +12,11 @@ Evolve NyxOS into a functional 32-bit x86 kernel with filesystem, networking, sh
 - Known working: boots fully, reaches shell, modules load successfully
 - Repo: `https://github.com/kazah-png/nyx-os`
 
-## Releases (DON'T publish new ones until major stable milestone)
+## Releases
 - v1.0.0 — Base kernel
 - v1.1.0 — Ramdisk VFS + shell commands
 - v1.2.0 — Real networking (RTL8139, ARP, IP, UDP, ICMP/ping)
+- v2.0.0 — Clean slate: removed all hacking/offensive code, crypto, anonymity, keylogger. Clean general-purpose OS.
 
 ## Architecture
 ### Boot flow
@@ -24,14 +25,13 @@ Evolve NyxOS into a functional 32-bit x86 kernel with filesystem, networking, sh
 3. `init_memory()` (bitmap allocator) → `init_paging()` (identity-map 1:1 up to 4MB) → `init_heap()` (1MB heap)
 4. `init_timer(1000)` → `init_keyboard()` (polling)
 5. `init_process()` → `init_syscalls()` → `init_vfs()` → `init_ext2()` → `init_net()`
-6. `init_crypto()` → `init_anon()` → `init_background_tasks()`
-7. Load 11 offensive modules → `launch_shell()` (polling keyboard loop with background tasks)
+6. `init_background_tasks()` → `launch_shell()` (polling keyboard loop with background tasks)
 
 ### Critical constraints
 - Paging identity-maps only the first 4 MB. Any static data, BSS, or heap beyond 4 MB causes triple-fault.
 - Heap is 1 MB (not 256 MB — BSS used to overflow 4 MB range).
 - Physical allocator uses a 16 KB bitmap (supports up to 512 MB RAM), NOT page_stack at 0xD0000000 (unmapped before paging).
-- `lock_module_pages()` is a no-op (was writing to recursive page table at 0xFFFFF000 — unmapped).
+
 - `_kernel_end` symbol in `linker.ld` marks kernel BSS boundary for memory manager.
 - Serial (`init_serial()`) is a stub — only used via direct `outb(0x3F8, ...)`. VGA text mode (0xB8000) is primary console.
 - Interrupts are DISABLED (`cli`). Timer and keyboard are polled.
@@ -56,8 +56,6 @@ kernel/
   screen.c        — VGA text mode (80x25)
   serial.c        — Serial stub
   syscall.c       — Syscall handler table
-  crypto.c        — MD5, SHA256
-  anon.c          — Anonymity subsystem (proxy chains)
   net.c           — Network stack init
   ethernet.c      — Ethernet frame handler
   arp.c           — ARP cache + requests
@@ -67,10 +65,6 @@ kernel/
   rtl8139.c       — RTL8139 NIC driver (PCI, I/O, MMIO)
   tcp.c           — TCP stub
   gdt.c/idt.c/isr.c/irq.c — x86 descriptor tables
-modules/
-  rootkit.c, backdoor.c, keylogger.c, injector.c, scanner.c,
-  reaver.c, exploit_loader.c, hydra_brute.c, c2_server.c,
-  ransomware.c, cryptominer.c
 ```
 
 ## Shell commands
@@ -95,7 +89,6 @@ modules/
 | history    | Command history |
 | ps/kill    | Process management |
 | mem        | Memory usage |
-| modules    | List kernel modules |
 | ifconfig   | Network interface status |
 | dhcp       | Request IP via DHCP |
 | ping       | ICMP ping |
@@ -103,8 +96,6 @@ modules/
 | hexdump    | Dump memory |
 | date/uname | System info |
 | reboot     | Reboot via 0x64/0xFE |
-| scan/hash/exploit/brute/memscan/shellcode | Offensive tooling |
-| keylog/backdoor/bdshell | Stealth features |
 
 ## Shell features
 - Tab completion for command names

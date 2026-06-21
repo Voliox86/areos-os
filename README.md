@@ -3,7 +3,7 @@
 </div>
 
 <div align="center">
-  <strong>Custom 32-bit x86 kernel · C and Assembly · Offensive security research platform</strong>
+  <strong>Custom 32-bit x86 kernel · C and Assembly · General-purpose OS</strong>
   <br/><br/>
   <!-- Badges -->
   <a href="https://github.com/kazah-png/nyx-os/releases">
@@ -43,7 +43,7 @@ ______          \'/
     N Y X O S
     N I G H T F A L L
   -------------------------------------
-  Kernel:     NyxOS 1.2.0 (Nightfall)
+  Kernel:     NyxOS 2.0.0 (Clean Slate)
   Arch:       x86 (32-bit)
   Memory:     256 MB total, 252 MB free
   Heap:       1024 KB
@@ -56,9 +56,9 @@ ______          \'/
 
 ## About
 
-**NyxOS** is a from-scratch 32-bit x86 kernel built as a research platform for low-level systems programming and offensive security. It boots via Multiboot (GRUB-compatible), runs in protected mode with paging, and provides a modular framework for loading kernel-level components.
+**NyxOS** is a from-scratch 32-bit x86 kernel built as a general-purpose OS for low-level systems programming. It boots via Multiboot (GRUB-compatible), runs in protected mode with paging, and provides a clean foundation for kernel development.
 
-The project implements core kernel primitives, a custom network stack (RTL8139 NIC + ARP/IP/UDP/ICMP + DHCP), a ramdisk filesystem, and 11 offensive security modules — all written in C and x86 Assembly with no external libraries.
+The project implements core kernel primitives, a custom network stack (RTL8139 NIC + ARP/IP/UDP/ICMP + DHCP), and a ramdisk filesystem — all written in C and x86 Assembly with no external libraries.
 
 ---
 
@@ -93,10 +93,7 @@ The project implements core kernel primitives, a custom network stack (RTL8139 N
 ![ICMP](https://img.shields.io/badge/ICMP-FF6600?style=flat)
 ![DHCP](https://img.shields.io/badge/DHCP-00ff9d?style=flat)
 
-**Crypto**
 
-![MD5](https://img.shields.io/badge/MD5-3776AB?style=flat)
-![SHA256](https://img.shields.io/badge/SHA256-CE422B?style=flat)
 
 ---
 
@@ -131,7 +128,6 @@ Available commands:
   history        - Show command history
   ps             - List processes
   mem            - Show memory usage
-  modules        - List loaded modules
   ifconfig       - Show network interfaces
   dhcp           - Request IP via DHCP
   ping           - Ping a host
@@ -149,7 +145,7 @@ nyx:root$ ls /
 bin/   dev/   etc/   home/  mnt/   root/  tmp/   usr/   var/
 
 nyx:root$ uname
-NyxOS 1.2.0 (Nightfall) i686
+NyxOS 2.0.0 (Clean Slate) i686
 
 nyx:root$ mem
 Physical memory: 256 MB total, 252 MB free
@@ -214,10 +210,9 @@ Built-in command interpreter with **30+ commands**:
 |----------|----------|
 | **System** | `help`, `clear`, `nyxfetch`, `uname`, `date`, `version`, `reboot`, `crash` |
 | **Files** | `ls`, `cd`, `pwd`, `cat`, `touch`, `mkdir`, `rm`, `cp`, `mv`, `head`, `tail`, `grep`, `sort`, `wc`, `find`, `tree`, `write`, `which` |
-| **Process** | `ps`, `kill`, `mem`, `modules` |
+| **Process** | `ps`, `kill`, `mem` |
 | **Network** | `ifconfig`, `dhcp`, `ping` |
 | **Misc** | `echo`, `env`, `export`, `history`, `hexdump`, `layout` |
-| **Offensive** | `scan`, `hash`, `exploit`, `brute`, `memscan`, `shellcode`, `keylog`, `backdoor`, `bdshell` |
 
 **Shell features:**
 - Tab completion for command names
@@ -234,26 +229,7 @@ Built-in command interpreter with **30+ commands**:
 - **DHCP** — Full client (DISCOVER → OFFER → REQUEST → ACK), auto-configures IP/netmask/gateway
 - **Interface** — `ifconfig` for status, static IP 10.0.2.15/24 or DHCP-assigned
 
-### Cryptographic subsystem
-- SHA-256 (FIPS 180-4 compliant)
-- MD5 (RFC 1321 compliant)
 
-### Offensive security modules
-Each module is a kernel-loadable component:
-
-| Module | Description |
-|--------|-------------|
-| **Rootkit** | Hides processes and files matching keywords |
-| **Backdoor** | Persistent reverse shell with password auth |
-| **Keylogger** | Captures keystrokes to kernel buffer |
-| **Injector** | Shellcode injection into processes |
-| **Scanner** | Port scanner and vulnerability detector |
-| **Exploit loader** | Simulated CVE-based exploit engine |
-| **Hydra brute** | Dictionary attack simulation |
-| **C2 server** | Command-and-control endpoint |
-| **Ransomware** | File encryption demonstration |
-| **Cryptominer** | CPU-based miner (simulated) |
-| **Reaver** | WPS PIN attack simulation |
 
 ---
 
@@ -279,18 +255,10 @@ nyx-os/
 │   ├── dhcp.c            # DHCP client
 │   ├── net.c / tcp.c / udp.c / ip.c / ethernet.c
 │   ├── arp.c / icmp.c / rtl8139.c
-│   ├── crypto.c          # SHA-256, MD5
-│   ├── anon.c            # Anonymity subsystem
 │   ├── timer.c           # PIT timer
 │   ├── keyboard.c        # PS/2 driver (US/ES layouts)
 │   ├── screen.c          # VGA text mode
 │   └── serial.c          # COM1 debug stub
-├── modules/              # 11 offensive security modules
-│   ├── modules.h
-│   ├── rootkit.c / backdoor.c / keylogger.c / injector.c
-│   ├── scanner.c / reaver.c / exploit_loader.c / hydra_brute.c
-│   ├── c2_server.c / ransomware.c / cryptominer.c
-│   └── Makefile
 ├── tools/
 │   ├── build.sh          # ISO builder (grub-mkrescue)
 │   ├── qemu_launch.sh    # QEMU launcher
@@ -346,9 +314,7 @@ See the full **[NyxOS Status Report](https://github.com/kazah-png/nyx-os/issues/
 - ✅ 30+ shell commands
 - ✅ Ramdisk VFS (files, directories)
 - ✅ Real networking (RTL8139 + ARP/IP/UDP/ICMP/DHCP)
-- ✅ 11 offensive modules
 - ✅ Tab completion, env vars, command history
-- ✅ MD5/SHA-256 crypto
 
 ### What's being built
 - 🔄 TCP handshake and data transfer

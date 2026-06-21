@@ -1,5 +1,5 @@
 // ============================================================
-// kernel.h - Cabecera principal del kernel NyxOS v1.0.1
+// kernel.h - Cabecera principal del kernel NyxOS v2.0.0
 // ============================================================
 #ifndef KERNEL_H
 #define KERNEL_H
@@ -39,9 +39,9 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "1.0.1"
-#define KERNEL_CODENAME "Nightfall"
-#define KERNEL_DATE    "2024"
+#define KERNEL_VERSION "2.0.0"
+#define KERNEL_CODENAME "Clean Slate"
+#define KERNEL_DATE    "2026"
 
 #define ARCH_X86 1
 #define BITS_32  1
@@ -52,7 +52,6 @@ typedef __builtin_va_list va_list;
 #define KERNEL_HEAP_START 0xD0000000
 #define KERNEL_HEAP_SIZE  0x10000000
 
-#define MAX_MODULES      128
 #define MAX_PROCESSES    512
 #define MAX_THREADS      1024
 #define MAX_FILES        256
@@ -64,18 +63,6 @@ typedef __builtin_va_list va_list;
 // ============================================================
 // ESTRUCTURAS
 // ============================================================
-typedef struct {
-    uint32_t id;
-    char name[32];
-    void* (*init)(void);
-    void* (*handler)(void*);
-    uint32_t flags;
-    bool loaded;
-    bool hidden;
-    void* module_base;
-    size_t module_size;
-} kernel_module_t;
-
 typedef struct process {
     uint32_t pid;
     uint32_t ppid;
@@ -363,8 +350,6 @@ static inline long strtol(const char *s, char **end, int base) {
 // ============================================================
 void kernel_main(uint32_t magic, void* mboot_ptr);
 void kernel_panic(const char* msg, ...);
-void load_offensive_module(char* name, void* (*init_func)(void), uint32_t flags);
-void lock_module_pages(kernel_module_t* mod);
 void launch_shell(void);
 void nyxfetch(void);
 
@@ -432,19 +417,9 @@ int net_send(int sock, const void* buf, size_t len);
 int net_recv(int sock, void* buf, size_t len);
 int net_close(int sock);
 
-void init_crypto(void);
-void aes_encrypt(const uint8_t* key, const uint8_t* input, uint8_t* output);
-void aes_decrypt(const uint8_t* key, const uint8_t* input, uint8_t* output);
-void sha256(const uint8_t* data, size_t len, uint8_t* hash);
-void md5(const uint8_t* data, size_t len, uint8_t* hash);
 
-void init_anon(void);
-void tor_enable_system_wide(uint16_t socks_port, uint16_t control_port);
-void mac_spoof_schedule(uint32_t interval_seconds);
-void hostname_randomize(void);
-void disable_ipv6_leaks(void);
-void disable_webrtc_leaks(void);
-void disable_dns_leaks(void);
+
+
 
 void init_timer(uint32_t frequency);
 void update_timer(void);
@@ -454,8 +429,7 @@ void sleep(uint32_t milliseconds);
 void init_keyboard(void);
 char getchar(void);
 char getchar_poll(void);
-void keylog_init(void);
-void keylog_dump(void);
+
 
 void init_screen(void);
 void putchar(char c);
@@ -492,25 +466,17 @@ int vfs_touch(const char* path);
 int vfs_cp(const char* src, const char* dst);
 void vfs_rename(const char* old, const char* new);
 
-// ===== STUBS PARA MÓDULOS (declaraciones) =====
-int net_create_raw_socket(void);
-void kernel_thread_create(const char *name, void (*func)(void), void *arg);
-void* hook_irq(int irq, void (*handler)(void));
-void* allocate_remote_memory(process_t *proc, size_t size);
-void write_remote_memory(process_t *proc, void *dest, const void *src, size_t len);
-uint32_t get_kernel_symbol(const char *name);
-void remote_syscall(process_t *proc, uint32_t func, void *arg1, void *arg2);
-void init_raw_socket(void);
-void load_wifi_firmware(void);
-char scancode_to_ascii(uint8_t sc);
-int snprintf(char *buf, size_t size, const char *fmt, ...);
-char* strcasestr(const char *haystack, const char *needle);
+
 
 // ============================================================
 // DECLARACIONES PARA CAMBIO DE DISTRIBUCIÓN DE TECLADO
 // ============================================================
 extern int keyboard_layout;                 // 0 = US, 1 = ES
 void set_keyboard_layout(int layout);
+
+// ===== UTILITY FUNCTIONS =====
+int snprintf(char *buf, size_t size, const char *fmt, ...);
+char* strcasestr(const char *haystack, const char *needle);
 
 // ===== SOPORTE PARA MODO GRÁFICO VGA =====
 void vga_set_mode_13h(void);
