@@ -757,6 +757,7 @@ void kernel_main(uint32_t magic, void* mboot_ptr) {
     init_keyboard();
     set_keyboard_layout(1);
     printf("[INIT] Process Manager...\n"); init_process();
+    printf("[INIT] Creating idle process...\n"); ensure_idle_process();
     printf("[INIT] System Calls...\n"); init_syscalls();
     printf("[INIT] Virtual File System...\n"); init_vfs();
     printf("[INIT] EXT2 Filesystem...\n"); init_ext2();

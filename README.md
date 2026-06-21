@@ -15,6 +15,9 @@
   <a href="https://github.com/kazah-png/nyx-os/issues/1">
     <img src="https://img.shields.io/badge/status%20report-View-0d1117?style=flat&logo=github" />
   </a>
+  <a href="https://dsc.gg/nyxos">
+    <img src="https://img.shields.io/badge/Discord-NyxOS-5865F2?style=flat&logo=discord&logoColor=white" />
+  </a>
 </div>
 
 ---
@@ -322,6 +325,18 @@ See the full **[NyxOS Status Report](https://github.com/kazah-png/nyx-os/issues/
 - 🔄 Pipe | support in shell parser
 - 🔄 EXT2 filesystem read
 - 🔄 VGA graphics mode
+
+---
+
+## Community
+
+Join the **NyxOS Discord** to follow development, ask questions, or contribute:
+
+[![Discord](https://img.shields.io/badge/Discord-NyxOS-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://dsc.gg/nyxos)
+
+- **Server:** [dsc.gg/nyxos](https://dsc.gg/nyxos)
+- **Topics:** Kernel development, OS design, networking, low-level programming
+- **Channel:** `#nyxos-dev` for build issues and feature discussions
 
 ---
 

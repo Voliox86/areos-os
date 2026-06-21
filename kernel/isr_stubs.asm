@@ -86,6 +86,9 @@ IRQ 14, 46
 IRQ 15, 47
 
 extern irq_handler
+extern irq_scheduler_tick
+extern saved_esp
+extern next_esp
 irq_common:
     pusha
     mov eax, [esp+36]
@@ -98,6 +101,10 @@ irq_common:
     out 0xA0, al
 .master_only:
     out 0x20, al
+    ; Save current ESP, call scheduler, then load new ESP
+    mov [saved_esp], esp
+    call irq_scheduler_tick
+    mov esp, [next_esp]
     popa
     add esp, 8
     iret

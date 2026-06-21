@@ -189,6 +189,8 @@ extern uint32_t memory_used;
 extern uint32_t tick_count;
 extern int process_count;
 extern net_iface_t net_interfaces[8];
+extern uint32_t saved_esp;
+extern uint32_t next_esp;
 
 // ============================================================
 // DECLARACIONES DE FUNCIONES ENSAMBLADOR
@@ -458,6 +460,8 @@ void cmd_dhcp(int argc, char** argv);
 int icmp_ping(uint32_t dst_ip, int count, int iface_idx);
 void init_background_tasks(void);
 void run_background_tasks(void);
+void irq_scheduler_tick(void);
+void ensure_idle_process(void);
 
 // New VFS helpers
 const char* vfs_getcwd(void);
