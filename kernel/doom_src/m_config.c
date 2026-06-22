@@ -812,6 +812,34 @@ static default_t extra_defaults_list[] =
     CONFIG_VARIABLE_STRING(snd_musiccmd),
 
     //!
+    // The I/O port to use to access the SoundBlaster.  Only relevant when
+    // using native SoundBlaster sound output.
+    //
+
+    CONFIG_VARIABLE_INT_HEX(snd_sbport),
+
+    //!
+    // The IRQ to use to access the SoundBlaster.  Only relevant when
+    // using native SoundBlaster sound output.
+    //
+
+    CONFIG_VARIABLE_INT(snd_sbirq),
+
+    //!
+    // The DMA channel to use to access the SoundBlaster.  Only relevant when
+    // using native SoundBlaster sound output.
+    //
+
+    CONFIG_VARIABLE_INT(snd_sbdma),
+
+    //!
+    // The MIDI I/O port to use to access the OPL chip.  Only relevant when
+    // using native OPL music playback.
+    //
+
+    CONFIG_VARIABLE_INT_HEX(snd_mport),
+
+    //!
     // The I/O port to use to access the OPL chip.  Only relevant when
     // using native OPL music playback.
     //
@@ -1135,6 +1163,12 @@ static default_t extra_defaults_list[] =
     //
 
     CONFIG_VARIABLE_KEY(key_pause),
+
+    //!
+    // Key to refresh messages on the screen.
+    //
+
+    CONFIG_VARIABLE_KEY(key_message_refresh),
 
     //!
     // Key that activates the menu when pressed.
@@ -1928,8 +1962,9 @@ void M_LoadDefaults (void)
             = M_StringJoin(configdir, default_extra_config, NULL);
     }
 
-    LoadDefaultCollection(&doom_defaults);
-    LoadDefaultCollection(&extra_defaults);
+    // No config file loading in kernel environment
+    // LoadDefaultCollection(&doom_defaults);
+    // LoadDefaultCollection(&extra_defaults);
 }
 
 // Get a configuration file variable by its name
@@ -1937,6 +1972,26 @@ void M_LoadDefaults (void)
 static default_t *GetDefaultForName(char *name)
 {
     default_t *result;
+
+    // Validate name - must be non-null and reasonable
+    if (!name || !*name)
+    {
+        return NULL;
+    }
+    
+    int len = 0;
+    while (name[len] && len < 100)
+    {
+        if (name[len] < 32 || name[len] > 126)
+        {
+            return NULL;
+        }
+        len++;
+    }
+    if (len == 0 || len >= 100)
+    {
+        return NULL;
+    }
 
     // Try the main list and the extras
 
@@ -1947,11 +2002,11 @@ static default_t *GetDefaultForName(char *name)
         result = SearchCollection(&extra_defaults, name);
     }
 
-    // Not found? Internal error.
+    // Not found? Internal error - in kernel, just return NULL to continue
 
     if (result == NULL)
     {
-        I_Error("Unknown configuration variable: '%s'", name);
+        return NULL;
     }
 
     return result;
@@ -1966,6 +2021,11 @@ void M_BindVariable(char *name, void *location)
     default_t *variable;
 
     variable = GetDefaultForName(name);
+
+    if (variable == NULL)
+    {
+        return;
+    }
 
     variable->location = location;
     variable->bound = true;
@@ -2042,10 +2102,7 @@ float M_GetFloatVariable(char *name)
 
 static char *GetDefaultConfigDir(void)
 {
-    char *result = (char *)malloc(2);
-    result[0] = '.';
-    result[1] = '\0';
-
+    static char result[2] = { '.', '\0' };
     return result;
 }
 

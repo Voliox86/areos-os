@@ -14,6 +14,10 @@ uint32_t tick_count = 0;
 bool kernel_initialized = false;
 int process_count = 0;
 
+// DOOM WAD direct memory access
+uint8_t* doom_wad_data = NULL;
+uint32_t doom_wad_size = 0;
+
 // ============================================================
 // Conversión de hexadecimal a bytes
 // ============================================================
@@ -783,6 +787,7 @@ void kernel_main(uint32_t magic, void* mboot_ptr) {
     printf("[INIT] Interrupt Descriptor Table...\n"); init_idt();
     printf("[INIT] Interrupt Service Routines...\n"); init_isr();
     printf("[INIT] Interrupt Requests...\n"); init_irq();
+    printf("[INIT] Serial Port...\n"); init_serial();
 
     uint32_t mem_total = 0;
     if (magic == 0x2BADB002 && mboot_ptr) {
@@ -887,11 +892,11 @@ void launch_shell(void) {
         while (1) {
             char c = getchar();
 
-            if (c == '\n') {
+            if (c == '\n' || c == '\r') {
                 cmd_line[idx] = '\0';
                 putchar('\n');
                 break;
-            } else if (c == '\b') {
+            } else if (c == '\b' || c == 0x7F) {
                 if (idx > 0) {
                     idx--;
                     putchar('\b');
@@ -1139,8 +1144,16 @@ int snprintf(char *buf, size_t size, const char *fmt, ...) {
     while (*fmt && written < (int)size - 1) {
         if (*fmt == '%') {
             fmt++;
+            if (*fmt == '%') {
+                *p++ = '%'; written++; fmt++;
+                continue;
+            }
+            int width = 0, precision = -1;
+            while (*fmt >= '0' && *fmt <= '9') { width = width * 10 + (*fmt - '0'); fmt++; }
+            if (*fmt == '.') { fmt++; precision = 0; while (*fmt >= '0' && *fmt <= '9') { precision = precision * 10 + (*fmt - '0'); fmt++; } }
             if (*fmt == 's') {
                 const char *s = va_arg(args, const char*);
+                if (!s) s = "(null)";
                 while (*s && written < (int)size - 1) { *p++ = *s++; written++; }
                 fmt++;
             } else if (*fmt == 'd' || *fmt == 'i') {
@@ -1148,6 +1161,11 @@ int snprintf(char *buf, size_t size, const char *fmt, ...) {
                 char tmp[16];
                 itoa(val, tmp, 10);
                 char *t = tmp;
+                int tlen = 0; while (t[tlen]) tlen++;
+                if (precision > tlen) {
+                    int pad = precision - tlen;
+                    while (pad-- > 0 && written < (int)size - 1) { *p++ = '0'; written++; }
+                }
                 while (*t && written < (int)size - 1) { *p++ = *t++; written++; }
                 fmt++;
             } else if (*fmt == 'u') {
@@ -1165,7 +1183,7 @@ int snprintf(char *buf, size_t size, const char *fmt, ...) {
                 while (*t && written < (int)size - 1) { *p++ = *t++; written++; }
                 fmt++;
             } else {
-                *p++ = '%'; written++;
+                *p++ = '%'; written++; fmt++;
             }
         } else {
             *p++ = *fmt++; written++;
@@ -1211,12 +1229,20 @@ void init_load_modules(void) {
                i, mod_start, mod_end, mod_size, name ? name : "(null)");
         char path[64];
         if (name && *name) {
-            snprintf(path, sizeof(path), "/boot/%s", name);
+            snprintf(path, sizeof(path), "/%s", name);
         } else {
             snprintf(path, sizeof(path), "/boot/module%d", i);
         }
+        printf("[MODULES] DEBUG: name='%s' path='%s'\n", name, path);
         int ret = vfs_create_from_mem(path, (uint8_t*)(uint32_t)mod_start, mod_size);
         printf("[MODULES] Loaded '%s' (%d bytes) into VFS via mem ref: ret=%d\n", path, mod_size, ret);
+        
+        // Store DOOM WAD data for direct access
+        if (name && strcmp(name, "doom1.wad") == 0) {
+            doom_wad_data = (uint8_t*)(uint32_t)mod_start;
+            doom_wad_size = mod_size;
+            printf("[MODULES] DOOM WAD stored at %x (%d bytes)\n", (uint32_t)doom_wad_data, doom_wad_size);
+        }
         mod_entry += 4;
     }
 }

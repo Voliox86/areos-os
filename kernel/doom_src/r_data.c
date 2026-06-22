@@ -581,16 +581,25 @@ void R_InitTextures (void)
 	mpatch = &mtexture->patches[0];
 	patch = &texture->patches[0];
 
-	for (j=0 ; j<texture->patchcount ; j++, mpatch++, patch++)
+	j = 0;
+	while (j < SHORT(mtexture->patchcount))
 	{
-	    patch->originx = SHORT(mpatch->originx);
-	    patch->originy = SHORT(mpatch->originy);
-	    patch->patch = patchlookup[SHORT(mpatch->patch)];
-	    if (patch->patch == -1)
+	    int pidx = SHORT(mpatch->patch);
+	    if (pidx >= 0 && pidx < nummappatches && patchlookup[pidx] != -1)
 	    {
-		I_Error ("R_InitTextures: Missing patch in texture %s",
-			 texture->name);
+		patch->originx = SHORT(mpatch->originx);
+		patch->originy = SHORT(mpatch->originy);
+		patch->patch = patchlookup[pidx];
+		patch++;
 	    }
+	    else
+	    {
+		printf("R_InitTextures: Missing patch %d in texture %s, skipping\n",
+		       pidx, texture->name);
+		texture->patchcount--;
+	    }
+	    j++;
+	    mpatch++;
 	}		
 	texturecolumnlump[i] = Z_Malloc (texture->width*sizeof(**texturecolumnlump), PU_STATIC,0);
 	texturecolumnofs[i] = Z_Malloc (texture->width*sizeof(**texturecolumnofs), PU_STATIC,0);

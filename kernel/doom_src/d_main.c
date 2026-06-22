@@ -455,7 +455,11 @@ void D_DoomLoop (void)
         wipegamestate = gamestate;
     }
 
-    doomgeneric_Tick();
+    extern int doom_quit_requested;
+    while (!doom_quit_requested)
+    {
+        doomgeneric_Tick();
+    }
 }
 
 
@@ -540,7 +544,10 @@ void D_DoAdvanceDemo (void)
 	  S_StartMusic (mus_intro);
 	break;
       case 1:
-	G_DeferedPlayDemo(DEH_String("demo1"));
+	if (W_CheckNumForName(DEH_String("demo1")) >= 0)
+	    G_DeferedPlayDemo(DEH_String("demo1"));
+	else
+	    advancedemo = true;
 	break;
       case 2:
 	pagetic = 200;
@@ -548,7 +555,10 @@ void D_DoAdvanceDemo (void)
 	pagename = DEH_String("CREDIT");
 	break;
       case 3:
-	G_DeferedPlayDemo(DEH_String("demo2"));
+	if (W_CheckNumForName(DEH_String("demo2")) >= 0)
+	    G_DeferedPlayDemo(DEH_String("demo2"));
+	else
+	    advancedemo = true;
 	break;
       case 4:
 	gamestate = GS_DEMOSCREEN;
@@ -569,11 +579,17 @@ void D_DoAdvanceDemo (void)
 	}
 	break;
       case 5:
-	G_DeferedPlayDemo(DEH_String("demo3"));
+	if (W_CheckNumForName(DEH_String("demo3")) >= 0)
+	    G_DeferedPlayDemo(DEH_String("demo3"));
+	else
+	    advancedemo = true;
 	break;
         // THE DEFINITIVE DOOM Special Edition demo
       case 6:
-	G_DeferedPlayDemo(DEH_String("demo4"));
+	if (W_CheckNumForName(DEH_String("demo4")) >= 0)
+	    G_DeferedPlayDemo(DEH_String("demo4"));
+	else
+	    advancedemo = true;
 	break;
     }
 
@@ -868,10 +884,15 @@ char            title[128];
 static boolean D_AddFile(char *filename)
 {
     wad_file_t *handle;
+    extern void serial_puts(const char*);
+    serial_puts("[D_AddFile] Adding file: ");
+    serial_puts(filename);
+    serial_puts("\n");
 
     printf(" adding %s\n", filename);
     handle = W_AddFile(filename);
 
+    serial_puts("[D_AddFile] W_AddFile returned\n");
     return handle != NULL;
 }
 
@@ -1359,11 +1380,19 @@ void D_DoomMain (void)
     D_BindVariables();
     M_LoadDefaults();
 
+    extern void serial_puts(const char*);
+    serial_puts("[Main] M_LoadDefaults done\n");
+
     // Save configuration at exit.
+    serial_puts("[Main] Before I_AtExit\n");
     I_AtExit(M_SaveDefaults, false);
+    serial_puts("[Main] I_AtExit done\n");
+
+    serial_puts("[Main] Before D_FindIWAD\n");
 
     // Find main IWAD file and load it.
     iwadfile = D_FindIWAD(IWAD_MASK_DOOM, &gamemission);
+    serial_puts("[D_DoomMain] D_FindIWAD returned\n");
 
     // None found?
 
@@ -1375,8 +1404,12 @@ void D_DoomMain (void)
 
     modifiedgame = false;
 
+    extern void serial_puts(const char*);
+    serial_puts("[D_DoomMain] Before W_Init\n");
     DEH_printf("W_Init: Init WADfiles.\n");
+    serial_puts("[D_DoomMain] Calling D_AddFile\n");
     D_AddFile(iwadfile);
+    serial_puts("[D_DoomMain] D_AddFile returned\n");
 #if ORIGCODE
     numiwadlumps = numlumps;
 #endif

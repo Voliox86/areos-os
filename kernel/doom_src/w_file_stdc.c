@@ -9,24 +9,105 @@
 //
 // This program is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 //
 // DESCRIPTION:
 //	WAD I/O functions.
 //
-
+ 
 #include <stdio.h>
-
+#include <string.h>
+ 
 #include "m_misc.h"
 #include "w_file.h"
 #include "z_zone.h"
-
+ 
+extern uint8_t* doom_wad_data;
+extern uint32_t doom_wad_size;
+extern wad_file_class_t direct_wad_file;
+ 
 typedef struct
 {
     wad_file_t wad;
     FILE *fstream;
 } stdc_wad_file_t;
+ 
+// Direct memory access for DOOM WAD
+typedef struct
+{
+    wad_file_t wad;
+    const uint8_t* data;
+    uint32_t size;
+    uint32_t pos;
+} direct_wad_file_t;
+ 
+static wad_file_t* W_Direct_OpenFile(char* path)
+{
+    extern void serial_puts(const char*);
+    extern uint8_t* doom_wad_data;
+    extern uint32_t doom_wad_size;
+ 
+    serial_puts("[W_Direct] Checking path: ");
+    serial_puts(path);
+    serial_puts("\n");
+ 
+    // Check if this is the DOOM WAD
+    if (strcasecmp(path, "doom1.wad") == 0 ||
+        strcasecmp(path, "/doom1.wad") == 0 ||
+        strcasecmp(path, "/boot/doom1.wad") == 0)
+    {
+        if (doom_wad_data && doom_wad_size > 0)
+        {
+            serial_puts("[W_Direct] Using direct memory for doom1.wad\n");
+            direct_wad_file_t* result = Z_Malloc(sizeof(direct_wad_file_t), PU_STATIC, 0);
+            result->wad.file_class = &direct_wad_file;
+            result->wad.mapped = NULL;
+            result->wad.length = doom_wad_size;
+            result->data = doom_wad_data;
+            result->size = doom_wad_size;
+            result->pos = 0;
+            serial_puts("[W_Direct] Direct WAD opened successfully\n");
+            return &result->wad;
+        }
+        else
+        {
+            serial_puts("[W_Direct] WAD data not available!\n");
+        }
+    }
+ 
+    return NULL;
+}
+ 
+static void W_Direct_CloseFile(wad_file_t* wad)
+{
+    // Nothing to close for direct memory
+    direct_wad_file_t* direct = (direct_wad_file_t*)wad;
+    Z_Free(direct);
+}
+ 
+size_t W_Direct_Read(wad_file_t* wad, unsigned int offset,
+                     void* buffer, size_t buffer_len)
+{
+    direct_wad_file_t* direct = (direct_wad_file_t*)wad;
+ 
+    if (offset >= direct->size)
+        return 0;
+ 
+    uint32_t to_read = buffer_len;
+    if (offset + to_read > direct->size)
+        to_read = direct->size - offset;
+ 
+    memcpy(buffer, direct->data + offset, to_read);
+    return to_read;
+}
+ 
+wad_file_class_t direct_wad_file = 
+{
+    W_Direct_OpenFile,
+    W_Direct_CloseFile,
+    W_Direct_Read,
+};
 
 extern wad_file_class_t stdc_wad_file;
 

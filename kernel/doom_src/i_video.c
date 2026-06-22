@@ -48,6 +48,10 @@ rcsid[] = "$Id: i_x.c,v 1.6 1997/02/03 22:45:10 b1 Exp $";
 
 #include <sys/types.h>
 
+static inline void outb(uint16_t port, uint8_t val) {
+    __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
+}
+
 //#define CMAP256
 
 struct FB_BitField
@@ -75,6 +79,11 @@ struct FB_ScreenInfo
 static struct FB_ScreenInfo s_Fb;
 int fb_scaling = 1;
 int usemouse = 0;
+
+// NYX DOOM FAST NATIVE MODE - Like TNU's TNU_DOOM_FAST_NATIVE
+// Keeps internal framebuffer at native 320x200, disables scaling in i_video.c
+// The doomgeneric backend handles the actual display
+#define NYX_DOOM_FAST_NATIVE 1
 
 
 #ifdef CMAP256
@@ -206,10 +215,24 @@ void I_InitGraphics (void)
 {
     int i, gfxmodeparm;
     char *mode;
+    extern void serial_puts(const char*);
+
+    serial_puts("[I_InitGraphics] START\n");
 
 	memset(&s_Fb, 0, sizeof(struct FB_ScreenInfo));
+	
+#if NYX_DOOM_FAST_NATIVE
+	/* Keep the conversion buffer at Doom native resolution. The real screen
+	 * size is handled by the NyxOS doomgeneric backend, so this file must not
+	 * create a full-screen software framebuffer.
+	 */
+	s_Fb.xres = SCREENWIDTH;
+	s_Fb.yres = SCREENHEIGHT;
+#else
 	s_Fb.xres = DOOMGENERIC_RESX;
 	s_Fb.yres = DOOMGENERIC_RESY;
+#endif
+	
 	s_Fb.xres_virtual = s_Fb.xres;
 	s_Fb.yres_virtual = s_Fb.yres;
 
@@ -272,27 +295,40 @@ void I_InitGraphics (void)
 
     printf("I_InitGraphics: DOOM screen size: w x h: %d x %d\n", SCREENWIDTH, SCREENHEIGHT);
 
-
-    i = M_CheckParmWithArgs("-scaling", 1);
-    if (i > 0) {
-        i = atoi(myargv[i + 1]);
-        fb_scaling = i;
-        printf("I_InitGraphics: Scaling factor: %d\n", fb_scaling);
-    } else {
-        fb_scaling = s_Fb.xres / SCREENWIDTH;
-        if (s_Fb.yres / SCREENHEIGHT < fb_scaling)
-            fb_scaling = s_Fb.yres / SCREENHEIGHT;
-        printf("I_InitGraphics: Auto-scaling factor: %d\n", fb_scaling);
-    }
-
+#if NYX_DOOM_FAST_NATIVE
+	/* Keep the conversion buffer at Doom native resolution. The real screen
+	 * size is handled by the NyxOS doomgeneric backend, so this file must not
+	 * create a full-screen software framebuffer.
+	 */
+	fb_scaling = 1;
+	serial_puts("[I_InitGraphics] NYX fast native mode enabled, scaling disabled in i_video.c\n");
+#else
+	i = M_CheckParmWithArgs("-scaling", 1);
+	if (i > 0) {
+		i = atoi(myargv[i + 1]);
+		fb_scaling = i;
+		printf("I_InitGraphics: Scaling factor: %d\n", fb_scaling);
+	} else {
+		fb_scaling = s_Fb.xres / SCREENWIDTH;
+		if (s_Fb.yres / SCREENHEIGHT < fb_scaling)
+			fb_scaling = s_Fb.yres / SCREENHEIGHT;
+		if (fb_scaling < 1)
+			fb_scaling = 1;
+		printf("I_InitGraphics: Auto-scaling factor: %d\n", fb_scaling);
+	}
+#endif
 
     /* Allocate screen to draw to */
 	I_VideoBuffer = (byte*)Z_Malloc (SCREENWIDTH * SCREENHEIGHT, PU_STATIC, NULL);  // For DOOM to draw on
+    extern void serial_puts(const char*);
+    serial_puts("[I_InitGraphics] I_VideoBuffer allocated at ");
+    serial_puts("\n");
 
 	screenvisible = true;
 
     extern void I_InitInput(void);
     I_InitInput();
+    serial_puts("[I_InitGraphics] DONE\n");
 }
 
 void I_ShutdownGraphics (void)
@@ -320,6 +356,25 @@ void I_UpdateNoBlit (void)
 
 void I_FinishUpdate (void)
 {
+#if NYX_DOOM_FAST_NATIVE
+	/* Convert exactly SCREENWIDTH*SCREENHEIGHT pixels into DG_ScreenBuffer.
+	 * No centering, no software upscale, no full-screen clear. This avoids
+	 * writing megabytes of framebuffer data twice per frame on bare metal.
+	 */
+	unsigned char* line_in = (unsigned char*)I_VideoBuffer;
+	unsigned char* line_out = (unsigned char*)DG_ScreenBuffer;
+
+	for (int y = 0; y < SCREENHEIGHT; y++) {
+#ifdef CMAP256
+		memcpy(line_out, line_in, SCREENWIDTH);
+		line_out += SCREENWIDTH;
+#else
+		cmap_to_fb(line_out, line_in, SCREENWIDTH);
+		line_out += SCREENWIDTH * (s_Fb.bits_per_pixel / 8);
+#endif
+		line_in += SCREENWIDTH;
+	}
+#else
     int y;
     int x_offset, y_offset, x_offset_end;
     unsigned char *line_in, *line_out;
@@ -365,7 +420,15 @@ void I_FinishUpdate (void)
         }
         line_in += SCREENWIDTH;
     }
+#endif
 
+    extern void serial_puts(const char*);
+    static int finish_count = 0;
+    if (finish_count < 5) {
+        serial_puts("[I_FinishUpdate] called, count=");
+        serial_puts("\n");
+        finish_count++;
+    }
 	DG_DrawFrame();
 }
 
@@ -388,23 +451,8 @@ void I_ReadScreen (byte* scr)
 void I_SetPalette (byte* palette)
 {
 	int i;
-	//col_t* c;
 
-	//for (i = 0; i < 256; i++)
-	//{
-	//	c = (col_t*)palette;
-
-	//	rgb565_palette[i] = GFX_RGB565(gammatable[usegamma][c->r],
-	//								   gammatable[usegamma][c->g],
-	//								   gammatable[usegamma][c->b]);
-
-	//	palette += 3;
-	//}
-    
-
-    /* performance boost:
-     * map to the right pixel format over here! */
-
+    byte* orig_pal = palette;
     for (i=0; i<256; ++i ) {
         colors[i].a = 0;
         colors[i].r = gammatable[usegamma][*palette++];
@@ -412,9 +460,49 @@ void I_SetPalette (byte* palette)
         colors[i].b = gammatable[usegamma][*palette++];
     }
 
+    // Debug: dump first 4 palette entries
+    {
+        char buf[64];
+        extern void serial_puts(const char*);
+        buf[0] = '\0';
+        // manual hex dump of first 4 entries
+        serial_puts("[PAL] ");
+        for (int e = 0; e < 4; e++) {
+            serial_puts("(");
+            char tmp[4];
+            int r = gammatable[usegamma][orig_pal[e*3+0]];
+            int g = gammatable[usegamma][orig_pal[e*3+1]];
+            int b = gammatable[usegamma][orig_pal[e*3+2]];
+            // convert to 2-digit hex
+            tmp[0] = "0123456789ABCDEF"[(r>>4)&0xF];
+            tmp[1] = "0123456789ABCDEF"[r&0xF];
+            tmp[2] = '\0';
+            serial_puts(tmp);
+            r = g;
+            tmp[0] = "0123456789ABCDEF"[(r>>4)&0xF];
+            tmp[1] = "0123456789ABCDEF"[r&0xF];
+            serial_puts(tmp);
+            r = b;
+            tmp[0] = "0123456789ABCDEF"[(r>>4)&0xF];
+            tmp[1] = "0123456789ABCDEF"[r&0xF];
+            serial_puts(tmp);
+            serial_puts(") ");
+        }
+        serial_puts("\n");
+    }
+
 #ifdef CMAP256
 
     palette_changed = true;
+    {
+        uint8_t* p = (uint8_t*)orig_pal;
+        for (int idx = 0; idx < 256; idx++) {
+            outb(0x3C8, idx);
+            outb(0x3C9, gammatable[usegamma][*p++] >> 2);
+            outb(0x3C9, gammatable[usegamma][*p++] >> 2);
+            outb(0x3C9, gammatable[usegamma][*p++] >> 2);
+        }
+    }
 
 #endif  // CMAP256
 }

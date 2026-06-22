@@ -91,12 +91,12 @@ extern saved_esp
 extern next_esp
 irq_common:
     pusha
-    mov eax, [esp+36]
+    mov eax, [esp+32]
     push eax
     call irq_handler
     add esp, 4
     mov al, 0x20
-    cmp byte [esp+36], 40
+    cmp byte [esp+32], 40
     jb .master_only
     out 0xA0, al
 .master_only:

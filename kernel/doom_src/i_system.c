@@ -157,8 +157,8 @@ byte *I_ZoneBase (int *size)
 
     zonemem = AutoAllocMemory(size, default_ram, min_ram);
 
-    printf("zone memory: %p, %x allocated for zone\n", 
-           zonemem, *size);
+    printf("zone memory: %x, %x allocated for zone\n", 
+           (uint32_t)zonemem, *size);
 
     return zonemem;
 }
@@ -243,6 +243,8 @@ void I_BindVariables(void)
 // I_Quit
 //
 
+extern int doom_quit_requested;
+
 void I_Quit (void)
 {
     atexit_listentry_t *entry;
@@ -257,11 +259,7 @@ void I_Quit (void)
         entry = entry->next;
     }
 
-#if ORIGCODE
-    SDL_Quit();
-
-    exit(0);
-#endif
+    doom_quit_requested = 1;
 }
 
 #if !defined(_WIN32) && !defined(__MACOSX__) && !defined(__DJGPP__)

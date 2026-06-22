@@ -313,7 +313,7 @@ int W_GetNumForName (char* name)
     {
         I_Error ("W_GetNumForName: %s not found!", name);
     }
- 
+  
     return i;
 }
 

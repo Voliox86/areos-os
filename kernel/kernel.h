@@ -433,6 +433,12 @@ void init_timer(uint32_t frequency);
 uint32_t get_ticks(void);
 void sleep(uint32_t milliseconds);
 
+void init_serial(void);
+void serial_putchar(char c);
+void serial_puts(const char* str);
+char serial_getchar(void);
+char serial_getchar_nonblock(void);
+
 void init_keyboard(void);
 char getchar(void);
 char getchar_poll(void);
@@ -498,5 +504,9 @@ void vga_copy_buffer(uint8_t* buffer);
 
 // ===== FUNCIÓN PARA EJECUTAR DOOM =====
 void run_doom(void);
+
+// DOOM WAD direct memory access
+extern uint8_t* doom_wad_data;
+extern uint32_t doom_wad_size;
 
 #endif // KERNEL_H

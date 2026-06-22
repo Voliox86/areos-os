@@ -13,7 +13,7 @@ CFLAGS = -std=gnu99 -ffreestanding -Os -Wall -Wextra \
          -ffunction-sections -fdata-sections \
          -I.
 
-DOOM_CFLAGS = $(CFLAGS) -I doom_src -D DOOMGENERIC
+DOOM_CFLAGS = $(CFLAGS) -I doom_src -D DOOMGENERIC -D CMAP256=1
 
 ASFLAGS = -f elf32
 

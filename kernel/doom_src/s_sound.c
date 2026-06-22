@@ -631,10 +631,16 @@ void S_ChangeMusic(int musicnum, int looping)
     S_StopMusic();
 
     // get lumpnum if neccessary
-    if (!music->lumpnum)
+    if (music->lumpnum <= 0)
     {
         M_snprintf(namebuf, sizeof(namebuf), "d_%s", DEH_String(music->name));
-        music->lumpnum = W_GetNumForName(namebuf);
+        music->lumpnum = W_CheckNumForName(namebuf);
+        if (music->lumpnum == -1)
+        {
+            music->lumpnum = 0;
+            mus_playing = NULL;
+            return;
+        }
     }
 
     music->data = W_CacheLumpNum(music->lumpnum, PU_STATIC);

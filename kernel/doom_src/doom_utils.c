@@ -228,6 +228,27 @@ void exit(int status) { (void)status; while(1); }
 
 FILE *fopen(const char *path, const char *mode) {
     (void)mode;
+    extern void serial_puts(const char*);
+    extern uint8_t* doom_wad_data;
+    extern uint32_t doom_wad_size;
+    
+    // Special handling for doom1.wad - use direct memory WAD
+    if (doom_wad_data && doom_wad_size > 0) {
+        if (strcmp(path, "doom1.wad") == 0 || strcmp(path, "/doom1.wad") == 0 || strcmp(path, "/boot/doom1.wad") == 0) {
+            int idx = alloc_cookie();
+            if (idx < 0) return NULL;
+            cookies[idx].data = doom_wad_data;
+            cookies[idx].size = doom_wad_size;
+            cookies[idx].pos = 0;
+            cookies[idx].fd = -1;  // Special marker for direct memory
+            nyx_file_hdr* hdr = (nyx_file_hdr*)kmalloc(sizeof(nyx_file_hdr));
+            if (!hdr) { cookies[idx].in_use = 0; return NULL; }
+            hdr->magic = FILE_MAGIC;
+            hdr->index = idx;
+            return (FILE*)hdr;
+        }
+    }
+    
     int idx = alloc_cookie();
     if (idx < 0) return NULL;
     int fd = vfs_open(path, 0, 0);
@@ -240,7 +261,10 @@ FILE *fopen(const char *path, const char *mode) {
             if (w > 0 && w < (int)sizeof(altpath)) fd = vfs_open(altpath, 0, 0);
         }
     }
-    if (fd < 0) { cookies[idx].in_use = 0; return NULL; }
+    if (fd < 0) { 
+        cookies[idx].in_use = 0; 
+        return NULL; 
+    }
     cookies[idx].data = vfs_fdata(fd);
     cookies[idx].size = vfs_fsize(fd);
     cookies[idx].pos = 0;
@@ -319,8 +343,112 @@ int sscanf(const char *str, const char *format, ...) {
 }
 
 int vsnprintf(char *buf, size_t size, const char *fmt, va_list args) {
-    (void)buf; (void)size; (void)fmt; (void)args;
-    return 0;
+    char *p = buf;
+    char *end = buf + size - 1;
+    const char *f = fmt;
+    
+    if (size == 0) return 0;
+    
+    while (*f && p < end) {
+        if (*f == '%') {
+            f++;
+            if (*f == '%') {
+                if (p < end) *p++ = '%';
+            } else {
+                int pad = 0, zeropad = 0, precision = -1;
+                while (*f == '0') { zeropad = 1; f++; }
+                while (*f >= '0' && *f <= '9') { pad = pad * 10 + (*f - '0'); f++; }
+                if (*f == '.') {
+                    f++;
+                    precision = 0;
+                    while (*f >= '0' && *f <= '9') { precision = precision * 10 + (*f - '0'); f++; }
+                }
+                if (*f == 's') {
+                    const char *s = va_arg(args, const char*);
+                    if (!s) s = "(null)";
+                    int slen = 0;
+                    while (s[slen]) slen++;
+                    if (precision >= 0 && precision < slen) slen = precision;
+                    if (pad > slen) {
+                        int spaces = pad - slen;
+                        while (spaces-- > 0 && p < end) *p++ = ' ';
+                    }
+                    int i = 0;
+                    while (i < slen && p < end) *p++ = s[i++];
+                } else if (*f == 'd' || *f == 'i') {
+                    int val = va_arg(args, int);
+                    char tmp[16];
+                    int len = 0, neg = 0;
+                    if (val < 0) { neg = 1; val = -val; }
+                    int v = val;
+                    do { tmp[len++] = '0' + v % 10; v /= 10; } while (v > 0);
+                    if (precision > len) {
+                        int z = precision - len;
+                        while (z-- > 0) tmp[len++] = '0';
+                    }
+                    int total = len + neg;
+                    if (zeropad && pad > total) {
+                        if (neg && p < end) *p++ = '-';
+                        int z = pad - total;
+                        while (z-- > 0 && p < end) *p++ = '0';
+                        while (len > 0 && p < end) *p++ = tmp[--len];
+                    } else {
+                        if (pad > total) {
+                            int spaces = pad - total;
+                            while (spaces-- > 0 && p < end) *p++ = ' ';
+                        }
+                        if (neg && p < end) *p++ = '-';
+                        while (len > 0 && p < end) *p++ = tmp[--len];
+                    }
+                } else if (*f == 'c') {
+                    int c = va_arg(args, int);
+                    if (p < end) *p++ = (char)c;
+                } else if (*f == 'x' || *f == 'X') {
+                    unsigned int val = va_arg(args, unsigned int);
+                    char tmp[16];
+                    int len = 0;
+                    unsigned int v = val;
+                    do {
+                        int d = v % 16;
+                        tmp[len++] = d < 10 ? '0' + d : (*f == 'X' ? 'A' : 'a') + d - 10;
+                        v /= 16;
+                    } while (v > 0);
+                    if (precision > len) {
+                        int z = precision - len;
+                        while (z-- > 0) tmp[len++] = '0';
+                    }
+                    if (pad > len) {
+                        int spaces = pad - len;
+                        while (spaces-- > 0 && p < end) *p++ = ' ';
+                    }
+                    while (len > 0 && p < end) *p++ = tmp[--len];
+                } else if (*f == 'u') {
+                    unsigned int val = va_arg(args, unsigned int);
+                    char tmp[16];
+                    int len = 0;
+                    unsigned int v = val;
+                    do { tmp[len++] = '0' + v % 10; v /= 10; } while (v > 0);
+                    if (precision > len) {
+                        int z = precision - len;
+                        while (z-- > 0) tmp[len++] = '0';
+                    }
+                    if (pad > len) {
+                        int spaces = pad - len;
+                        while (spaces-- > 0 && p < end) *p++ = ' ';
+                    }
+                    while (len > 0 && p < end) *p++ = tmp[--len];
+                } else {
+                    if (p < end) *p++ = '%';
+                    if (p < end) *p++ = *f;
+                }
+            }
+        } else {
+            *p++ = *f;
+        }
+        f++;
+    }
+    *p = '\0';
+    return p - buf;
 }
 
 void *calloc(size_t nmemb, size_t size) {

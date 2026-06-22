@@ -84,13 +84,14 @@ void putchar(char c) {
     if (pipe_active && pipe_pos < 4096) {
         pipe_buffer[pipe_pos++] = c;
     }
+    serial_putchar(c);
     if (c == '\n') {
         cursor_x = 0;
         cursor_y++;
         scroll_up();
     } else if (c == '\r') {
         cursor_x = 0;
-    } else if (c == '\b') {
+    } else if (c == '\b' || c == 0x7F) {
         if (cursor_x > 0) {
             cursor_x--;
             vga_buffer[cursor_y * VGA_WIDTH + cursor_x] = vga_entry(' ', terminal_color);
@@ -146,7 +147,8 @@ int vprintf(const char* fmt, va_list args) {
                     while (*s) { putchar(*s++); count++; }
                     break;
                 }
-                case 'd': {
+                case 'd':
+                case 'i': {
                     int d = va_arg(args, int);
                     itoa(d, buf, 10);
                     char *p = buf;

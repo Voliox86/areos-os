@@ -106,7 +106,6 @@ void init_keyboard(void) {
     while (inb(0x64) & 0x01) {
         inb(0x60);
     }
-    // No forzamos Set 1, trabajamos en Set 2 por defecto
     shift_pressed = 0;
     altgr_pressed = 0;
     caps_lock = 0;
@@ -192,10 +191,24 @@ void keyboard_irq_handler(void* unused) {
 // ============================================================
 // Funciones de lectura
 // ============================================================
+static inline char kbd_poll_direct(void) {
+    if (inb(0x64) & 0x01) {
+        uint8_t sc = inb(0x60);
+        return scancode_to_ascii(sc);
+    }
+    return 0;
+}
+
 char getchar_poll(void) {
-    if (kbd_tail == kbd_head) return 0;
-    char c = kbd_buffer[kbd_tail];
-    kbd_tail = (kbd_tail + 1) % KBD_BUFFER_SIZE;
+    if (kbd_tail != kbd_head) {
+        char c = kbd_buffer[kbd_tail];
+        kbd_tail = (kbd_tail + 1) % KBD_BUFFER_SIZE;
+        return c;
+    }
+    char c = kbd_poll_direct();
+    if (c) return c;
+    c = serial_getchar_nonblock();
+    if (c == 0x7F) return '\b';
     return c;
 }
 
