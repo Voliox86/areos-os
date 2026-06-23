@@ -2,6 +2,7 @@
 #include "compositor.h"
 #include "font.h"
 #include "terminal_win.h"
+#include "fileman_win.h"
 
 static window_t* windows[MAX_WINDOWS];
 static int window_count = 0;
@@ -334,8 +335,13 @@ static void draw_background(void) {
     }
 }
 
+static void init_desktop_icons(void);
+static void draw_desktop_icons(void);
+static void settings_draw_fn(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch);
+
 static void redraw_all(void) {
     draw_background();
+    draw_desktop_icons();
 
     window_t* sorted[MAX_WINDOWS];
     int n = 0;
@@ -375,8 +381,16 @@ static void do_start_menu_action(int idx) {
     start_menu_open = 0;
     redraw_all();
     switch (idx) {
-        case 0: // File Manager (placeholder)
-            window_create(100, 100, 500, 350, "File Manager", NULL);
+        case 0: // File Manager
+            {
+                window_t* fwin = window_create(100, 100, 550, 380, "File Manager", fileman_win_draw);
+                if (fwin) {
+                    fwin->reserved = fileman_create_ctx();
+                    if (fwin->reserved) {
+                        fwin->on_click = fileman_win_click;
+                    }
+                }
+            }
             break;
         case 1: // Text Editor (placeholder)
             window_create(150, 120, 600, 400, "Text Editor", NULL);
@@ -394,7 +408,7 @@ static void do_start_menu_action(int idx) {
             }
             break;
         case 4: // Settings
-            window_create(160, 100, 500, 400, "Settings", NULL);
+            window_create(160, 100, 500, 400, "Settings", settings_draw_fn);
             break;
         case 5: // Package Manager
             window_create(180, 120, 480, 360, "Package Manager", NULL);
@@ -432,6 +446,7 @@ void compositor_init(void) {
     desktop_bg = fb_rgb(30,35,50);
     title_active = fb_rgb(40,90,140);
     title_inactive = fb_rgb(65,65,70);
+    init_desktop_icons();
 }
 
 window_t* window_create(int x, int y, uint32_t w, uint32_t h, const char* title, window_draw_fn draw) {
@@ -454,6 +469,7 @@ window_t* window_create(int x, int y, uint32_t w, uint32_t h, const char* title,
     win->has_close = 1; win->has_min = 1; win->has_max = 1;
     win->draw = draw;
     win->on_key = NULL;
+    win->on_click = NULL;
     int sl = strlen(title);
     if (sl >= MAX_TITLE) sl = MAX_TITLE - 1;
     memcpy(win->title, title, sl);
@@ -569,6 +585,80 @@ static void about_draw_fn(window_t* win, int cx, int cy, uint32_t cw, uint32_t c
     font_draw_string(cx + 10, cy + 30, "Version 0.2.0", fb_rgb(200,200,200), fb_rgb(35,35,40));
     font_draw_string(cx + 10, cy + 60, "A lightweight desktop OS", fb_rgb(160,160,160), fb_rgb(35,35,40));
     font_draw_string(cx + 10, cy + 80, "inspired by Linux Mint.", fb_rgb(160,160,160), fb_rgb(35,35,40));
+}
+
+static void settings_draw_fn(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
+    (void)win;
+    fb_fill_rect(cx, cy, cw, ch, fb_rgb(30,30,35));
+    char buf[128];
+    int y = cy + 10;
+    font_draw_string(cx + 10, y, "System Settings", fb_rgb(100,200,100), fb_rgb(30,30,35));
+    y += 30;
+    snprintf(buf, sizeof(buf), "Kernel: %s %s (%s)", KERNEL_NAME, KERNEL_VERSION, KERNEL_CODENAME);
+    font_draw_string(cx + 10, y, buf, fb_rgb(200,200,200), fb_rgb(30,30,35));
+    y += 20;
+    snprintf(buf, sizeof(buf), "Memory: %d MB total, %d MB used, %d MB free",
+        memory_total / (1024*1024), memory_used / (1024*1024),
+        (memory_total - memory_used) / (1024*1024));
+    font_draw_string(cx + 10, y, buf, fb_rgb(200,200,200), fb_rgb(30,30,35));
+    y += 20;
+    snprintf(buf, sizeof(buf), "Uptime: %d ticks (%d sec)", tick_count, tick_count / 1000);
+    font_draw_string(cx + 10, y, buf, fb_rgb(200,200,200), fb_rgb(30,30,35));
+    y += 20;
+    snprintf(buf, sizeof(buf), "Heap: %d KB", KERNEL_HEAP_SIZE / 1024);
+    font_draw_string(cx + 10, y, buf, fb_rgb(200,200,200), fb_rgb(30,30,35));
+    y += 20;
+    snprintf(buf, sizeof(buf), "Windows: %d / %d", window_count, MAX_WINDOWS);
+    font_draw_string(cx + 10, y, buf, fb_rgb(200,200,200), fb_rgb(30,30,35));
+}
+
+#define NUM_DESKTOP_ICONS 6
+#define ICON_SIZE 64
+#define ICON_PAD 12
+static const char* desktop_icon_names[] = {
+    "Files", "Terminal", "DOOM", "Settings", "About", "Paint"
+};
+static int desktop_icon_actions[] = {0, 3, 6, 4, 10, 8};
+static int desktop_icon_x[NUM_DESKTOP_ICONS];
+static int desktop_icon_y[NUM_DESKTOP_ICONS];
+
+static void init_desktop_icons(void) {
+    for (int i = 0; i < NUM_DESKTOP_ICONS; i++) {
+        desktop_icon_x[i] = 20 + i * (ICON_SIZE + ICON_PAD);
+        desktop_icon_y[i] = 20;
+    }
+}
+
+static int desktop_icon_hit(int mx, int my) {
+    uint32_t fh = fb_get_height();
+    if (my >= (int)(fh - 36)) return -1;  // taskbar area
+    for (int i = 0; i < NUM_DESKTOP_ICONS; i++) {
+        if (mx >= desktop_icon_x[i] && mx < desktop_icon_x[i] + ICON_SIZE &&
+            my >= desktop_icon_y[i] && my < desktop_icon_y[i] + ICON_SIZE + 16)
+            return i;
+    }
+    return -1;
+}
+
+static void draw_desktop_icons(void) {
+    for (int i = 0; i < NUM_DESKTOP_ICONS; i++) {
+        int x = desktop_icon_x[i];
+        int y = desktop_icon_y[i];
+        fb_fill_rect(x, y, ICON_SIZE, ICON_SIZE, fb_rgb(45,50,65));
+        fb_fill_rect(x+1, y+1, ICON_SIZE-2, ICON_SIZE-2, fb_rgb(55,60,75));
+        uint32_t icon_color[] = {
+            fb_rgb(70,130,200), fb_rgb(0,200,0), fb_rgb(200,50,50),
+            fb_rgb(200,200,50), fb_rgb(100,200,100), fb_rgb(200,100,200)
+        };
+        fb_fill_rect(x+12, y+8, ICON_SIZE-24, ICON_SIZE-24, icon_color[i % 6]);
+        fb_fill_rect(x+18, y+14, ICON_SIZE-36, 3, fb_rgb(255,255,255));
+        fb_fill_rect(x+18, y+22, ICON_SIZE-36, 3, fb_rgb(255,255,255));
+        fb_fill_rect(x+18, y+30, ICON_SIZE-36, 3, fb_rgb(255,255,255));
+        int tw = strlen(desktop_icon_names[i]) * 8;
+        int tx = x + (ICON_SIZE - tw) / 2;
+        if (tx < 0) tx = 0;
+        font_draw_string(tx, y + ICON_SIZE + 2, desktop_icon_names[i], fb_rgb(220,220,220), fb_rgb(30,35,50));
+    }
 }
 
 static void draw_welcome_windows(void) {
@@ -690,6 +780,15 @@ void compositor_run(void) {
                     goto done_click;
                 }
 
+                {
+                    int icon_idx = desktop_icon_hit(mx, my);
+                    if (icon_idx >= 0) {
+                        do_start_menu_action(desktop_icon_actions[icon_idx]);
+                        redraw = 1;
+                        goto done_click;
+                    }
+                }
+
                 for (int i = 0; i < n; i++) {
                     if (window_hit(sorted[i], mx, my)) {
                         hit = sorted[i]; break;
@@ -722,6 +821,9 @@ void compositor_run(void) {
                             hit->resize_start_w = hit->w;
                             hit->resize_start_h = hit->h;
                             resize_id = hit->id;
+                        } else if (hit->on_click) {
+                            hit->on_click(hit, mx, my);
+                            redraw = 1;
                         }
                     }
                 }

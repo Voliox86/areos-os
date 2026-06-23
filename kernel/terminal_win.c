@@ -130,6 +130,37 @@ void terminal_win_key(window_t* win, char c) {
         return;
     }
 
+    if (c == '\t') {
+        if (term->input_len > 0) {
+            int space_pos = -1;
+            for (int i = 0; i < term->input_len; i++) {
+                if (term->input[i] == ' ') { space_pos = i; break; }
+            }
+            if (space_pos < 0) {
+                char completed[64];
+                int match_count = 0;
+                command_complete(term->input, completed, sizeof(completed), &match_count);
+                if (match_count == 1) {
+                    int clen = strlen(completed);
+                    term->input_len = clen;
+                    memcpy(term->input, completed, clen);
+                    term->cursor_pos = clen;
+                } else if (match_count > 1) {
+                    char matches[256];
+                    command_list_matches(term->input, matches, sizeof(matches));
+                    term_add_line(term, matches, VGA_LIGHT_CYAN | (VGA_BLACK << 4));
+                    if (strlen(completed) > (size_t)term->input_len) {
+                        int clen = strlen(completed);
+                        term->input_len = clen;
+                        memcpy(term->input, completed, clen);
+                        term->cursor_pos = clen;
+                    }
+                }
+            }
+        }
+        return;
+    }
+
     if (c == '\n' || c == '\r') {
         term->input[term->input_len] = '\0';
         char full_line[TERM_COLS + TERM_INPUT_MAX];

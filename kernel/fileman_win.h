@@ -1,0 +1,23 @@
+#ifndef FILEMAN_WIN_H
+#define FILEMAN_WIN_H
+
+#include "kernel.h"
+#include "compositor.h"
+
+#define FILEMAN_MAX_ENTRIES 512
+
+typedef struct {
+    char cwd[256];
+    char entries[FILEMAN_MAX_ENTRIES][64];
+    int entry_types[FILEMAN_MAX_ENTRIES];
+    int entry_count;
+    int scroll_offset;
+    char status[128];
+    int sel_index;
+} fileman_win_t;
+
+fileman_win_t* fileman_create_ctx(void);
+void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch);
+void fileman_win_click(window_t* win, int mx, int my);
+
+#endif

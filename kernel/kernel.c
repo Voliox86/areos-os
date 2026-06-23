@@ -188,6 +188,60 @@ static const command_t commands[] = {
     {NULL, NULL, NULL, false}
 };
 
+void command_list_matches(const char* partial, char* out, int out_size) {
+    out[0] = '\0';
+    int pos = 0;
+    int plen = strlen(partial);
+    for (int i = 0; commands[i].name != NULL && pos < out_size - 2; i++) {
+        if (commands[i].hidden) continue;
+        if (strncmp(commands[i].name, partial, plen) == 0) {
+            int len = strlen(commands[i].name);
+            if (pos + len + 2 > out_size - 1) break;
+            memcpy(out + pos, commands[i].name, len);
+            pos += len;
+            out[pos++] = ' ';
+            out[pos] = '\0';
+        }
+    }
+}
+
+void command_complete(const char* partial, char* out, int out_size, int* match_count) {
+    *match_count = 0;
+    if (out && out_size > 0) out[0] = '\0';
+    int plen = strlen(partial);
+    char first_match[64] = "";
+    for (int i = 0; commands[i].name != NULL; i++) {
+        if (commands[i].hidden) continue;
+        if (strncmp(commands[i].name, partial, plen) == 0) {
+            if (*match_count == 0)
+                strncpy(first_match, commands[i].name, sizeof(first_match)-1);
+            (*match_count)++;
+        }
+    }
+    if (*match_count == 1 && out) {
+        strncpy(out, first_match, out_size - 1);
+        out[out_size - 1] = '\0';
+    } else if (*match_count > 1 && out) {
+        // Find common prefix
+        char common[64];
+        strncpy(common, first_match, sizeof(common)-1);
+        for (int i = 0; commands[i].name != NULL && common[0]; i++) {
+            if (commands[i].hidden) continue;
+            if (strncmp(commands[i].name, partial, plen) == 0) {
+                for (int j = 0; common[j]; j++) {
+                    if (commands[i].name[j] != common[j]) {
+                        common[j] = '\0';
+                        break;
+                    }
+                }
+            }
+        }
+        if (strlen(common) > (size_t)plen)
+            strncpy(out, common, out_size - 1);
+        out[out_size - 1] = '\0';
+    }
+}
+
 void execute_command(const char* cmd_line) {
     if (!cmd_line || !*cmd_line) return;
     char cmd_copy[256];

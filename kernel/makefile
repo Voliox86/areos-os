@@ -25,7 +25,7 @@ OBJS_KERNEL = boot.o kernel.o gdt.o gdt_flush.o idt.o idt_load.o isr.o isr_stubs
        serial.o umoddi3.o paging.o switch.o dhcp.o \
        vga_graphics.o doom_nyxos.o \
        vbe.o fb.o mouse.o gui.o font.o compositor.o speaker.o tcp.o \
-       sb16.o doom_nyxos_sound.o terminal_win.o
+       sb16.o doom_nyxos_sound.o terminal_win.o fileman_win.o
 
 DOOM_OBJS = \
     doom_src/am_map.o \

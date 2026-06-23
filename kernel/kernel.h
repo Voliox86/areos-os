@@ -365,6 +365,8 @@ void kernel_panic(const char* msg, ...);
 void launch_shell(void);
 void nyxfetch(void);
 void execute_command(const char* cmd_line);
+void command_complete(const char* partial, char* out, int out_size, int* match_count);
+void command_list_matches(const char* partial, char* out, int out_size);
 
 void init_gdt(void);
 void gdt_set_gate(int32_t num, uint32_t base, uint32_t limit, uint8_t access, uint8_t gran);
