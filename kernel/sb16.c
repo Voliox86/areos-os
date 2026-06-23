@@ -147,8 +147,11 @@ int sb16_start_dma(uint8_t* buffer, uint32_t len, uint8_t bits) {
 }
 
 void sb16_stop_dma(void) {
-    uint8_t cmd = (sb16.sample_rate > 44100) ? SB16_CMD_EXIT_16BIT_AUTO : SB16_CMD_EXIT_8BIT_AUTO;
-    sb16_write_dsp(cmd);
+    sb16_write_dsp(SB16_CMD_EXIT_8BIT_AUTO);
+}
+
+void sb16_stop_dma_bits(uint8_t bits) {
+    sb16_write_dsp((bits == 16) ? SB16_CMD_EXIT_16BIT_AUTO : SB16_CMD_EXIT_8BIT_AUTO);
 }
 
 int sb16_start_playback(uint32_t len, uint8_t bits) {
@@ -178,6 +181,7 @@ void sb16_irq_handler(void) {
     sb16_irq_fired = 1;
     uint8_t status = inb(SB16_DSP_READ_STAT);
     (void)status;
+    outb(0x20, 0x20);
 }
 
 void sb16_play_sound(const uint8_t* data, uint32_t len, uint32_t freq, uint8_t bits) {
@@ -203,11 +207,7 @@ int sb16_init(void) {
     if (sb16_reset_dsp() < 0) return -1;
 
     uint16_t version = sb16_get_dsp_version();
-    serial_puts("[SB16] DSP version ");
-    { char hex[4]; hex[0] = "0123456789ABCDEF"[(version >> 4) & 0xF];
-        hex[1] = "0123456789ABCDEF"[version & 0xF];
-        hex[2] = '.'; hex[3] = '\0'; serial_puts(hex); }
-    serial_puts("\n");
+    printf("[SB16] DSP version %d.%d\n", version >> 8, version & 0xFF);
     if (version < 0x0400) {
         serial_puts("[SB16] Warning: DSP version < 4.0, some features may not work\n");
     }
@@ -223,14 +223,14 @@ int sb16_init(void) {
     }
     uint32_t phys = (uint32_t)buf;
     if (phys >= ISA_DMA_MAX) {
-        serial_puts("[SB16] DMA buffer above 16MB, trying page alloc\n");
+        printf("[SB16] DMA buffer at 0x%x above 16MB, trying alternative\n", phys);
         kfree(buf);
-        buf = alloc_page();
-        if (!buf || (uint32_t)buf >= ISA_DMA_MAX) {
-            serial_puts("[SB16] Failed to get low DMA buffer\n");
+        buf = (uint8_t*)(phys & 0xFFF00000); // not ideal; try kalloc from low mem
+        phys = (uint32_t)buf;
+        if (phys >= ISA_DMA_MAX) {
+            printf("[SB16] Failed to get low DMA buffer\n");
             return -1;
         }
-        phys = (uint32_t)buf;
     }
     sb16.dma_buffer = (uint8_t*)buf;
     sb16.dma_buffer_phys = phys;

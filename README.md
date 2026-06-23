@@ -11,7 +11,7 @@
   </a>
   <img src="https://img.shields.io/badge/kernel-80%20KB-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/arch-i686-00ff9d?style=flat" />
-  <img src="https://img.shields.io/badge/status-v2.1.1-00ff9d?style=flat" />
+  <img src="https://img.shields.io/badge/status-v2.3.0-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/TCP-yes-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/GUI-window%20compositor-00ff9d?style=flat" />
   <a href="https://github.com/kazah-png/nyx-os/issues/1">
@@ -254,14 +254,27 @@ Built-in command interpreter with **40+ commands**:
 - **TCP** — Full connection state machine (CLOSED, SYN_SENT, ESTABLISHED, FIN_WAIT, CLOSE_WAIT, TIME_WAIT), 8 concurrent connections, HTTP GET support
 - **Interface** — `ifconfig` for status, static IP via `setip` or DHCP-assigned
 
-### GUI subsystem (new in v2.1.1)
+### GUI subsystem (v2.2.0+)
 - **Bochs VBE framebuffer** — Up to 1024x768x32, LFB at 0xE0000000
+- **Auto-boot desktop** — NyxOS Desktop launches automatically at startup
 - **Framebuffer abstraction** — `put_pixel`, `fill_rect`, `blit`, `fb_rgb`
 - **PS/2 mouse** — IRQ12-driven, 3-byte packet decode, absolute cursor positioning
 - **VGA 8x16 bitmap font** — Full 256-glyph set from Linux kernel font data
-- **Window compositor** — 16 windows max, z-ordering, title bars, close buttons, drag-to-move
+- **Window compositor** — 32 windows, z-ordering, title bars (min/max/close), drag-to-move, resize, 4 workspaces
+- **Taskbar** — Running app buttons, Start menu (12 items), clock display
+- **Desktop icons** — Files, Terminal, DOOM, Settings, About, Paint
+- **Terminal emulator window** — 2000-line scrollback, Tab completion, full command execution
+- **File Manager window** — VFS directory browsing, click navigation, file preview
 - **GUI paint demo** — 6-color mouse-driven drawing with Bresenham lines
 - **PC speaker** — PIT channel 2 tone generation, musical note definitions
+
+### EXT2 filesystem (v2.3.0)
+- **VFS mount layer** — `vfs_mount()` with filesystem driver dispatch
+- **Auto-mount** — EXT2 partitions auto-detected and mounted at `/mnt` on boot
+- **Standard commands** — `ls /mnt`, `cd /mnt`, `cat /mnt/...` all work transparently
+- **Block group support** — Multiple block groups, indirect/double-indirect blocks
+- **Block sizes** — Supports 1024, 2048, and 4096 byte blocks
+- **Mount command** — Manual mount via `mount [drive] [part_lba]`
 
 ---
 
@@ -273,39 +286,43 @@ nyx-os/
 │   ├── boot.asm          # Multiboot header, entry point
 │   ├── kernel.c          # Main kernel, shell, 40+ command handlers
 │   ├── kernel.h          # Core header (types, structs, inline funcs)
-│   ├── gdt.c / gdt_flush.asm
-│   ├── idt.c / idt_load.asm
-│   ├── isr.c / isr_stubs.asm
-│   ├── irq.c
+│   ├── gdt.c / gdt_flush.asm / idt.c / idt_load.asm
+│   ├── isr.c / isr_stubs.asm / irq.c
 │   ├── memory.c          # Physical memory manager (bitmap allocator)
 │   ├── heap.c            # 16 MB kernel heap allocator
 │   ├── paging.c          # Page tables, virtual memory
 │   ├── process.c         # Process management + background tasks
 │   ├── switch.asm        # Context switch assembly
 │   ├── syscall.c         # System calls
-│   ├── vfs.c             # Ramdisk VFS + pipe support
-│   ├── ext2.c            # EXT2 filesystem stub
+│   ├── vfs.c             # Ramdisk VFS + mount table + pipe
+│   ├── ext2.c / ext2.h   # EXT2 filesystem driver (read-only)
+│   ├── ata.c / ata.h     # ATA/IDE PIO disk driver
 │   ├── dhcp.c            # DHCP client
 │   ├── net.c / tcp.c / tcp.h / udp.c / ip.c / ethernet.c
 │   ├── arp.c / icmp.c / rtl8139.c
 │   ├── timer.c           # PIT timer (1000 Hz, interrupt-driven)
 │   ├── keyboard.c        # PS/2 driver (US/ES layouts, AltGr)
-│   ├── screen.c          # VGA text mode (80x25)
+│   ├── screen.c          # VGA text mode (80x25) + putchar hook
 │   ├── serial.c          # COM1 debug stub
 │   ├── vbe.c             # Bochs VBE framebuffer driver
 │   ├── fb.c              # Framebuffer abstraction
 │   ├── mouse.c           # PS/2 mouse driver (IRQ12)
 │   ├── gui.c             # GUI paint demo with mouse
 │   ├── font.c / font.h   # VGA 8x16 bitmap font (256 glyphs)
-│   ├── compositor.c / compositor.h  # Window compositor
-│   ├── speaker.c / speaker.h        # PC speaker driver
+│   ├── compositor.c / compositor.h  # Window compositor (32 windows)
+│   ├── terminal_win.c / terminal_win.h  # Terminal emulator window
+│   ├── fileman_win.c / fileman_win.h    # File Manager window
+│   ├── speaker.c / speaker.h    # PC speaker driver
+│   ├── sb16.c / sb16.h          # Sound Blaster 16 driver (DMA/IRQ)
 │   ├── vga_graphics.c    # VGA mode 13h (DOOM)
-│   ├── doom_nyxos.c      # DOOM generic NyxOS port
+│   ├── doom_nyxos.c / doom_nyxos_sound.c  # DOOM generic port
 │   └── doom_src/         # DOOM engine source
 ├── tools/
 │   ├── build.sh          # ISO builder (grub-mkrescue)
-│   ├── qemu_launch.sh    # QEMU launcher
-│   └── qemu_launch.ps1   # Windows QEMU launcher
+│   └── qemu_launch.ps1   # Windows QEMU launcher (delegates to run.ps1)
+├── build.ps1             # Windows build script
+├── run.ps1               # Windows QEMU launcher (gui/serial/net/debug)
+├── AGENTS.md             # Agent context for AI-assisted development
 ├── Makefile              # Top-level build
 └── README.md
 ```
@@ -317,7 +334,7 @@ nyx-os/
 ### Prerequisites
 
 ```
-i686-elf-gcc / i686-elf-ld (cross-compiler)
+i686-elf-gcc / i686-elf-ld (cross-compiler, provided in cross/)
 nasm  (>= 2.14)
 GNU make
 QEMU  (for emulation)
@@ -325,25 +342,47 @@ QEMU  (for emulation)
 
 ### Build
 
+**Linux/WSL:**
 ```bash
 git clone https://github.com/kazah-png/nyx-os.git
 cd nyx-os
-
-# Build the kernel
 make -C kernel
 ```
 
+**Windows (PowerShell):**
+```powershell
+.\build.ps1
+```
+*(Requires WSL with cross-compiler at `cross/bin/`)*
+
 ### Run in QEMU
 
+**Quick serial test:**
 ```bash
-# Quick test with serial output
 qemu-system-i386 -kernel kernel/nyx-kernel.bin -m 256M -no-reboot -serial stdio
+```
 
-# Interactive mode with keyboard
-qemu-system-i386 -kernel kernel/nyx-kernel.bin -m 256M -no-reboot -nographic
+**With GUI (desktop):**
+```bash
+qemu-system-i386 -kernel kernel/nyx-kernel.bin -m 256M -no-reboot
+```
 
-# With networking (QEMU user-mode)
+**With networking:**
+```bash
 qemu-system-i386 -kernel kernel/nyx-kernel.bin -m 256M -nic user,model=rtl8139
+```
+
+**With sound + disk + network:**
+```bash
+qemu-system-i386 -kernel kernel/nyx-kernel.bin -m 256M -hda ext2-test.img -nic user,model=rtl8139 -soundhw sb16
+```
+
+**Windows (PowerShell):**
+```powershell
+.\run.ps1                  # GUI mode (default)
+.\run.ps1 -Mode serial     # Serial debug output
+.\run.ps1 -Mode net        # With RTL8139 networking
+.\run.ps1 -Mode net -Sound # Networking + SB16 sound
 ```
 
 ---
@@ -353,25 +392,25 @@ qemu-system-i386 -kernel kernel/nyx-kernel.bin -m 256M -nic user,model=rtl8139
 See the full **[NyxOS Status Report](https://github.com/kazah-png/nyx-os/issues/1)** for a detailed feature checklist.
 
 ### What works
-- ✅ Full boot sequence to shell
-- ✅ 40+ shell commands
-- ✅ Ramdisk VFS (files, directories, pipes)
+- ✅ Full boot sequence to GUI desktop (or text shell fallback)
+- ✅ 40+ shell commands with Tab completion, env vars, pipes, history
+- ✅ Ramdisk VFS + EXT2 read support (auto-mount at /mnt)
 - ✅ Real networking (RTL8139 + ARP/IP/UDP/ICMP/DHCP/TCP)
-- ✅ Tab completion, env vars, command history, pipe support
+- ✅ Window compositor (32 windows, workspaces, taskbar, Start menu)
+- ✅ Terminal emulator window with scrollback and command execution
+- ✅ File Manager window with VFS directory browsing
 - ✅ Interrupt-driven timer, keyboard, mouse
+- ✅ Sound Blaster 16 DSP detection, DMA programming, mixer
 - ✅ PC speaker tones and melodies
 - ✅ DOOM game (VGA mode 13h, doomgeneric port)
-- ✅ VBE framebuffer (up to 1024x768x32)
-- ✅ Window compositor with z-order, drag, close
+- ✅ VBE framebuffer (1024x768x32)
 - ✅ Bitmap font rendering
-- ✅ GUI paint demo with mouse
 
 ### What's being built
-- 🔄 Sound Blaster 16 audio driver (DMA/IRQ)
-- 🔄 EXT2 filesystem read support
+- 🔄 Sound Blaster 16 IRQ-driven audio playback (DMA + interrupt)
 - 🔄 ELF loader + initramfs for userspace binaries
-- 🔄 Compositor polish (resize, minimize, keyboard routing)
-- 🔄 ATA/IDE disk driver
+- 🔄 ATA/IDE disk driver (write support)
+- 🔄 Real-time clock (RTC) driver
 
 ---
 

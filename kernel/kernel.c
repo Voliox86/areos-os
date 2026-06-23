@@ -1134,15 +1134,19 @@ void kernel_main(uint32_t magic, void* mboot_ptr) {
     printf("[INIT] Sound Blaster 16...\n");
     if (sb16_init() == 0) {
         printf("[INIT] SB16 initialized at 0x%x, IRQ %d\n", SB16_BASE_PORT, SB16_IRQ);
+        printf("[INIT] Enabling SB16 speaker...\n");
+        sb16_write_dsp(SB16_CMD_ENABLE_SPEAKER);
     } else {
         printf("[INIT] SB16 not detected (QEMU -soundhw sb16 required)\n");
     }
     printf("[INIT] Registering IRQ handlers...\n");
     irq_install_handler(1, keyboard_irq_handler);
+    irq_install_handler(5, sb16_irq_handler);
     irq_install_handler(12, mouse_irq_handler);
-    printf("[INIT] Unmasking IRQ0 (timer), IRQ1 (kbd), IRQ12 (mouse)...\n");
+    printf("[INIT] Unmasking IRQ0 (timer), IRQ1 (kbd), IRQ5 (SB16), IRQ12 (mouse)...\n");
     irq_unmask(0);
     irq_unmask(1);
+    irq_unmask(5);
     irq_unmask(12);
     printf("[INIT] Enabling interrupts (sti)...\n");
     enable_interrupts();

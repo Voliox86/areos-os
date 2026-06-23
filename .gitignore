@@ -1,63 +1,62 @@
-# Object files
+# === Build artifacts ===
 *.o
 *.ko
 *.obj
 *.elf
-
-# Build artifacts
 *.bin
 *.iso
 *.cpio.gz
 NyxOS.iso
 
-# Cross-compiler
+# === Cross-compiler ===
 cross/
 i686-elf-tools-linux.zip
 
-# Toolchain source directories
+# === Toolchain source ===
 binutils-2.41/
 build-binutils/
 gcc-13.2.0/
-
-# Source tarballs
 *.tar.gz
+*.zip
 
-# QEMU logs
+# === QEMU / test logs ===
+*.log
 qemu.log
 qemu_trace.log
 qemu_int.log
 iso_trace.log
+nyxos-test*.log
+wget-log*
 
-# IDE
+# === IDE ===
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# Initramfs (has symlinks that break on Windows)
+# === Initramfs ===
 initramfs/
 
-# DOOM is a submodule
+# === DOOM submodule ===
 DOOM/
 
-# OS files
+# === OS files ===
 Thumbs.db
 .DS_Store
 
-# WAD file (large binary, not tracked)
+# === WAD file ===
 iso/boot/doom1.wad
 kernel/doom1.wad
 
-# EXT2 test disk image
+# === EXT2 disk image ===
 ext2-test.img
 
-# Font generator script
+# === Font generator ===
 kernel/genfont.py
 
-# Test logs
-nyxos-test*.log
+# === Batch files ===
+*.bat
 
-# wget logs
-wget-log*
-wget-log*.1
+# === Issue/PR templates ===
+issue_body.md
