@@ -666,12 +666,13 @@ static void cmd_desktop(int argc, char** argv) {
         printf("No VBE mode set. Run 'mode' first.\n");
         return;
     }
+    if (compositor_is_running()) {
+        printf("Compositor is already running.\n");
+        return;
+    }
     printf("Launching window compositor...\n");
     printf("Esc to exit\n");
     compositor_init();
-    window_create(40, 40, 300, 200, "Window 1", NULL);
-    window_create(80, 80, 300, 200, "Window 2", NULL);
-    window_create(120, 120, 300, 200, "Window 3", NULL);
     compositor_run();
 }
 
@@ -1103,6 +1104,15 @@ void kernel_main(uint32_t magic, void* mboot_ptr) {
     printf("[INIT] Paging...\n"); init_paging();
     printf("[INIT] Kernel Heap...\n"); init_heap();
     printf("[INIT] VBE (Bochs)...\n"); vbe_init();
+    printf("[INIT] VBE mode 1024x768x32...\n");
+    if (vbe_set_mode(1024, 768, 32) == 0) {
+        fb_init(vbe_get_width(), vbe_get_height(), vbe_get_bpp(), vbe_get_lfb());
+        fb_clear(fb_rgb(30,35,50));
+        printf("[INIT] Framebuffer: %dx%dx%d at 0x%x\n",
+               vbe_get_width(), vbe_get_height(), vbe_get_bpp(), vbe_get_lfb());
+    } else {
+        printf("[INIT] VBE mode set failed, staying in text mode\n");
+    }
     printf("[INIT] Timer (1000 Hz, interrupt-driven)...\n"); init_timer(1000);
     printf("[INIT] Keyboard (interrupt-driven)...\n"); 
     init_keyboard();
@@ -1137,7 +1147,17 @@ void kernel_main(uint32_t magic, void* mboot_ptr) {
     kernel_initialized = true;
     printf("\n[READY] NyxOS initialized successfully.\n\n");
     outb(0x3F8, 'O'); outb(0x3F8, 'K'); outb(0x3F8, '\n');
-    launch_shell();
+
+    if (vbe_get_lfb()) {
+        printf("[DESKTOP] Launching NyxOS Desktop...\n");
+        compositor_init();
+        compositor_run();
+        printf("[DESKTOP] Compositor exited, rebooting...\n");
+        outb(0x64, 0xFE);
+    } else {
+        printf("[SHELL] No VBE framebuffer, launching text shell.\n");
+        launch_shell();
+    }
     while(1) { __asm__ volatile("hlt"); }
 }
 

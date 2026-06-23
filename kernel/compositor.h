@@ -74,5 +74,6 @@ int  window_get_count(void);
 int  window_get_ids(int* ids, int max);
 void compositor_run(void);
 void compositor_quit(void);
+int compositor_is_running(void);
 
 #endif

@@ -11,6 +11,7 @@ static int focused_id = 0;
 static int drag_id = 0;
 static int resize_id = 0;
 static int quit = 0;
+static int compositor_active = 0;
 static int current_workspace = 0;
 
 static uint32_t taskbar_bg, taskbar_fg, taskbar_hl;
@@ -674,6 +675,7 @@ static void draw_welcome_windows(void) {
 }
 
 void compositor_run(void) {
+    compositor_active = 1;
     uint32_t fw = fb_get_width(), fh = fb_get_height();
     quit = 0;
     mouse_x = fw / 2; mouse_y = fh / 2;
@@ -688,6 +690,9 @@ void compositor_run(void) {
     uint32_t clock_tick = 0;
 
     while (!quit) {
+        kernel_poll_net();
+        run_background_tasks();
+
         char k = getchar_poll();
         if (k == 0x1B) { quit = 1; break; }
 
@@ -871,6 +876,11 @@ done_click:
     window_count = 0;
     init_screen();
     clear_screen();
+    compositor_active = 0;
+}
+
+int compositor_is_running(void) {
+    return compositor_active;
 }
 
 void compositor_quit(void) {
