@@ -478,8 +478,12 @@ void init_ext2(void);
 int  ata_init(void);
 int  ata_read_sectors(uint8_t drive, uint32_t lba, uint8_t count, void* buf);
 int  ext2_mount(uint8_t drive, uint32_t part_lba);
-int  ext2_ls(const char* path);
-int  ext2_cat(const char* path);
+
+// EXT2 VFS driver (struct details in ext2.h)
+uint32_t ext2_resolve(const char* path);
+uint32_t ext2_get_size(const char* path);
+int  ext2_read_file(const char* path, void* buf, uint32_t maxlen);
+int  ext2_readdir(const char* path, dirent_t* entries, uint32_t max_entries);
 
 // Network driver and polling
 void kernel_poll_net(void);
@@ -500,6 +504,24 @@ void init_background_tasks(void);
 void run_background_tasks(void);
 void irq_scheduler_tick(void);
 void ensure_idle_process(void);
+
+// VFS mount layer
+#define FS_TYPE_EXT2  1
+#define MAX_MOUNT_POINTS 8
+
+typedef struct {
+    int type;                    // FS_TYPE_EXT2, etc
+    char mount_point[MAX_PATH];
+    void* fs_data;              // per-filesystem data
+    // Driver operations
+    uint32_t (*resolve)(const char* path);
+    uint32_t (*get_size)(const char* path);
+    int (*read_file)(const char* path, void* buf, uint32_t maxlen);
+    int (*readdir)(const char* path, dirent_t* entries, uint32_t max_entries);
+} mount_entry_t;
+
+int vfs_mount(const char* mount_point, int fs_type, void* fs_data);
+mount_entry_t* vfs_find_mount(const char* path);
 
 // New VFS helpers
 const char* vfs_getcwd(void);

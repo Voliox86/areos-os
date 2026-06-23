@@ -1,9 +1,14 @@
 #include "kernel.h"
+#include "ext2.h"
 
 #define MAX_INODES    128
 #define MAX_NAME      64
 #define MAX_CHILDREN  64
 #define BLOCK_SIZE    512
+
+// Mount table
+static mount_entry_t mount_table[MAX_MOUNT_POINTS];
+static int mount_count = 0;
 
 typedef struct vfs_node {
     char name[MAX_NAME];
@@ -280,6 +285,41 @@ dirent_t* vfs_readdir(int fd) {
     return NULL;
 }
 
+// ==================== Mount table ====================
+
+int vfs_mount(const char* mount_point, int fs_type, void* fs_data) {
+    if (mount_count >= MAX_MOUNT_POINTS) return -1;
+    mount_entry_t* me = &mount_table[mount_count];
+    strncpy(me->mount_point, mount_point, MAX_PATH - 1);
+    me->type = fs_type;
+    me->resolve = NULL;
+    me->get_size = NULL;
+    me->read_file = NULL;
+    me->readdir = NULL;
+
+    if (fs_type == FS_TYPE_EXT2) {
+        me->resolve  = ext2_resolve;
+        me->get_size = ext2_get_size;
+        me->read_file = ext2_read_file;
+        me->readdir   = ext2_readdir;
+    }
+
+    mount_count++;
+    return 0;
+}
+
+mount_entry_t* vfs_find_mount(const char* path) {
+    if (!path) return NULL;
+    for (int i = 0; i < mount_count; i++) {
+        int len = strlen(mount_table[i].mount_point);
+        if (strncmp(path, mount_table[i].mount_point, len) == 0) {
+            if (path[len] == '\0' || path[len] == '/')
+                return &mount_table[i];
+        }
+    }
+    return NULL;
+}
+
 // ==================== New helper functions ====================
 
 const char* vfs_getcwd(void) {
@@ -287,6 +327,26 @@ const char* vfs_getcwd(void) {
 }
 
 int vfs_chdir(const char* path) {
+    mount_entry_t* me = vfs_find_mount(path);
+    if (me) {
+        // Find or create a stub directory for the mount point
+        vfs_node_t* dir = resolve_path(path);
+        if (!dir) {
+            // Auto-create the mount point directory in ramdisk VFS
+            char child_name[MAX_NAME];
+            vfs_node_t* parent = resolve_parent(path, child_name);
+            if (!parent || parent->type != 1) return -1;
+            dir = alloc_node();
+            if (!dir) return -1;
+            strncpy(dir->name, child_name, MAX_NAME - 1);
+            dir->type = 1;
+            dir->parent = parent;
+            parent->children[parent->child_count++] = dir;
+        }
+        current_dir = dir;
+        return 0;
+    }
+
     vfs_node_t* dir = resolve_path(path);
     if (!dir || dir->type != 1) return -1;
     current_dir = dir;
@@ -294,6 +354,27 @@ int vfs_chdir(const char* path) {
 }
 
 void vfs_list_dir(const char* path) {
+    mount_entry_t* me = vfs_find_mount(path);
+    if (me && me->readdir) {
+        dirent_t entries[64];
+        int n = me->readdir(path, entries, 64);
+        if (n < 0) {
+            printf("ls: %s: error reading directory\n", path ? path : "");
+            return;
+        }
+        for (int i = 0; i < n; i++) {
+            if (entries[i].type == 1) {
+                set_terminal_color(vga_entry_color(VGA_LIGHT_BLUE, VGA_BLACK));
+                printf("%s/\n", entries[i].name);
+            } else {
+                set_terminal_color(vga_entry_color(VGA_LIGHT_GREY, VGA_BLACK));
+                printf("%s\n", entries[i].name);
+            }
+        }
+        set_terminal_color(vga_entry_color(VGA_LIGHT_GREY, VGA_BLACK));
+        return;
+    }
+
     vfs_node_t* dir = path ? resolve_path(path) : current_dir;
     if (!dir || dir->type != 1) {
         printf("ls: %s: No such directory\n", path ? path : "");
@@ -313,6 +394,19 @@ void vfs_list_dir(const char* path) {
 }
 
 void vfs_cat_file(const char* path) {
+    mount_entry_t* me = vfs_find_mount(path);
+    if (me && me->read_file) {
+        char buf[512];
+        int n = me->read_file(path, buf, 511);
+        if (n < 0) {
+            printf("cat: %s: error reading file\n", path);
+            return;
+        }
+        buf[n] = '\0';
+        printf("%s", buf);
+        return;
+    }
+
     vfs_node_t* ino = resolve_path(path);
     if (!ino || ino->type != 0) {
         printf("cat: %s: No such file\n", path);

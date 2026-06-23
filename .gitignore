@@ -49,6 +49,9 @@ Thumbs.db
 iso/boot/doom1.wad
 kernel/doom1.wad
 
+# EXT2 test disk image
+ext2-test.img
+
 # Font generator script
 kernel/genfont.py
 
