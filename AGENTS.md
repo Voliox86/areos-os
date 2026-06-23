@@ -27,6 +27,7 @@ Evolve NyxOS into a functional 32-bit x86 kernel with filesystem, networking, sh
 | v2.2.0 | GUI auto-boot: NyxOS Desktop launches at startup instead of text shell |
 | v2.3.0 | Real EXT2 read support: VFS mount layer, auto-mount at /mnt, ls/cd/cat on ext2 |
 | v2.4.0 | Sound Blaster 16 DMA/IRQ audio driver (sb16play command, DMA buffer fix, auto-init) |
+| v3.0.0 | ELF userspace loader, initramfs, per-process paging, ring 3 execution, int 0x80 syscalls |
 
 ## Architecture
 ### Boot flow
@@ -37,8 +38,9 @@ Evolve NyxOS into a functional 32-bit x86 kernel with filesystem, networking, sh
 5. `init_process()` → `ensure_idle_process()` → `init_syscalls()` → `init_vfs()` → `init_load_modules()`
 6. `init_ext2()` → `init_net()` → `tcp_init()` → `init_background_tasks()`
 7. `mouse_init()` → `speaker_init()` → `sb16_init()` → register IRQ handlers → `sti`
-8. Auto-detect EXT2 on ATA disk → mount at `/mnt`
-9. `compositor_init()` + `compositor_run()` (GUI desktop) OR `launch_shell()` (fallback)
+8. `initramfs_load()` → `initramfs_boot()` (create initramfs files in VFS)
+9. Auto-detect EXT2 on ATA disk → mount at `/mnt`
+10. `compositor_init()` + `compositor_run()` (GUI desktop) OR `launch_shell()` (fallback)
 
 ### Critical constraints
 - Paging identity-maps 64 MB (16 page tables). Any static data, BSS, or heap beyond 64 MB causes triple-fault.
@@ -46,7 +48,17 @@ Evolve NyxOS into a functional 32-bit x86 kernel with filesystem, networking, sh
 - `_kernel_end` symbol in `linker.ld` marks kernel BSS boundary for memory manager.
 - Serial (`init_serial()`) is a stub — only used via direct `outb(0x3F8, ...)`. VGA text mode (0xB8000) is primary console.
 - Interrupts are ENABLED (`sti`). Timer (IRQ0), keyboard (IRQ1), mouse (IRQ12), and SB16 (IRQ5) are interrupt-driven with proper PIC unmasking and EOI.
+- Paging identity-maps 64 MB (16 page tables). Any static data, BSS, or heap beyond 64 MB causes triple-fault.
+- Heap is 16 MB (bumped from 1 MB for DOOM + framebuffer). Physical allocator bitmap supports up to 512 MB RAM.
+- `_kernel_end` symbol in `linker.ld` marks kernel BSS boundary for memory manager.
+- Serial (`init_serial()`) is a stub — only used via direct `outb(0x3F8, ...)`. VGA text mode (0xB8000) is primary console.
+- Interrupts are ENABLED (`sti`). Timer (IRQ0), keyboard (IRQ1), mouse (IRQ12), and SB16 (IRQ5) are interrupt-driven with proper PIC unmasking and EOI.
 - Cooperative multitasking via `switch_context`/`create_task_stack` (assembly) + background task callbacks + IRQ scheduler tick.
+- Per-process paging: `alloc_page_directory` clones kernel identity-mapped page tables with supervisor-only PTEs; user pages mapped via `map_page_dir` with PTE `U/S=1` and PDE `U/S=1` for ring-3 access.
+- ELF loader maps code at ELH entry point (e.g. 0x10000), user stack at 0xD0000000 (one page, 4096 bytes).
+- Syscalls via `int 0x80`: eax=number, ebx/ecx/edx/esi/edi=args; handlers in `syscall_handler_c` dispatch table (exit=0, write=1, print=2).
+- TSS I/O map base set to full TSS size → all I/O ports denied from ring 3.
+- build.ps1: WSL cross-compilation; QEMU 11.x with `-audiodev dsound,id=audio0 -device sb16,audiodev=audio0`
 
 ## Kernel structure
 ```
@@ -68,6 +80,9 @@ kernel/
   screen.c        — VGA text mode (80x25) + putchar hook for terminal capture
   serial.c        — Serial stub
   syscall.c       — Syscall handler table
+  elf.c/h         — ELF32 loader (validate, parse PT_LOAD, map pages, create user process)
+  initramfs.c/h   — Initramfs cpio parser (new-style '070701'), creates files in VFS
+  initramfs_data.h — Generated C byte array with embedded cpio archive
   net.c           — Network stack init
   ethernet.c      — Ethernet frame handler
   arp.c           — ARP cache + requests
@@ -111,6 +126,7 @@ kernel/
 | tcptest       | TCP HTTP GET test |
 | mount         | Mount EXT2: mount [drive] [part_lba] |
 | date/uname/version | System info |
+| exec          | Execute ELF binary: exec <file> |
 | layout        | Switch keyboard layout (us/es) |
 | hexdump       | Dump memory |
 | crash         | Trigger kernel panic |
@@ -151,7 +167,6 @@ kernel/
 - File Manager window (VFS browsing, directory navigation, file preview)
 
 ## Next features to add
-- ELF loader + initramfs for userspace binaries
 - Compositor polish (resize, minimize, keyboard input routing)
 - ATA/IDE disk driver (write support)
 - Real-time clock (RTC) driver
