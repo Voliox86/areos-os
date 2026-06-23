@@ -126,6 +126,7 @@ static void cmd_fonttest(int argc, char** argv);
 static void cmd_desktop(int argc, char** argv);
 static void cmd_beep(int argc, char** argv);
 static void cmd_play(int argc, char** argv);
+static void cmd_sb16play(int argc, char** argv);
 static void cmd_tcptest(int argc, char** argv);
 static void cmd_setip(int argc, char** argv);
 static void cmd_mount(int argc, char** argv);
@@ -180,6 +181,7 @@ static const command_t commands[] = {
     {"desktop",   cmd_desktop,   "Launch window compositor desktop", false},
     {"beep",      cmd_beep,      "Play a tone: beep [freq] [ms]", false},
     {"play",      cmd_play,      "Play a demo melody", false},
+    {"sb16play",  cmd_sb16play,  "Test SB16 playback: sb16play [freq] [ms]", false},
     {"tcptest",   cmd_tcptest,   "Test TCP: tcptest <ip> <port>", false},
     {"setip",     cmd_setip,     "Set static IP: setip <ip> <mask> <gw>", false},
     {"mount",     cmd_mount,     "Mount EXT2: mount [drive] [part_lba]", false},
@@ -701,6 +703,42 @@ static void cmd_play(int argc, char** argv) {
     for (int i = 0; i < (int)(sizeof(melody)/sizeof(melody[0])); i++)
         speaker_play_note(melody[i].freq, melody[i].dur);
     printf("Done.\n");
+}
+
+#include "sb16.h"
+static void cmd_sb16play(int argc, char** argv) {
+    (void)argc; (void)argv;
+    if (!sb16_is_initialized()) {
+        printf("SB16 not available. Run with QEMU -soundhw sb16\n");
+        return;
+    }
+    uint32_t freq = 440;
+    uint32_t dur_ms = 1000;
+    if (argc >= 2) freq = atoi(argv[1]);
+    if (argc >= 3) dur_ms = atoi(argv[2]);
+    if (freq < 20 || freq > 44100) { printf("Frequency out of range (20-44100)\n"); return; }
+    if (dur_ms < 50 || dur_ms > 10000) { printf("Duration out of range (50-10000)\n"); return; }
+
+    uint32_t sample_rate = 22050;
+    uint32_t samples = sample_rate * dur_ms / 1000;
+    if (samples > 65535) samples = 65535;
+
+    printf("SB16: generating %u Hz, %u ms (%u samples, 8-bit)\n", freq, dur_ms, samples);
+
+    uint8_t* buf = sb16_get_buffer();
+    if (!buf) { printf("SB16: no DMA buffer\n"); return; }
+
+    // Generate square wave (8-bit unsigned: 128 = zero)
+    for (uint32_t i = 0; i < samples; i++) {
+        uint32_t period = sample_rate / freq;
+        buf[i] = ((i % period) < (period / 2)) ? 200 : 80;
+    }
+
+    sb16_play_sound(buf, samples, sample_rate, 8);
+    sleep(dur_ms + 100);
+    sb16_stop_dma_bits(8);
+
+    printf("SB16 playback done.\n");
 }
 
 static uint32_t parse_ip(const char* s) {

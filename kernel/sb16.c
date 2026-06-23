@@ -184,11 +184,28 @@ void sb16_irq_handler(void) {
     outb(0x20, 0x20);
 }
 
+int sb16_is_initialized(void) {
+    return sb16.initialized;
+}
+
+uint8_t* sb16_get_buffer(void) {
+    return sb16.dma_buffer;
+}
+
+void sb16_wait_irq(void) {
+    sb16_irq_fired = 0;
+    int timeout = 30000;
+    while (!sb16_irq_fired && timeout--) {
+        for (volatile int i = 0; i < 100; i++);
+    }
+}
+
 void sb16_play_sound(const uint8_t* data, uint32_t len, uint32_t freq, uint8_t bits) {
     if (!sb16.initialized || !sb16.dma_buffer) return;
     if (len > sb16.dma_buffer_size) len = sb16.dma_buffer_size;
     sb16_set_sample_rate(freq);
-    memcpy(sb16.dma_buffer, data, len);
+    memset_asm(sb16.dma_buffer, (bits == 16) ? 0 : 128, len);
+    __builtin_memcpy(sb16.dma_buffer, data, len);
     sb16_start_dma(sb16.dma_buffer, len, bits);
     sb16_start_playback(len, bits);
 }
@@ -200,7 +217,7 @@ int sb16_init(void) {
     sb16.dma16 = SB16_DMA_CHANNEL_16BIT;
     sb16.initialized = 0;
     sb16.sample_rate = SB16_SAMPLE_RATE;
-    sb16.dma_buffer_size = 65536;
+    sb16.dma_buffer_size = 4096;
     sb16.dma_buffer = NULL;
     sb16.dma_buffer_phys = 0;
 
@@ -216,24 +233,16 @@ int sb16_init(void) {
     sb16_set_mixer(SB16_MIXER_MASTER_VOL, 0x30);
     sb16_set_mixer(SB16_MIXER_PCM_VOL, 0x30);
 
-    void* buf = kmalloc_aligned(sb16.dma_buffer_size, 4096);
-    if (!buf) {
-        serial_puts("[SB16] Failed to allocate DMA buffer\n");
+    // Allocate DMA buffer (must be below 16MB for ISA DMA, contiguous)
+    // Use a single physical page (identity-mapped within first 64MB)
+    void* buf = alloc_page();
+    if (!buf || (uint32_t)buf >= ISA_DMA_MAX) {
+        if (buf) free_page(buf);
+        printf("[SB16] Failed to allocate DMA buffer (got %p)\n", buf);
         return -1;
     }
-    uint32_t phys = (uint32_t)buf;
-    if (phys >= ISA_DMA_MAX) {
-        printf("[SB16] DMA buffer at 0x%x above 16MB, trying alternative\n", phys);
-        kfree(buf);
-        buf = (uint8_t*)(phys & 0xFFF00000); // not ideal; try kalloc from low mem
-        phys = (uint32_t)buf;
-        if (phys >= ISA_DMA_MAX) {
-            printf("[SB16] Failed to get low DMA buffer\n");
-            return -1;
-        }
-    }
     sb16.dma_buffer = (uint8_t*)buf;
-    sb16.dma_buffer_phys = phys;
+    sb16.dma_buffer_phys = (uint32_t)buf;
     memset_asm(sb16.dma_buffer, 0, sb16.dma_buffer_size);
     sb16.initialized = 1;
     serial_puts("[SB16] Initialized successfully\n");

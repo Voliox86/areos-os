@@ -33,7 +33,8 @@ switch ($Mode) {
 }
 
 if ($Sound -or $Mode -eq 'net') {
-    $argsList += "-soundhw", "sb16"
+    $argsList += "-audiodev", "dsound,id=audio0"
+    $argsList += "-device", "sb16,audiodev=audio0"
 }
 
 Write-Host "=== Launching NyxOS (mode: $Mode) ===" -ForegroundColor Cyan

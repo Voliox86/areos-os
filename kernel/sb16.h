@@ -59,7 +59,12 @@ int sb16_set_mixer(uint8_t reg, uint8_t value);
 uint8_t sb16_get_mixer(uint8_t reg);
 int sb16_start_dma(uint8_t* buffer, uint32_t len, uint8_t bits);
 void sb16_stop_dma(void);
+void sb16_stop_dma_bits(uint8_t bits);
+int sb16_start_playback(uint32_t len, uint8_t bits);
 void sb16_irq_handler(void);
 void sb16_play_sound(const uint8_t* data, uint32_t len, uint32_t freq, uint8_t bits);
+void sb16_wait_irq(void);
+int  sb16_is_initialized(void);
+uint8_t* sb16_get_buffer(void);
 
 #endif
