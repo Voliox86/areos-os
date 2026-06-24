@@ -66,6 +66,18 @@ typedef __builtin_va_list va_list;
 #define MAX_FILES        256
 #define MAX_MOUNTS       16
 #define SYS_TABLE_SIZE   256
+
+// Syscall numbers
+#define SYS_EXIT    0
+#define SYS_WRITE   1
+#define SYS_PRINT   2
+#define SYS_OPEN    3
+#define SYS_READ    4
+#define SYS_CLOSE   5
+#define SYS_GETPID  6
+#define SYS_SBRK    7
+#define SYS_FSIZE   8
+
 #define MAX_PATH         256
 #define MAX_FILENAME     128
 
@@ -103,6 +115,7 @@ typedef struct process {
     uint32_t cpu_time;
     uint32_t start_time;
     void* files[MAX_FILES];
+    uint32_t program_break;
     struct process* next;
     struct process* parent;
     struct process* children;

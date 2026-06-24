@@ -15,6 +15,7 @@ void init_process(void) {
         init->ppid = 0;
         init->state = 1;
         strncpy(init->comm, "init", 31);
+        init->page_directory = (void*)get_kernel_page_directory();
         process_table[process_count++] = init;
     }
 }

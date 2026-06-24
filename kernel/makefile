@@ -112,7 +112,7 @@ DOOM_OBJS = \
 
 OBJS = $(OBJS_KERNEL) $(DOOM_OBJS) doom1_wad.o
 
-all: nyx-kernel.bin
+all: $(USER_ELFS) nyx-kernel.bin
 
 nyx-kernel.bin: $(OBJS)
 	$(LD) $(LDFLAGS) -o $@ $^
@@ -142,14 +142,28 @@ doom1_wad.o: doom1.wad
 	$(TARGET)-objcopy -I binary -O elf32-i386 -B i386 \
 		--rename-section .data=.rodata,alloc,load,readonly,data,contents $< $@
 
-# Generate initramfs C header
+# User-space programs
+USER_DIR = ../user
+USER_ELFS = $(USER_DIR)/hello.elf $(USER_DIR)/init.elf
+
+$(USER_DIR)/hello.elf: $(USER_DIR)/hello.asm
+	$(AS) $(ASFLAGS) $< -o $@
+
+$(USER_DIR)/init.elf: $(USER_DIR)/crt0.o $(USER_DIR)/init.o
+	$(LD) -nostdlib -m elf_i386 -e _start -Ttext 0x10000 -o $@ $^
+
+$(USER_DIR)/crt0.o: $(USER_DIR)/crt0.asm
+	$(AS) $(ASFLAGS) $< -o $@
+
+$(USER_DIR)/init.o: $(USER_DIR)/init.c
+	$(CC) $(CFLAGS) -ffreestanding -nostdlib -I$(USER_DIR) -c $< -o $@
+
+# Generate initramfs C header (depends on user ELF files)
 MKINITRAMFS = ../tools/mkinitramfs.py
-initramfs_data.h: $(MKINITRAMFS)
+initramfs_data.h: $(MKINITRAMFS) $(USER_ELFS)
 	python3 $(MKINITRAMFS) $@ c
 
 initramfs.o: initramfs.c initramfs_data.h
 
-OBJS = $(OBJS_KERNEL) $(DOOM_OBJS) doom1_wad.o
-
 clean:
-	rm -f *.o *.bin doom_src/*.o initramfs_data.h
+	rm -f *.o *.bin doom_src/*.o initramfs_data.h $(USER_DIR)/*.o $(USER_DIR)/*.elf

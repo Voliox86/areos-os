@@ -77,8 +77,17 @@ int elf_load(const uint8_t* data, uint32_t size, process_t** out_proc) {
         }
     }
 
+    // Find highest address loaded to set program_break
+    uint32_t max_addr = 0;
+    for (uint32_t i = 0; i < hdr->e_phnum; i++) {
+        if (phdr[i].p_type != PT_LOAD) continue;
+        uint32_t end = phdr[i].p_vaddr + phdr[i].p_memsz;
+        if (end > max_addr) max_addr = end;
+    }
+
     process_t* proc = create_user_process("elf", (void*)entry, (void*)stack_top, pd);
     if (!proc) return -1;
+    proc->program_break = (max_addr + 0xFFF) & ~0xFFF; // page-align
 
     *out_proc = proc;
     return 0;
