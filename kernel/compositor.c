@@ -3,6 +3,7 @@
 #include "font.h"
 #include "terminal_win.h"
 #include "fileman_win.h"
+#include "rtc.h"
 
 static window_t* windows[MAX_WINDOWS];
 static int window_count = 0;
@@ -268,11 +269,10 @@ static void draw_taskbar(void) {
         bx += bw + 2;
     }
 
-    uint32_t now = get_ticks();
-    uint32_t min = (now / 60000) % 60;
-    uint32_t hour = (now / 3600000) % 24;
+    rtc_time_t rt;
+    rtc_read_time(&rt);
     char timebuf[16];
-    snprintf(timebuf, sizeof(timebuf), "%02u:%02u", hour, min);
+    snprintf(timebuf, sizeof(timebuf), "%02u:%02u", rt.hour, rt.minute);
     fb_fill_rect(fw - CLOCK_W - 4, tb_y + 4, CLOCK_W, TASKBAR_H - 8, fb_rgb(30,30,35));
     font_draw_string(fw - CLOCK_W - 2 + (CLOCK_W - strlen(timebuf) * FONT_WIDTH) / 2,
                      tb_y + (TASKBAR_H - FONT_HEIGHT) / 2, timebuf, fb_rgb(180,180,200), fb_rgb(30,30,35));

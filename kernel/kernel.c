@@ -1,8 +1,9 @@
 // ============================================================
-// kernel.c - Núcleo principal de NyxOS v2.1.1
+// kernel.c - Núcleo principal de NyxOS v3.0.0
 // ============================================================
 #include "kernel.h"
 #include "compositor.h"
+#include "rtc.h"
 #include "speaker.h"
 #include "tcp.h"
 #include "sb16.h"
@@ -30,46 +31,6 @@ uint32_t doom_wad_size = 0;
 // ============================================================
 // Utilidades para el comando date
 // ============================================================
-static const int month_days[] = {
-    0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334
-};
-
-static inline int is_leap_year(int year) {
-    return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
-}
-
-static void ticks_to_date(uint32_t seconds, int* year, int* month, int* day,
-                          int* hour, int* minute, int* second) {
-    const int epoch_year = 2024;
-    uint32_t remaining = seconds;
-    *year = epoch_year;
-    while (1) {
-        int days_in_year = is_leap_year(*year) ? 366 : 365;
-        if (remaining < (uint32_t)(days_in_year * 86400)) break;
-        remaining -= days_in_year * 86400;
-        (*year)++;
-    }
-    int leap = is_leap_year(*year);
-    for (*month = 0; *month < 12; (*month)++) {
-        int mdays = month_days[*month];
-        if (*month >= 2 && leap) mdays += 1;
-        if (remaining < (uint32_t)(mdays * 86400)) break;
-        remaining -= mdays * 86400;
-    }
-    *month += 1;
-    *day = remaining / 86400 + 1;
-    remaining %= 86400;
-    *hour = remaining / 3600;
-    remaining %= 3600;
-    *minute = remaining / 60;
-    *second = remaining % 60;
-}
-
-static void print_d2(int n) {
-    putchar('0' + (n / 10) % 10);
-    putchar('0' + n % 10);
-}
-
 // ============================================================
 // Tabla de comandos
 // ============================================================
@@ -998,22 +959,10 @@ static void cmd_hexdump(int argc, char** argv) {
 
 static void cmd_date(int argc, char** argv) {
     (void)argc; (void)argv;
-    uint32_t seconds = tick_count / 1000;
-    int year, month, day, hour, minute, second;
-    ticks_to_date(seconds, &year, &month, &day, &hour, &minute, &second);
-    printf("20");
-    print_d2(year % 100);
-    putchar('-');
-    print_d2(month);
-    putchar('-');
-    print_d2(day);
-    putchar(' ');
-    print_d2(hour);
-    putchar(':');
-    print_d2(minute);
-    putchar(':');
-    print_d2(second);
-    putchar('\n');
+    rtc_time_t t;
+    rtc_read_time(&t);
+    printf("%04u-%02u-%02u %02u:%02u:%02u\n",
+           t.year, t.month, t.day, t.hour, t.minute, t.second);
 }
 
 static void cmd_uname(int argc, char** argv) {
@@ -1236,6 +1185,7 @@ void kernel_main(uint32_t magic, void* mboot_ptr) {
     } else {
         printf("[INIT] SB16 not detected (QEMU -soundhw sb16 required)\n");
     }
+    printf("[INIT] RTC...\n"); rtc_init();
     printf("[INIT] Registering IRQ handlers...\n");
     irq_install_handler(1, keyboard_irq_handler);
     irq_install_handler(5, sb16_irq_handler);
