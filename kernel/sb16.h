@@ -15,15 +15,17 @@
 #define SB16_DSP_RESET_VAL  0x01
 #define SB16_DSP_ACK        0xAA
 
-#define SB16_CMD_ENABLE_SPEAKER  0xD1
-#define SB16_CMD_DISABLE_SPEAKER 0xD3
-#define SB16_CMD_SET_TIME_CONST  0x40
-#define SB16_CMD_SET_OUTPUT_RATE 0x41
-#define SB16_CMD_SET_INPUT_RATE  0x42
-#define SB16_CMD_8BIT_AUTO_INIT  0xB0
-#define SB16_CMD_16BIT_AUTO_INIT 0xB6
-#define SB16_CMD_EXIT_8BIT_AUTO  0xD9
-#define SB16_CMD_EXIT_16BIT_AUTO 0xD8
+#define SB16_CMD_ENABLE_SPEAKER   0xD1
+#define SB16_CMD_DISABLE_SPEAKER  0xD3
+#define SB16_CMD_SET_TIME_CONST   0x40
+#define SB16_CMD_SET_OUTPUT_RATE  0x41
+#define SB16_CMD_SET_INPUT_RATE   0x42
+#define SB16_CMD_8BIT_AUTO_INIT   0xC0
+#define SB16_CMD_8BIT_SINGLE      0xC6
+#define SB16_CMD_16BIT_AUTO_INIT  0xB6
+#define SB16_CMD_16BIT_SINGLE     0xB0
+#define SB16_CMD_EXIT_8BIT_AUTO   0xD9
+#define SB16_CMD_EXIT_16BIT_AUTO  0xD8
 
 #define SB16_MIXER_MASTER_VOL    0x22
 #define SB16_MIXER_PCM_VOL       0x04
@@ -64,7 +66,11 @@ int sb16_start_playback(uint32_t len, uint8_t bits);
 void sb16_irq_handler(void);
 void sb16_play_sound(const uint8_t* data, uint32_t len, uint32_t freq, uint8_t bits);
 void sb16_wait_irq(void);
-int  sb16_is_initialized(void);
+int sb16_is_initialized(void);
+int sb16_is_playing(void);
+int sb16_play_async(const uint8_t* data, uint32_t len, uint32_t freq, uint8_t bits);
+void sb16_dma_stop(void);
+uint32_t sb16_get_buffer_size(void);
 uint8_t* sb16_get_buffer(void);
 
 #endif

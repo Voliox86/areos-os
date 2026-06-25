@@ -173,9 +173,9 @@ kernel/
 - SYS_EXIT fix: for(;;) hlt instead of sti;hlt to prevent GPF from returning to dead user process
 - hello.elf build fix: linked with ld -e _start -Ttext 0x10000 for proper ET_EXEC with valid program headers
 - init.elf rewritten to use full libc (printf, malloc, snprintf, free) — boots, prints system info, exits cleanly
+- DOOM sound: wired DMX sound lump loading → SB16 playback (single-cycle DMA, 64KB buffer, auto-stop on IRQ)
 
 ## Next features to add
-- Wire DOOM sound module to SB16 output (DOOM has no audio yet)
 - Scrollbar in File Manager
 - Drag-reorder desktop icons
 - Right-click context menu in File Manager (rename, copy, paste)

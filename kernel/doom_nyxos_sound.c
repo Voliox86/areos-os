@@ -1,6 +1,3 @@
-// ============================================================
-// doom_nyxos_sound.c - DOOM sound module para NyxOS (SB16)
-// ============================================================
 #define CMAP256 1
 #define DOOMGENERIC_RESX 320
 #define DOOMGENERIC_RESY 200
@@ -21,7 +18,6 @@
 
 #define NUM_CHANNELS 8
 
-// DMX sound lump format
 typedef struct __attribute__((packed)) {
     uint8_t magic[2];
     uint16_t samplerate;
@@ -42,15 +38,14 @@ typedef struct {
 static sound_channel_t channels[NUM_CHANNELS];
 static boolean sound_initialized = false;
 static boolean use_sfx_prefix;
+static int active_dma_channel = -1;
 
-// Stubs needed by i_sound.c when FEATURE_SOUND is enabled
 int use_libsamplerate = 0;
 float libsamplerate_scale = 1.0f;
 
 static void Nyx_StopSound(int channel);
 static boolean Nyx_SoundIsPlaying(int channel);
 
-// ----- DMX sound loading -----
 static int Nyx_GetSfxLumpNum(sfxinfo_t* sfx) {
     char namebuf[9];
     if (sfx->link != NULL) sfx = sfx->link;
@@ -79,7 +74,7 @@ static boolean load_dmx_sound(sfxinfo_t* sfxinfo) {
 
     data += 16;
     len -= 32;
-    uint8_t* pcm = data + 8;  // Skip first 16 bytes, then 8 more = offset 24 total
+    uint8_t* pcm = data + 8;
 
     uint32_t total_samples = len;
     uint32_t alloc_size = sizeof(int16_t) * total_samples + 8;
@@ -90,14 +85,12 @@ static boolean load_dmx_sound(sfxinfo_t* sfxinfo) {
         converted[i] = ((int16_t)((int)pcm[i] - 128)) << 8;
 
     sfxinfo->driver_data = converted;
-    // Store rate + length in first 8 bytes of the buffer
     ((uint32_t*)converted)[0] = rate;
     ((uint32_t*)converted)[1] = total_samples;
     W_ReleaseLumpNum(lumpnum);
     return true;
 }
 
-// ----- Module implementation -----
 static boolean Nyx_InitSound(boolean _use_sfx_prefix) {
     use_sfx_prefix = _use_sfx_prefix;
     for (int i = 0; i < NUM_CHANNELS; i++) {
@@ -105,18 +98,27 @@ static boolean Nyx_InitSound(boolean _use_sfx_prefix) {
         channels[i].data = NULL;
         channels[i].sfx = NULL;
     }
+    active_dma_channel = -1;
     sound_initialized = true;
     return true;
 }
 
 static void Nyx_ShutdownSound(void) {
+    sb16_dma_stop();
     sound_initialized = false;
 }
 
 static void Nyx_UpdateSound(void) {
     if (!sound_initialized) return;
 
-    // Check for finished channels
+    if (active_dma_channel >= 0 && !sb16_is_playing()) {
+        if (active_dma_channel < NUM_CHANNELS) {
+            channels[active_dma_channel].playing = 0;
+            channels[active_dma_channel].pos = 0;
+        }
+        active_dma_channel = -1;
+    }
+
     for (int i = 0; i < NUM_CHANNELS; i++) {
         if (channels[i].playing && !Nyx_SoundIsPlaying(i))
             Nyx_StopSound(i);
@@ -131,6 +133,7 @@ static void Nyx_UpdateSoundParams(int channel, int vol, int sep) {
 
 static int Nyx_StartSound(sfxinfo_t* sfxinfo, int channel, int vol, int sep) {
     if (!sound_initialized || channel < 0 || channel >= NUM_CHANNELS) return -1;
+    if (!sb16_is_initialized()) return -1;
 
     Nyx_StopSound(channel);
     if (!sfxinfo->driver_data) {
@@ -149,11 +152,24 @@ static int Nyx_StartSound(sfxinfo_t* sfxinfo, int channel, int vol, int sep) {
     channels[channel].vol = (uint8_t)vol;
     channels[channel].sep = (uint8_t)sep;
     channels[channel].sfx = sfxinfo;
+
+    int16_t* pcm = data + 4;
+    uint32_t bytes = len * sizeof(int16_t);
+
+    if (bytes <= sb16_get_buffer_size()) {
+        sb16_play_async((const uint8_t*)pcm, bytes, rate, 16);
+        active_dma_channel = channel;
+    }
+
     return channel;
 }
 
 static void Nyx_StopSound(int channel) {
     if (!sound_initialized || channel < 0 || channel >= NUM_CHANNELS) return;
+    if (active_dma_channel == channel) {
+        sb16_dma_stop();
+        active_dma_channel = -1;
+    }
     channels[channel].playing = 0;
     channels[channel].data = NULL;
     channels[channel].sfx = NULL;
@@ -161,6 +177,8 @@ static void Nyx_StopSound(int channel) {
 
 static boolean Nyx_SoundIsPlaying(int channel) {
     if (!sound_initialized || channel < 0 || channel >= NUM_CHANNELS) return false;
+    if (active_dma_channel == channel && sb16_is_playing())
+        return true;
     return channels[channel].playing;
 }
 
@@ -169,7 +187,6 @@ static void Nyx_CacheSounds(sfxinfo_t* sounds, int num_sounds) {
     (void)num_sounds;
 }
 
-// ----- Module struct -----
 static snddevice_t nyx_sound_devices[] = {
     SNDDEVICE_SB,
     SNDDEVICE_PCSPEAKER,
@@ -189,7 +206,6 @@ sound_module_t DG_sound_module = {
     Nyx_CacheSounds,
 };
 
-// ----- Music module stub -----
 static boolean Nyx_InitMusic(void) { return false; }
 static void Nyx_ShutdownMusic(void) {}
 static void Nyx_SetMusicVolume(int volume) { (void)volume; }

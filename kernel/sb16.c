@@ -3,6 +3,7 @@
 
 #define PIT_FREQ 1193180
 #define ISA_DMA_MAX 0x1000000
+#define SB16_DMA_BUF_SIZE 65536
 
 // DMA controller ports (8237)
 #define DMA1_MASK      0x0A
@@ -21,6 +22,10 @@
 
 static sb16_t sb16;
 static volatile int sb16_irq_fired = 0;
+static volatile int sb16_dma_playing = 0;
+
+// Large physically-contiguous DMA buffer within identity-mapped region
+static uint8_t sb16_dma_static_buf[SB16_DMA_BUF_SIZE] __attribute__((aligned(64)));
 
 static void sb16_short_delay(void) {
     for (volatile int i = 0; i < 10000; i++) __asm__ __volatile__("");
@@ -177,8 +182,19 @@ int sb16_start_playback(uint32_t len, uint8_t bits) {
     return 0;
 }
 
+void sb16_dma_stop(void) {
+    sb16_write_dsp(SB16_CMD_EXIT_16BIT_AUTO);
+    sb16_write_dsp(SB16_CMD_EXIT_8BIT_AUTO);
+    sb16_dma_playing = 0;
+}
+
+uint32_t sb16_get_buffer_size(void) {
+    return sb16.dma_buffer_size;
+}
+
 void sb16_irq_handler(void) {
     sb16_irq_fired = 1;
+    sb16_dma_playing = 0;
     uint8_t status = inb(SB16_DSP_READ_STAT);
     (void)status;
     outb(0x20, 0x20);
@@ -210,6 +226,36 @@ void sb16_play_sound(const uint8_t* data, uint32_t len, uint32_t freq, uint8_t b
     sb16_start_playback(len, bits);
 }
 
+int sb16_play_async(const uint8_t* data, uint32_t len, uint32_t freq, uint8_t bits) {
+    if (!sb16.initialized || !sb16.dma_buffer) return -1;
+    if (len > sb16.dma_buffer_size) len = sb16.dma_buffer_size;
+    sb16_set_sample_rate(freq);
+    memset_asm(sb16.dma_buffer, (bits == 16) ? 0 : 128, len);
+    __builtin_memcpy(sb16.dma_buffer, data, len);
+    sb16_irq_fired = 0;
+    sb16_dma_playing = 1;
+    sb16_start_dma(sb16.dma_buffer, len, bits);
+    if (bits == 16) {
+        if (sb16_write_dsp(SB16_CMD_16BIT_SINGLE) < 0) { sb16_dma_playing = 0; return -1; }
+        uint8_t mode = (freq > 22050) ? 0x30 : (freq > 11025) ? 0x20 : 0x10;
+        if (sb16_write_dsp(mode) < 0) { sb16_dma_playing = 0; return -1; }
+        len >>= 1;
+        if (sb16_write_dsp(len & 0xFF) < 0) { sb16_dma_playing = 0; return -1; }
+        if (sb16_write_dsp((len >> 8) & 0xFF) < 0) { sb16_dma_playing = 0; return -1; }
+    } else {
+        if (sb16_write_dsp(SB16_CMD_8BIT_SINGLE) < 0) { sb16_dma_playing = 0; return -1; }
+        uint8_t mode = (freq <= 11025) ? 0x2C : (freq <= 22050) ? 0x1C : 0x00;
+        if (sb16_write_dsp(mode) < 0) { sb16_dma_playing = 0; return -1; }
+        if (sb16_write_dsp(len & 0xFF) < 0) { sb16_dma_playing = 0; return -1; }
+        if (sb16_write_dsp((len >> 8) & 0xFF) < 0) { sb16_dma_playing = 0; return -1; }
+    }
+    return 0;
+}
+
+int sb16_is_playing(void) {
+    return sb16_dma_playing;
+}
+
 int sb16_init(void) {
     sb16.base_port = SB16_BASE_PORT;
     sb16.irq = SB16_IRQ;
@@ -233,16 +279,10 @@ int sb16_init(void) {
     sb16_set_mixer(SB16_MIXER_MASTER_VOL, 0x30);
     sb16_set_mixer(SB16_MIXER_PCM_VOL, 0x30);
 
-    // Allocate DMA buffer (must be below 16MB for ISA DMA, contiguous)
-    // Use a single physical page (identity-mapped within first 64MB)
-    void* buf = alloc_page();
-    if (!buf || (uint32_t)buf >= ISA_DMA_MAX) {
-        if (buf) free_page(buf);
-        printf("[SB16] Failed to allocate DMA buffer (got %p)\n", buf);
-        return -1;
-    }
-    sb16.dma_buffer = (uint8_t*)buf;
-    sb16.dma_buffer_phys = (uint32_t)buf;
+    // Use large static DMA buffer (identity-mapped, physically contiguous, within 16MB)
+    sb16.dma_buffer = sb16_dma_static_buf;
+    sb16.dma_buffer_size = SB16_DMA_BUF_SIZE;
+    sb16.dma_buffer_phys = (uint32_t)sb16_dma_static_buf;
     memset_asm(sb16.dma_buffer, 0, sb16.dma_buffer_size);
     sb16.initialized = 1;
     serial_puts("[SB16] Initialized successfully\n");
