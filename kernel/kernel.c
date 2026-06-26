@@ -1182,6 +1182,16 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
     } else {
         printf("[INIT] VBE mode set failed, staying in text mode\n");
     }
+    printf("[INIT] IST stacks...\n");
+    void* ist_pages = kmalloc(IST_STACK_SIZE * 2);
+    if (ist_pages) {
+        uint64_t df_stack = (uint64_t)ist_pages + IST_STACK_SIZE;
+        uint64_t nmi_stack = (uint64_t)ist_pages + IST_STACK_SIZE * 2;
+        tss_set_ist(IST_DOUBLE_FAULT, df_stack + KERNEL_BASE);
+        tss_set_ist(2, nmi_stack + KERNEL_BASE);
+        printf("[INIT] IST1 (double fault) at 0x%lx, IST2 (NMI) at 0x%lx\n",
+               df_stack + KERNEL_BASE, nmi_stack + KERNEL_BASE);
+    }
     printf("[INIT] Timer (1000 Hz, interrupt-driven)...\n"); init_timer(1000);
     printf("[INIT] Keyboard (interrupt-driven)...\n"); 
     init_keyboard();

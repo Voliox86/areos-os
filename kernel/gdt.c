@@ -29,6 +29,18 @@ void tss_set_stack(uint64_t rsp0) {
     tss.rsp0 = rsp0;
 }
 
+void tss_set_ist(uint8_t ist_idx, uint64_t stack_top) {
+    switch (ist_idx) {
+        case 1: tss.ist1 = stack_top; break;
+        case 2: tss.ist2 = stack_top; break;
+        case 3: tss.ist3 = stack_top; break;
+        case 4: tss.ist4 = stack_top; break;
+        case 5: tss.ist5 = stack_top; break;
+        case 6: tss.ist6 = stack_top; break;
+        case 7: tss.ist7 = stack_top; break;
+    }
+}
+
 void load_tss(void) {
     __asm__ volatile("ltr %%ax" : : "a"(TSS_SEL));
 }

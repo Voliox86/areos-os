@@ -481,9 +481,15 @@ void command_list_matches(const char* partial, char* out, int out_size);
 void init_gdt(void);
 void gdt_set_gate(int32_t num, uint32_t base, uint32_t limit, uint8_t access, uint8_t flags);
 void tss_set_stack(uint64_t rsp0);
+void tss_set_ist(uint8_t ist_idx, uint64_t stack_top);
 void load_tss(void);
 void init_idt(void);
 void idt_set_gate(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags);
+void idt_set_gate_ist(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags, uint8_t ist);
+
+// IST stack sizes
+#define IST_STACK_SIZE 4096
+#define IST_DOUBLE_FAULT 1
 void init_isr(void);
 void isr_handler(uint64_t int_no);
 void init_irq(void);
