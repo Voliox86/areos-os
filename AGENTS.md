@@ -30,6 +30,7 @@ Evolve NyxOS into a functional x86_64 kernel with filesystem, networking, shell,
 | v3.0.0 | ELF userspace loader, initramfs, per-process paging, ring 3 execution, int 0x80 syscalls |
 | v3.1.0 | RTC driver, more syscalls (open/read/close/getpid/sbrk/fsize/exec), libc (printf/malloc/snprintf), initramfs auto-boot, desktop polish (right-click, settings, wallpaper) |
 | v4.0.0 | Full x86_64 native (long mode, 4-level paging, syscall/sysret, ELF64, ring 3), clean 32-bit dead code removal, docs corrected |
+| v4.1.0 | Higher-half kernel mapping (PML4[256] mirror), user/kernel page-table isolation (user has no identity mapping), CR3 switching in ISR/IRQ/syscall entries, scheduler uses next_cr3 |
 
 ## Architecture
 ### Boot flow
@@ -164,7 +165,7 @@ kernel/
 - File Manager window (VFS browsing, directory navigation, file preview)
 
 ## What's new in this session
-- RTC driver: CMOS RTC via ports 0x70/0x71, binary/24h init, read_time, real wall-clock time in `date` command and taskbar
+- Higher-half kernel mapping (x86_64): kernel identity-mapped at both 0x00000000 (PML4[0]) and 0xFFFFFFFF80000000 (PML4[256]); user processes only get higher-half mapping, NO identity mapping; CR3 switching in ISR/IRQ/syscall entries/exits; IDT/GDT/TSS bases use higher-half addresses; scheduler sets next_cr3 instead of direct switch_page_directory
 - Desktop polish (Fase 1): fast wallpaper, right-click context menu (New Folder, New File, Refresh, Settings), File Manager toolbar + inline name input, Settings window with Info/Display/Keyboard tabs (resolution buttons, US/ES layout toggle)
 - Extended syscalls: open(3), read(4), close(5), getpid(6), sbrk(7), fsize(8), exec(9)
 - User-space libc: crt0.asm, syscall.h (static inline wrappers), libc.h/libc.c (mem, string, stdio, stdlib)
