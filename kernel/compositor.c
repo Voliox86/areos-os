@@ -5,6 +5,9 @@
 #include "fileman_win.h"
 #include "paint_win.h"
 #include "taskman_win.h"
+#include "editor_win.h"
+#include "imageview_win.h"
+#include "soundtest_win.h"
 #include "rtc.h"
 
 static window_t* windows[MAX_WINDOWS];
@@ -525,11 +528,28 @@ static void do_start_menu_action(int idx) {
                 }
             }
             break;
-        case 1: // Text Editor (placeholder)
-            window_create(150, 120, 600, 400, "Text Editor", NULL);
+        case 1: // Text Editor
+            {
+                window_t* ewin = window_create(150, 120, 600, 400, "Text Editor", editor_win_draw);
+                if (ewin) {
+                    ewin->reserved = editor_create_ctx();
+                    if (ewin->reserved) {
+                        ewin->on_click = editor_win_click;
+                        ewin->on_key = editor_win_key;
+                    }
+                }
+            }
             break;
         case 2: // Image Viewer
-            window_create(200, 140, 400, 300, "Image Viewer", NULL);
+            {
+                window_t* iwin = window_create(200, 140, 540, 420, "Image Viewer", imageview_win_draw);
+                if (iwin) {
+                    iwin->reserved = imageview_create_ctx();
+                    if (iwin->reserved) {
+                        iwin->on_key = imageview_win_key;
+                    }
+                }
+            }
             break;
         case 3: // Terminal
             {
@@ -582,7 +602,15 @@ static void do_start_menu_action(int idx) {
             }
             break;
         case 9: // Sound Test
-            window_create(200, 150, 350, 200, "Sound Test", NULL);
+            {
+                window_t* sndwin = window_create(200, 150, 220, 340, "Sound Test", soundtest_win_draw);
+                if (sndwin) {
+                    sndwin->reserved = soundtest_create_ctx();
+                    if (sndwin->reserved) {
+                        sndwin->on_click = soundtest_win_click;
+                    }
+                }
+            }
             break;
         case 10: // About
             window_create(fb_get_width()/2-150, fb_get_height()/2-100, 300, 200, "About NyxOS", NULL);
@@ -897,13 +925,13 @@ static void settings_win_click(window_t* win, int mx, int my, int btn) {
     }
 }
 
-#define NUM_DESKTOP_ICONS 6
+#define NUM_DESKTOP_ICONS 8
 #define ICON_SIZE 64
 #define ICON_PAD 12
 static const char* desktop_icon_names[] = {
-    "Files", "Terminal", "DOOM", "Settings", "About", "Paint"
+    "Files", "Terminal", "Editor", "Viewer", "DOOM", "Settings", "Paint", "Sounds"
 };
-static int desktop_icon_actions[] = {0, 3, 6, 4, 10, 8};
+static int desktop_icon_actions[] = {0, 3, 1, 2, 6, 4, 8, 9};
 static int desktop_icon_x[NUM_DESKTOP_ICONS];
 static int desktop_icon_y[NUM_DESKTOP_ICONS];
 

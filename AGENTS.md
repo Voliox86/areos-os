@@ -32,6 +32,7 @@ Evolve NyxOS into a functional x86_64 kernel with filesystem, networking, shell,
 | v4.0.0 | Full x86_64 native (long mode, 4-level paging, syscall/sysret, ELF64, ring 3), clean 32-bit dead code removal, docs corrected |
 | v4.1.0 | Higher-half kernel mapping (PML4[256] mirror), user/kernel page-table isolation (user has no identity mapping), CR3 switching in ISR/IRQ/syscall entries, scheduler uses next_cr3 |
 | v4.2.0 | NX bit (No-Execute) + SMEP (Supervisor Mode Execution Prevention), PAGE_NX added to user stack/heap/data, Local APIC + I/O APIC init, CPUID detection, IST (Interrupt Stack Table) for double fault (#8) and NMI (#2), repo cleanup (README x86_64, .gitignore, AGENTS.md) |
+| v5.0.0 | Full GUI application suite: Text Editor (file open/save, cursor nav), Image Viewer (test pattern, zoom/pan), Sound Test (PC speaker + SB16 sine/square/sweep). Brighter wallpaper gradient (sky-blue + grass). 8 desktop icons. **All placeholders replaced with real apps.** No crashes, zero warnings in build. |
 
 ## Architecture
 ### Boot flow
@@ -103,6 +104,9 @@ kernel/
   sb16.c/h        — Sound Blaster 16 DSP driver (DMA, IRQ, mixer, PCM playback)
   doom_nyxos.c    — DOOM generic NyxOS port
   doom_nyxos_sound.c — DOOM sound module (DMX lump loading, channel mixing stubs)
+  editor_win.c/h  — Text Editor window (file open/save, cursor nav, scroll, click)
+  imageview_win.c/h — Image Viewer window (test pattern, zoom/pan)
+  soundtest_win.c/h — Sound Test window (PC Speaker + SB16 buttons)
   vga_graphics.c  — VGA mode 13h (DOOM)
   gdt.c/idt.c/isr.c/irq.c — x86 descriptor tables
 ```
@@ -161,34 +165,26 @@ kernel/
 - VGA 8x16 bitmap font from Linux kernel (256 glyphs)
 - Window compositor: z-ordering, title bars (min/max/close), drag-to-move, resize, 4 workspaces
 - Taskbar with running app buttons, Start menu (12 items), clock
-- Desktop icons (Files, Terminal, DOOM, Settings, About, Paint)
+- Desktop icons (Files, Terminal, Editor, Viewer, DOOM, Settings, Paint, Sounds)
 - Terminal emulator window (scrollback, Tab completion, command execution)
 - File Manager window (VFS browsing, directory navigation, file preview)
+- Text Editor window (file open/save, cursor navigation, scroll, click-to-position)
+- Image Viewer window (color-bar test pattern with zoom/pan, grid overlay)
+- Sound Test window (PC Speaker beep/melody/alarm + SB16 sine/square/sweep) 
 
 ## What's new in this session
-- Higher-half kernel mapping (x86_64): kernel identity-mapped at both 0x00000000 (PML4[0]) and 0xFFFFFFFF80000000 (PML4[256]); user processes only get higher-half mapping, NO identity mapping; CR3 switching in ISR/IRQ/syscall entries/exits; IDT/GDT/TSS bases use higher-half addresses; scheduler sets next_cr3 instead of direct switch_page_directory
-- Desktop polish (Fase 1): fast wallpaper, right-click context menu (New Folder, New File, Refresh, Settings), File Manager toolbar + inline name input, Settings window with Info/Display/Keyboard tabs (resolution buttons, US/ES layout toggle)
-- Extended syscalls: open(3), read(4), close(5), getpid(6), sbrk(7), fsize(8), exec(9)
-- User-space libc: crt0.asm, syscall.h (static inline wrappers), libc.h/libc.c (mem, string, stdio, stdlib)
-- SYS_EXEC: replaces calling process in-place with new ELF via kernel stack frame (popa + iret to ring 3)
-- ELF segment copy fix: non-page-aligned PT_LOAD copies data at correct page offset (dst_off = vaddr & 0xFFF)
-- Syscall popa bugfix: isr_stubs.asm saves EAX to [esp+28] (saved EAX slot) instead of [esp] (saved EDI slot)
-- SYS_EXIT fix: for(;;) hlt instead of sti;hlt to prevent GPF from returning to dead user process
-- hello.elf build fix: linked with ld -e _start -Ttext 0x10000 for proper ET_EXEC with valid program headers
-- init.elf rewritten to use full libc (printf, malloc, snprintf, free) — boots, prints system info, exits cleanly
-- DOOM sound: wired DMX sound lump loading → SB16 playback (single-cycle DMA, 64KB buffer, auto-stop on IRQ)
-- Scrollbar in File Manager: vertical scrollbar with proportional thumb, click-to-scroll, arrow key navigation (Up/Down/PgUp/PgDn/Home/End), Enter to open selected file/dir
-- Slab allocator (`slab.c`/`slab.h`) for kmalloc objects ≤512 bytes (caches for 32/64/128/256/512 bytes)
-- `proc->stack = sp + 112` → `proc->stack = sp` in `init_task_stack`/`init_user_task_stack`
-
-## Session fixes (Jun 2026)
-- Fixed triple fault on `sti`: `ioapic_redirect_irq()` in `apic.c` wrote I/O APIC redirection entries **without** the mask bit, implicitly unmasking ALL hardware IRQs 0-15. The PIT timer fired immediately after STI, and the unregistered IRQ handler chain caused a crash → triple fault. Fix: added `ioapic_mask_irq(i)` after routing each IRQ in `init_apic()`.
-- Fixed kernel crash in `switch_to_user_process()`: `map_pml4()` at `paging.c:91` stripped the `PAGE_USER` bit from page-table entries (`flags & ~0xFFF` clears lower 12 bits), making all user pages supervisor-only → #PF on first ring-3 instruction. Fix: propagate `PAGE_USER` and `PAGE_NX` from flags explicitly: `(flags & PAGE_USER ? PAGE_USER : 0) | (flags & PAGE_NX)`.
-- Restored `switch_to_user_process()` with higher-half trampoline (`switch_to_user_trampoline` in `isr_stubs.asm`): indirect `call rax` through a higher-half address, switches RSP→CR3→RESTORE_REGS→iretq. Inline assembly fixed to AT&T syntax for GCC default dialect. Verified working (reaches ring 3, no crash). Used in `cmd_exec` for direct user-process launch from shell.
+- **Text Editor window** (`editor_win.c/h`): full keyboard-driven text editor with cursor navigation (arrows, Home/End, PgUp/PgDn), click-to-position, scroll, Open/Save buttons in toolbar, line numbers, cursor blink, status bar (line/col). File access via VFS (vfs_open/vfs_write_file). Ctrl+S to save, Ctrl+O to open.
+- **Image Viewer window** (`imageview_win.c/h`): 512×384 color-bar test pattern with checkerboard grid overlay, zoom (+, -) from 25% to 400%, pan with arrow keys, reset with R. Nearest-neighbor scaling. Border frame.
+- **Sound Test window** (`soundtest_win.c/h`): PC Speaker section (440Hz beep, C major scale melody, alternating alarm), Sound Blaster 16 section (sine 440Hz, square 220Hz, sweep 200–3000Hz via fixed-point sine table). Status bar feedback.
+- **Brighter wallpaper**: sky-blue gradient (50→160, 100→200, 180→240) with green grass strip, replacing previous extremely dark navy gradient.
+- **Desktop icons expanded to 8**: Files, Terminal, Editor, Viewer, DOOM, Settings, Paint, Sounds. More vibrant colors + solid label backgrounds.
+- **All Start menu placeholders replaced**: Text Editor, Image Viewer, and Sound Test are now real GUI apps with draw/key/click handlers.
+- **switch_to_user_process** fixed (PAGE_USER bit), trampoline verified working in `cmd_exec`.
+- Build: zero errors, zero warnings.
 
 ## Next features to add
-- Paint app with variable brush size + color picker
 - Calculator window (basic arithmetic)
-- Task Manager window (process list, CPU/memory stats)
-- Notepad with file save/open
 - EXT2 write support (currently read-only)
+- File Manager: copy/paste, drag-and-drop files
+- Network: DNS resolver, HTTP client library
+- Multimedia: video playback (simple formats)
