@@ -4,6 +4,7 @@
 #include "terminal_win.h"
 #include "fileman_win.h"
 #include "paint_win.h"
+#include "taskman_win.h"
 #include "rtc.h"
 
 static window_t* windows[MAX_WINDOWS];
@@ -297,7 +298,7 @@ static void draw_start_menu(void) {
 
     const char* items[] = {
         "File Manager", "Text Editor", "Image Viewer", "Terminal",
-        "Settings", "Package Manager", "DOOM", "Desktop Demo",
+        "Settings", "Task Manager", "DOOM", "Desktop Demo",
         "Paint", "Sound Test", "About", "Shutdown",
     };
     for (int i = 0; i < 12; i++) {
@@ -542,8 +543,17 @@ static void do_start_menu_action(int idx) {
                 }
             }
             break;
-        case 5: // Package Manager
-            window_create(180, 120, 480, 360, "Package Manager", NULL);
+        case 5: // Task Manager
+            {
+                window_t* twin = window_create(100, 80, 480, 340, "Task Manager", taskman_win_draw);
+                if (twin) {
+                    twin->reserved = taskman_create_ctx();
+                    if (twin->reserved) {
+                        twin->on_key = taskman_win_key;
+                        twin->on_click = taskman_win_click;
+                    }
+                }
+            }
             break;
         case 6: // DOOM
             window_create(0, 0, 320, 200, "DOOM", NULL);
