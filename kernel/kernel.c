@@ -1259,9 +1259,7 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
                     if (elf_validate(copy, init_size)) {
                         process_t* init_proc = NULL;
                         if (elf_load(copy, init_size, &init_proc) == 0) {
-                            printf("[INIT] Directly launching init PID=%u...\n", init_proc->pid);
-                            switch_to_user_process(init_proc);
-                            printf("[INIT] ERROR: switch_to_user_process returned!\n");
+                            printf("[INIT] Registered init PID=%u (scheduler will start it)\n", init_proc->pid);
                         } else {
                             printf("[INIT] ELF load failed\n");
                         }
