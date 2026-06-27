@@ -46,7 +46,7 @@ ______          \'/
     '.  '  . `'---'`. `'
       `'-..._____.-'
     N Y X O S
-    N I G H T F A L L
+    G U I   S U I T E
   -------------------------------------
   Kernel:     NyxOS 5.0.0
   Arch:       x86_64 (long mode)
