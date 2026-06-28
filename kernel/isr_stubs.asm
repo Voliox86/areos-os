@@ -105,8 +105,8 @@ isr_common:
     mov cr3, rax
     SAVE_REGS
     ; Stack: [RSP+0]=R15, ..., [RSP+112]=RAX
-    ; After error+int: [RSP+120]=error, [RSP+128]=int_no, [RSP+136]=RIP, [RSP+144]=CS, [RSP+152]=RFLAGS, ...
-    mov rdi, [rsp + 128]     ; int_no
+    ; After SAVE_REGS: [RSP+120]=int_no, [RSP+128]=error, [RSP+136]=RIP, [RSP+144]=CS, [RSP+152]=RFLAGS, ...
+    mov rdi, [rsp + 120]     ; int_no
     call isr_handler
     RESTORE_REGS
     add rsp, 16               ; pop error code + int number
@@ -218,21 +218,27 @@ irq_common:
     mov cr3, rax
 
     SAVE_REGS
-    mov rdi, [rsp + 128]     ; int_no
+    ; Stack: [RSP+0]=R15..[RSP+112]=RAX, [RSP+120]=int_no, [RSP+128]=error, [RSP+136]=RIP
+    mov rdi, [rsp + 120]     ; int_no
     call irq_handler
     ; Send EOI (handles APIC or legacy PIC)
-    mov rdi, [rsp + 128]     ; int_no
+    mov rdi, [rsp + 120]     ; int_no
     call irq_eoi
     ; Scheduler tick
     mov [saved_rsp], rsp
     call irq_scheduler_tick
+    ; Read next RSP *before* switching to user page tables (no identity mapping)
+    mov rax, next_rsp
+    mov rbx, KERNEL_BASE
+    add rax, rbx
+    mov rdx, [rax]               ; rdx = next_rsp (user kernel stack, higher-half address)
     ; Switch to next process page tables
     mov rax, next_cr3
     mov rbx, KERNEL_BASE
     add rax, rbx
     mov rax, [rax]
     mov cr3, rax
-    mov rsp, [next_rsp]
+    mov rsp, rdx                 ; Use the value we saved before the CR3 switch
     RESTORE_REGS
     add rsp, 16
     iretq
