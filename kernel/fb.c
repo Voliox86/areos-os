@@ -73,6 +73,7 @@ uint32_t fb_get_height(void) { return fb_height; }
 void* fb_get_addr(void) { return fb_addr; }
 
 uint32_t fb_rgb(uint8_t r, uint8_t g, uint8_t b) {
-    if (fb_bpp == 32) return (0xFF << 24) | (b << 16) | (g << 8) | r;
-    return (b << 16) | (g << 8) | r;
+    // VBE 32-bit LFB is BGRX (byte 0 = B, byte 1 = G, byte 2 = R, byte 3 = X)
+    if (fb_bpp == 32) return (0xFF << 24) | (r << 16) | (g << 8) | b;
+    return (r << 16) | (g << 8) | b;
 }
