@@ -1,4 +1,5 @@
 #include "kernel.h"
+#include "dns.h"
 
 #define DHCP_SERVER_PORT 67
 #define DHCP_CLIENT_PORT 68
@@ -107,6 +108,11 @@ int dhcp_request(int iface_idx) {
                             memcpy(&net_interfaces[iface_idx].netmask, &rx[o2+2], 4);
                         if (rx[o2] == DHCP_OPT_ROUTER && rx[o2+1] >= 4)
                             memcpy(&net_interfaces[iface_idx].gateway, &rx[o2+2], 4);
+                        if (rx[o2] == 6 && rx[o2+1] >= 4) { // DNS server
+                            uint32_t dns_ip;
+                            memcpy(&dns_ip, &rx[o2+2], 4);
+                            dns_set_server(dns_ip);
+                        }
                         o2 += rx[o2+1] + 2;
                     }
                     printf("[DHCP] ACK: IP=%d.%d.%d.%d mask=%d.%d.%d.%d gw=%d.%d.%d.%d\n",

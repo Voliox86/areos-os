@@ -393,15 +393,33 @@ int ext2_write_file(const char* path, const void* buf, uint32_t len) {
         __builtin_memcpy(block_buf, data, chunk);
 
         if (iblock < 12) {
-            // Direct block
             if (inode.block[iblock] == 0) {
                 inode.block[iblock] = ext2_alloc_block();
                 if (inode.block[iblock] == 0) return -1;
             }
             block_num = inode.block[iblock];
         } else {
-            // For now, only support direct blocks (files < 12 * block_size)
-            return -1;
+            uint32_t ptrs_per_block = ext2_fs.block_size / 4;
+            uint32_t sind_iblock = iblock - 12;
+            if (sind_iblock < ptrs_per_block) {
+                if (inode.block[12] == 0) {
+                    inode.block[12] = ext2_alloc_block();
+                    if (inode.block[12] == 0) return -1;
+                    __builtin_memset(block_buf, 0, ext2_fs.block_size);
+                    ext2_write_block(inode.block[12], block_buf);
+                }
+                uint8_t* ibuf = get_block_buf();
+                ext2_read_block(inode.block[12], ibuf);
+                uint32_t* indirect = (uint32_t*)ibuf;
+                if (indirect[sind_iblock] == 0) {
+                    indirect[sind_iblock] = ext2_alloc_block();
+                    if (indirect[sind_iblock] == 0) return -1;
+                    ext2_write_block(inode.block[12], ibuf);
+                }
+                block_num = indirect[sind_iblock];
+            } else {
+                return -1;
+            }
         }
 
         ext2_write_block(block_num, block_buf);
@@ -590,4 +608,346 @@ int ext2_readdir(const char* path, dirent_t* entries, uint32_t max_entries) {
     }
 
     return count;
+}
+
+// ========== Block and inode freeing ==========
+
+static void ext2_free_block(uint32_t block_num) {
+    ext2_bgd_t bgd;
+    if (read_block_group_bgd(0, &bgd) < 0) return;
+    uint8_t* buf = get_block_buf();
+    if (!buf) return;
+    ext2_read_block(bgd.block_bitmap, buf);
+    if (buf[block_num / 8] & (1 << (block_num % 8))) {
+        buf[block_num / 8] &= ~(1 << (block_num % 8));
+        ext2_write_block(bgd.block_bitmap, buf);
+        bgd.free_blocks_count++;
+        write_bgd(0, &bgd);
+        ext2_fs.sb.free_blocks++;
+    }
+}
+
+static void free_inode_blocks(ext2_inode_t* inode) {
+    uint32_t ptrs_per_block = ext2_fs.block_size / 4;
+    // Free direct blocks
+    for (int i = 0; i < 12; i++) {
+        if (inode->block[i]) { ext2_free_block(inode->block[i]); inode->block[i] = 0; }
+    }
+    // Free singly-indirect block
+    if (inode->block[12]) {
+        uint8_t* buf = get_block_buf();
+        ext2_read_block(inode->block[12], buf);
+        uint32_t* indirect = (uint32_t*)buf;
+        for (uint32_t i = 0; i < ptrs_per_block; i++)
+            if (indirect[i]) ext2_free_block(indirect[i]);
+        ext2_free_block(inode->block[12]);
+        inode->block[12] = 0;
+    }
+    // Free doubly-indirect block
+    if (inode->block[13]) {
+        uint8_t* buf = get_block_buf();
+        ext2_read_block(inode->block[13], buf);
+        uint32_t* dindirect = (uint32_t*)buf;
+        for (uint32_t i = 0; i < ptrs_per_block; i++) {
+            if (dindirect[i]) {
+                uint8_t* ibuf = get_block_buf();
+                ext2_read_block(dindirect[i], ibuf);
+                uint32_t* indirect = (uint32_t*)ibuf;
+                for (uint32_t j = 0; j < ptrs_per_block; j++)
+                    if (indirect[j]) ext2_free_block(indirect[j]);
+                ext2_free_block(dindirect[i]);
+            }
+        }
+        ext2_free_block(inode->block[13]);
+        inode->block[13] = 0;
+    }
+}
+
+static void ext2_free_inode(uint32_t ino) {
+    if (ino < EXT2_ROOT_INO) return;
+    uint32_t group = (ino - 1) / ext2_fs.inodes_per_group;
+    uint32_t index = (ino - 1) % ext2_fs.inodes_per_group;
+    ext2_bgd_t bgd;
+    if (read_block_group_bgd(group, &bgd) < 0) return;
+    uint8_t* buf = get_block_buf();
+    if (!buf) return;
+    ext2_read_block(bgd.inode_bitmap, buf);
+    if (buf[index / 8] & (1 << (index % 8))) {
+        buf[index / 8] &= ~(1 << (index % 8));
+        ext2_write_block(bgd.inode_bitmap, buf);
+        bgd.free_inodes_count++;
+        write_bgd(0, &bgd);
+        ext2_fs.sb.free_inodes++;
+    }
+}
+
+// ========== Directory helpers ==========
+
+static int add_dirent_to_parent(uint32_t parent_ino, const char* name,
+                                 uint32_t new_ino, uint8_t file_type)
+{
+    ext2_inode_t parent_inode;
+    if (ext2_read_inode(parent_ino, &parent_inode) < 0) return -1;
+    if (!(parent_inode.mode & EXT2_S_IFDIR)) return -1;
+
+    uint32_t name_len = strlen(name);
+    uint32_t entry_size = sizeof(ext2_dirent_t) - 255 + name_len;
+    entry_size = (entry_size + 3) & ~3;
+
+    uint32_t iblock = 0;
+    uint32_t block_num = 0;
+    uint8_t* buf = get_block_buf();
+    if (!buf) return -1;
+    int found_space = 0;
+
+    while (iblock < 12 && iblock * ext2_fs.block_size < parent_inode.size) {
+        if (parent_inode.block[iblock] == 0) break;
+        ext2_read_block(parent_inode.block[iblock], buf);
+        uint32_t off = 0;
+        while (off < ext2_fs.block_size) {
+            ext2_dirent_t* de = (ext2_dirent_t*)(buf + off);
+            uint32_t de_name_len = de->name_len & 0xFF;
+            if (de->inode == 0) {
+                if (de->rec_len >= entry_size + 4) {
+                    de->inode = new_ino;
+                    de->name_len = name_len;
+                    de->file_type = file_type;
+                    __builtin_memset(de->name, 0, de->rec_len - 4);
+                    __builtin_memcpy(de->name, name, name_len);
+                    ext2_write_block(parent_inode.block[iblock], buf);
+                    found_space = 1;
+                    break;
+                }
+            } else {
+                uint32_t min_size = sizeof(ext2_dirent_t) - 255 + de_name_len;
+                min_size = (min_size + 3) & ~3;
+                if (de->rec_len > min_size + entry_size) {
+                    uint32_t remaining = de->rec_len - min_size;
+                    de->rec_len = min_size;
+                    ext2_dirent_t* new_de = (ext2_dirent_t*)(buf + off + min_size);
+                    new_de->inode = new_ino;
+                    new_de->rec_len = remaining;
+                    new_de->name_len = name_len;
+                    new_de->file_type = file_type;
+                    __builtin_memset(new_de->name, 0, remaining - 4);
+                    __builtin_memcpy(new_de->name, name, name_len);
+                    ext2_write_block(parent_inode.block[iblock], buf);
+                    found_space = 1;
+                    break;
+                }
+            }
+            off += de->rec_len;
+        }
+        if (found_space) break;
+        iblock++;
+    }
+
+    if (!found_space) {
+        uint32_t new_block = ext2_alloc_block();
+        if (!new_block) return -1;
+        __builtin_memset(buf, 0, ext2_fs.block_size);
+        ext2_dirent_t* de = (ext2_dirent_t*)buf;
+        de->inode = new_ino;
+        de->rec_len = ext2_fs.block_size;
+        de->name_len = name_len;
+        de->file_type = file_type;
+        __builtin_memcpy(de->name, name, name_len);
+        ext2_write_block(new_block, buf);
+        if (iblock < 12) {
+            parent_inode.block[iblock] = new_block;
+        } else {
+            return -1;
+        }
+        parent_inode.size += ext2_fs.block_size;
+    }
+
+    ext2_write_inode(parent_ino, &parent_inode);
+    return 0;
+}
+
+int ext2_mkdir(const char* path) {
+    if (!path || path[0] != '/') return -1;
+    if (ext2_resolve(path)) return -1;
+
+    char parent_path[256];
+    char dirname[256];
+    int last_slash = -1;
+    for (int i = 0; path[i]; i++)
+        if (path[i] == '/') last_slash = i;
+
+    if (last_slash <= 0) {
+        parent_path[0] = '/'; parent_path[1] = '\0';
+    } else {
+        __builtin_memcpy(parent_path, path, last_slash);
+        parent_path[last_slash] = '\0';
+    }
+    strcpy(dirname, path + last_slash + 1);
+
+    uint32_t parent_ino = ext2_resolve(parent_path);
+    if (!parent_ino) return -1;
+
+    uint32_t new_ino = ext2_alloc_inode();
+    if (!new_ino) return -1;
+
+    ext2_inode_t new_inode;
+    __builtin_memset(&new_inode, 0, sizeof(ext2_inode_t));
+    new_inode.mode = EXT2_S_IFDIR | 0x1FF; // 0777
+    new_inode.uid = 0;
+    new_inode.gid = 0;
+    new_inode.size = ext2_fs.block_size;
+    new_inode.links_count = 2; // . and ..
+    new_inode.blocks_512 = ext2_fs.block_size / 512;
+
+    // Allocate first block for . and .. entries
+    uint32_t first_block = ext2_alloc_block();
+    if (!first_block) { ext2_free_inode(new_ino); return -1; }
+    new_inode.block[0] = first_block;
+
+    uint8_t* buf = get_block_buf();
+    if (!buf) { ext2_free_block(first_block); ext2_free_inode(new_ino); return -1; }
+    __builtin_memset(buf, 0, ext2_fs.block_size);
+
+    // Entry for "."
+    ext2_dirent_t* de = (ext2_dirent_t*)buf;
+    de->inode = new_ino;
+    de->rec_len = 12;
+    de->name_len = 1;
+    de->file_type = EXT2_FT_DIR;
+    de->name[0] = '.';
+
+    // Entry for ".."
+    ext2_dirent_t* de2 = (ext2_dirent_t*)(buf + 12);
+    de2->inode = parent_ino;
+    de2->rec_len = ext2_fs.block_size - 12;
+    de2->name_len = 2;
+    de2->file_type = EXT2_FT_DIR;
+    de2->name[0] = '.'; de2->name[1] = '.';
+
+    ext2_write_block(first_block, buf);
+
+    if (ext2_write_inode(new_ino, &new_inode) < 0) {
+        ext2_free_block(first_block);
+        ext2_free_inode(new_ino);
+        return -1;
+    }
+
+    // Add entry in parent
+    if (add_dirent_to_parent(parent_ino, dirname, new_ino, EXT2_FT_DIR) < 0) {
+        free_inode_blocks(&new_inode);
+        ext2_free_inode(new_ino);
+        return -1;
+    }
+
+    // Increment parent's link count for ".."
+    ext2_inode_t pinode;
+    if (ext2_read_inode(parent_ino, &pinode) == 0) {
+        pinode.links_count++;
+        ext2_write_inode(parent_ino, &pinode);
+    }
+
+    return 0;
+}
+
+int ext2_unlink(const char* path) {
+    if (!path || path[0] != '/') return -1;
+    uint32_t ino = ext2_resolve(path);
+    if (!ino || ino < EXT2_ROOT_INO) return -1;
+
+    ext2_inode_t inode;
+    if (ext2_read_inode(ino, &inode) < 0) return -1;
+
+    // Check if directory is empty (only . and ..)
+    if (inode.mode & EXT2_S_IFDIR) {
+        ext2_inode_t dir_inode = inode;
+        uint32_t count = 0;
+        uint32_t bytes_left = dir_inode.size;
+        uint32_t iblock = 0;
+        while (bytes_left > 0) {
+            uint8_t* dbuf = get_block_buf();
+            if (ext2_read_inode_block(&dir_inode, iblock, dbuf) < 0) break;
+            uint32_t off = 0;
+            while (off < ext2_fs.block_size && off < bytes_left) {
+                ext2_dirent_t* de = (ext2_dirent_t*)(dbuf + off);
+                if (de->inode && (de->name_len & 0xFF) > 2) count++;
+                if (de->inode && (de->name_len & 0xFF) > 2) break;
+                off += de->rec_len;
+            }
+            bytes_left -= ext2_fs.block_size;
+            iblock++;
+        }
+        if (count > 0) return -1; // directory not empty
+    }
+
+    char parent_path[256];
+    char child_name[256];
+    int last_slash = -1;
+    for (int i = 0; path[i]; i++)
+        if (path[i] == '/') last_slash = i;
+
+    if (last_slash <= 0) {
+        parent_path[0] = '/'; parent_path[1] = '\0';
+    } else {
+        __builtin_memcpy(parent_path, path, last_slash);
+        parent_path[last_slash] = '\0';
+    }
+    strcpy(child_name, path + last_slash + 1);
+
+    uint32_t parent_ino = ext2_resolve(parent_path);
+    if (!parent_ino) return -1;
+
+    // Remove directory entry from parent
+    ext2_inode_t parent_inode;
+    if (ext2_read_inode(parent_ino, &parent_inode) < 0) return -1;
+
+    uint32_t child_name_len = strlen(child_name);
+    int removed = 0;
+    uint32_t piblock = 0;
+    uint32_t pbytes_left = parent_inode.size;
+
+    while (pbytes_left > 0 && !removed) {
+        uint8_t* pbuf = get_block_buf();
+        if (ext2_read_inode_block(&parent_inode, piblock, pbuf) < 0) break;
+        uint32_t off = 0;
+        while (off < ext2_fs.block_size && off < pbytes_left) {
+            ext2_dirent_t* de = (ext2_dirent_t*)(pbuf + off);
+            uint32_t de_name_len = de->name_len & 0xFF;
+            if (de->inode && de_name_len == child_name_len) {
+                char dname[256];
+                __builtin_memcpy(dname, de->name, de_name_len);
+                dname[de_name_len] = '\0';
+                if (strcmp(dname, child_name) == 0) {
+                    de->inode = 0;
+                    ext2_write_block(parent_inode.block[piblock], pbuf);
+                    removed = 1;
+                    break;
+                }
+            }
+            off += de->rec_len;
+        }
+        pbytes_left -= ext2_fs.block_size;
+        piblock++;
+    }
+
+    if (!removed) return -1;
+
+    // If directory, decrement parent link count
+    if (inode.mode & EXT2_S_IFDIR) {
+        parent_inode.links_count--;
+    }
+
+    // Decrement inode link count
+    if (inode.links_count > 0) {
+        inode.links_count--;
+        if (inode.links_count == 0) {
+            // Free all blocks and inode
+            free_inode_blocks(&inode);
+            ext2_write_inode(ino, &inode);
+            ext2_free_inode(ino);
+        } else {
+            ext2_write_inode(ino, &inode);
+        }
+    }
+
+    ext2_write_inode(parent_ino, &parent_inode);
+    return 0;
 }

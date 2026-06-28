@@ -8,6 +8,7 @@
 #include "editor_win.h"
 #include "imageview_win.h"
 #include "soundtest_win.h"
+#include "calc_win.h"
 #include "rtc.h"
 
 static window_t* windows[MAX_WINDOWS];
@@ -618,6 +619,19 @@ static void do_start_menu_action(int idx) {
         case 11: // Shutdown
             quit = 1;
             break;
+        case 12: // Calculator
+            {
+                window_t* cwin = window_create(300, 200, CALC_WIN_W, CALC_WIN_H,
+                                               "Calculator", calc_win_draw);
+                if (cwin) {
+                    cwin->reserved = calc_create_ctx();
+                    if (cwin->reserved) {
+                        cwin->on_click = calc_win_click;
+                        cwin->on_key = calc_win_key;
+                    }
+                }
+            }
+            break;
     }
     redraw_all();
 }
@@ -925,13 +939,13 @@ static void settings_win_click(window_t* win, int mx, int my, int btn) {
     }
 }
 
-#define NUM_DESKTOP_ICONS 8
+#define NUM_DESKTOP_ICONS 9
 #define ICON_SIZE 64
 #define ICON_PAD 12
 static const char* desktop_icon_names[] = {
-    "Files", "Terminal", "Editor", "Viewer", "DOOM", "Settings", "Paint", "Sounds"
+    "Files", "Terminal", "Editor", "Viewer", "DOOM", "Settings", "Paint", "Sounds", "Calc"
 };
-static int desktop_icon_actions[] = {0, 3, 1, 2, 6, 4, 8, 9};
+static int desktop_icon_actions[] = {0, 3, 1, 2, 6, 4, 8, 9, 12};
 static int desktop_icon_x[NUM_DESKTOP_ICONS];
 static int desktop_icon_y[NUM_DESKTOP_ICONS];
 

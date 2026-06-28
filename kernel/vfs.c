@@ -228,6 +228,11 @@ uint8_t* vfs_fdata(int fd) {
 
 int vfs_mkdir(const char* path, mode_t mode) {
     (void)mode;
+    mount_entry_t* me = vfs_find_mount(path);
+    if (me && me->mkdir) {
+        const char* subpath = path + strlen(me->mount_point);
+        return me->mkdir(subpath);
+    }
     char child_name[MAX_NAME];
     vfs_node_t* parent = resolve_parent(path, child_name);
     if (!parent || parent->type != 1) return -1;
@@ -243,6 +248,11 @@ int vfs_mkdir(const char* path, mode_t mode) {
 }
 
 int vfs_unlink(const char* path) {
+    mount_entry_t* me = vfs_find_mount(path);
+    if (me && me->unlink) {
+        const char* subpath = path + strlen(me->mount_point);
+        return me->unlink(subpath);
+    }
     char child_name[MAX_NAME];
     vfs_node_t* parent = resolve_parent(path, child_name);
     if (!parent || parent->type != 1) return -1;
@@ -305,11 +315,13 @@ int vfs_mount(const char* mount_point, int fs_type, void* fs_data) {
     me->readdir = NULL;
 
     if (fs_type == FS_TYPE_EXT2) {
-        me->resolve  = ext2_resolve;
-        me->get_size = ext2_get_size;
+        me->resolve   = ext2_resolve;
+        me->get_size  = ext2_get_size;
         me->read_file = ext2_read_file;
         me->write_file = ext2_write_file;
-        me->readdir   = ext2_readdir;
+        me->readdir    = ext2_readdir;
+        me->mkdir      = ext2_mkdir;
+        me->unlink     = ext2_unlink;
     }
 
     mount_count++;

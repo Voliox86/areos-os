@@ -9,6 +9,7 @@
 #include "tcp.h"
 #include "sb16.h"
 #include "ext2.h"
+#include "dns.h"
 #include "initramfs.h"
 
 // Variables globales del kernel
@@ -79,6 +80,7 @@ static void cmd_sort(int argc, char** argv);
 static void cmd_wc(int argc, char** argv);
 static void cmd_write(int argc, char** argv);
 extern void cmd_dhcp(int argc, char** argv);
+static void cmd_dns(int argc, char** argv);
 static void cmd_history(int argc, char** argv);
 static void cmd_diff(int argc, char** argv);
 static void cmd_doom(int argc, char** argv);
@@ -121,7 +123,8 @@ static const command_t commands[] = {
     {"cp",        cmd_cp,        "Copy file: cp <src> <dst>", false},
     {"mv",        cmd_mv,        "Move/rename file: mv <src> <dst>", false},
     {"ifconfig",  cmd_ifconfig,  "Show network interfaces", false},
-    {"ping",      cmd_ping,      "Ping a host: ping <ip>", false},
+    {"dns",       cmd_dns,       "DNS resolve: dns <hostname>", false},
+    {"ping",      cmd_ping,      "Ping a host: ping <ip|hostname>", false},
     {"kill",      cmd_kill,      "Kill a process: kill <pid>", false},
     {"which",     cmd_which,     "Show path of a command: which <name>", false},
     {"head",      cmd_head,      "Show first lines of a file: head <file> [lines]", false},
@@ -824,10 +827,29 @@ static void cmd_tcptest(int argc, char** argv) {
     uint16_t dst_port = 80;
     if (argc >= 3) {
         dst_ip = parse_ip(argv[1]);
+        if (!dst_ip) {
+            int iface_idx = -1;
+            for (int i = 0; i < 8; i++) {
+                if (net_interfaces[i].name[0] && strcmp(net_interfaces[i].name, "lo") != 0) {
+                    iface_idx = i; break;
+                }
+            }
+            if (iface_idx >= 0) dst_ip = dns_resolve(argv[1], iface_idx);
+        }
         dst_port = (uint16_t)atoi(argv[2]);
     } else if (argc >= 2) {
         dst_ip = parse_ip(argv[1]);
+        if (!dst_ip) {
+            int iface_idx = -1;
+            for (int i = 0; i < 8; i++) {
+                if (net_interfaces[i].name[0] && strcmp(net_interfaces[i].name, "lo") != 0) {
+                    iface_idx = i; break;
+                }
+            }
+            if (iface_idx >= 0) dst_ip = dns_resolve(argv[1], iface_idx);
+        }
     }
+    if (!dst_ip) { printf("tcptest: could not resolve %s\n", argv[1]); return; }
     printf("TCP test: connecting to %d.%d.%d.%d:%d...\n",
            (dst_ip >> 24) & 0xFF, (dst_ip >> 16) & 0xFF,
            (dst_ip >> 8) & 0xFF, dst_ip & 0xFF,
@@ -1047,8 +1069,26 @@ static void cmd_ifconfig(int argc, char** argv) {
     }
 }
 
+static void cmd_dns(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: dns <hostname>\n"); return; }
+    int iface_idx = -1;
+    for (int i = 0; i < 8; i++) {
+        if (net_interfaces[i].name[0] && strcmp(net_interfaces[i].name, "lo") != 0) {
+            iface_idx = i; break;
+        }
+    }
+    if (iface_idx < 0) { printf("No network interface\n"); return; }
+    uint32_t ip = dns_resolve(argv[1], iface_idx);
+    if (ip) {
+        printf("%s -> %d.%d.%d.%d\n", argv[1],
+            (ip>>24)&0xFF, (ip>>16)&0xFF, (ip>>8)&0xFF, ip&0xFF);
+    } else {
+        printf("dns: failed to resolve %s\n", argv[1]);
+    }
+}
+
 static void cmd_ping(int argc, char** argv) {
-    if (argc < 2) { printf("Usage: ping <ip>\n"); return; }
+    if (argc < 2) { printf("Usage: ping <ip|hostname>\n"); return; }
     uint32_t ip = 0;
     int seg = 0;
     char* p = argv[1];
@@ -1064,6 +1104,16 @@ static void cmd_ping(int argc, char** argv) {
             continue;
         }
         p++;
+    }
+    if (seg != 3) {
+        int iface_idx = -1;
+        for (int i = 0; i < 8; i++) {
+            if (net_interfaces[i].name[0] && strcmp(net_interfaces[i].name, "lo") != 0) {
+                iface_idx = i; break;
+            }
+        }
+        if (iface_idx >= 0) ip = dns_resolve(argv[1], iface_idx);
+        if (!ip) { printf("ping: failed to resolve %s\n", argv[1]); return; }
     }
     printf("PING %d.%d.%d.%d...\n", (ip>>24)&0xFF, (ip>>16)&0xFF, (ip>>8)&0xFF, ip&0xFF);
     int iface_idx = -1;

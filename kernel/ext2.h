@@ -134,5 +134,7 @@ uint32_t ext2_alloc_block(void);
 uint32_t ext2_alloc_inode(void);
 int  ext2_write_file(const char* path, const void* buf, uint32_t len);
 int  ext2_create_file(const char* path);
+int  ext2_mkdir(const char* path);
+int  ext2_unlink(const char* path);
 
 #endif

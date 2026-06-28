@@ -615,6 +615,9 @@ int udp_send(uint32_t dst_ip, uint16_t dst_port, uint16_t src_port, const uint8_
 void udp_register_listener(uint16_t port, void (*handler)(uint8_t*, uint32_t, uint32_t, uint16_t));
 int dhcp_request(int iface_idx);
 void cmd_dhcp(int argc, char** argv);
+uint32_t dns_resolve(const char* hostname, int iface_idx);
+void dns_set_server(uint32_t ip);
+uint32_t dns_get_server(void);
 int icmp_ping(uint32_t dst_ip, int count, int iface_idx);
 int tcp_init(void);
 int tcp_connect(uint32_t dst_ip, uint16_t dst_port, uint16_t src_port);
@@ -634,6 +637,8 @@ typedef struct {
     int (*read_file)(const char* path, void* buf, uint32_t maxlen);
     int (*write_file)(const char* path, const void* buf, uint32_t len);
     int (*readdir)(const char* path, dirent_t* entries, uint32_t max_entries);
+    int (*mkdir)(const char* path);
+    int (*unlink)(const char* path);
 } mount_entry_t;
 
 int vfs_mount(const char* mount_point, int fs_type, void* fs_data);
