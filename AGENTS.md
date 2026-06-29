@@ -180,11 +180,13 @@ kernel/
 - **switch_to_user_process inline asm fix**: `kernel/switch.asm` — AT&T operand order was reversed (source/destination swapped in `mov`), causing exec'd user processes to crash.
 - **QEMU display fix**: `run.ps1` — changed from `-display gtk` to `-display sdl` (gtk is broken on Windows).
 - **VGA 8x16 font data corruption fix**: `kernel/font.c` — font_data array had marker bytes (the glyph's own index) inserted at position `(index % 16)`, shifting all pixel data. Replaced with correct IBM VGA 8x16 ROM font. GUI text now renders legibly.
-- Build: zero errors, zero warnings.
+- **Boot loop resolved**: kernel boots to desktop in GUI mode and runs stably for extended periods. No double faults, page faults, or crashes observed after running 60+ seconds.
+- Build: zero errors, zero warnings. Kernel confirmed stable in both serial and GUI (SDL) mode.
 
 ## Next features to add
 - Calculator window (basic arithmetic)
-- EXT2 write support (currently read-only)
 - File Manager: copy/paste, drag-and-drop files
 - Network: DNS resolver, HTTP client library
-- Multimedia: video playback (simple formats)
+- SMP (multi-core) bringup via APIC IPI
+- Page fault advanced features (COW, demand paging, swapped pages)
+- EXT2 write improvements (write via mount, not just raw ext2_write_file)
