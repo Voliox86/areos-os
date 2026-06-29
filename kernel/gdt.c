@@ -46,7 +46,7 @@ void load_tss(void) {
 }
 
 void init_gdt(void) {
-    gp.limit = (sizeof(uint64_t) * 6 + 16) - 1; // 6 standard + 1 TSS (16 bytes)
+    gp.limit = (sizeof(uint64_t) * 5 + 16) - 1; // 5 standard entries + 1 TSS (16 bytes)
     gp.base  = (uint64_t)&gdt + KERNEL_BASE;
 
     gdt[0] = 0;                                // null

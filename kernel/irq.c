@@ -63,21 +63,24 @@ void irq_install_handler(int irq, void (*handler)(void*)) {
 }
 
 void irq_unmask(int irq) {
-    if (irq < 8) {
-        outb(0x21, inb(0x21) & ~(1 << irq));
-    } else {
-        outb(0xA1, inb(0xA1) & ~(1 << (irq - 8)));
+    // When APIC is active, PIC is masked and disabled — only use I/O APIC
+    if (!apic_initialized) {
+        if (irq < 8) {
+            outb(0x21, inb(0x21) & ~(1 << irq));
+        } else {
+            outb(0xA1, inb(0xA1) & ~(1 << (irq - 8)));
+        }
     }
-    // Also unmask on I/O APIC if available
     ioapic_unmask_irq(irq);
 }
 
 void irq_mask(int irq) {
-    if (irq < 8) {
-        outb(0x21, inb(0x21) | (1 << irq));
-    } else {
-        outb(0xA1, inb(0xA1) | (1 << (irq - 8)));
+    if (!apic_initialized) {
+        if (irq < 8) {
+            outb(0x21, inb(0x21) | (1 << irq));
+        } else {
+            outb(0xA1, inb(0xA1) | (1 << (irq - 8)));
+        }
     }
-    // Also mask on I/O APIC if available
     ioapic_mask_irq(irq);
 }

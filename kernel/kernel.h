@@ -147,23 +147,25 @@ typedef struct process {
     struct process* children;
 } process_t;
 
-// x86_64 TSS (104 bytes)
+// x86_64 TSS (102 bytes)
+// Layout per Intel Vol 3, Figure 7-9
 typedef struct {
     uint32_t reserved0;
     uint64_t rsp0;
     uint64_t rsp1;
     uint64_t rsp2;
-    uint64_t reserved1;
-    uint64_t ist1;
-    uint64_t ist2;
-    uint64_t ist3;
-    uint64_t ist4;
-    uint64_t ist5;
-    uint64_t ist6;
-    uint64_t ist7;
-    uint64_t reserved2;
-    uint16_t reserved3;
-    uint16_t iomap_base;
+    uint32_t reserved_ss0;    // offset 28 (was SS0 in 32-bit)
+    uint32_t reserved_ss1;    // offset 32 (was SS1 in 32-bit)
+    uint32_t reserved_ss2;    // offset 36 (was SS2 in 32-bit)
+    uint64_t ist1;            // offset 40
+    uint64_t ist2;            // offset 48
+    uint64_t ist3;            // offset 56
+    uint64_t ist4;            // offset 64
+    uint64_t ist5;            // offset 72
+    uint64_t ist6;            // offset 80
+    uint64_t ist7;            // offset 88
+    uint32_t reserved2;       // offset 96
+    uint16_t iomap_base;      // offset 100
 } __attribute__((packed)) tss_entry_t;
 
 // RTC time structure (also in rtc.h)
