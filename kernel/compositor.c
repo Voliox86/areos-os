@@ -1031,7 +1031,6 @@ void compositor_run(void) {
     redraw_all();
     save_cursor_bg(mouse_x, mouse_y);
     draw_cursor(mouse_x, mouse_y);
-
     int redraw = 0;
     uint32_t clock_tick = 0;
 
@@ -1334,6 +1333,7 @@ void compositor_run(void) {
         }
 
 done_click:
+
         mouse_x = mx; mouse_y = my;
         mouse_btns = btns;
 

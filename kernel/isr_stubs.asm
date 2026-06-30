@@ -227,18 +227,19 @@ irq_common:
     ; Scheduler tick
     mov [saved_rsp], rsp
     call irq_scheduler_tick
-    ; Read next RSP *before* switching to user page tables (no identity mapping)
+    ; Read next RSP (higher-half address, valid in any CR3 via PML4[511] mirror)
     mov rax, next_rsp
     mov rbx, KERNEL_BASE
     add rax, rbx
-    mov rdx, [rax]               ; rdx = next_rsp (user kernel stack, higher-half address)
+    mov rdx, [rax]               ; rdx = next_rsp (higher-half address)
+    ; Set RSP before switching CR3 — ensures valid stack during CR3 switch
+    mov rsp, rdx
     ; Switch to next process page tables
     mov rax, next_cr3
     mov rbx, KERNEL_BASE
     add rax, rbx
     mov rax, [rax]
     mov cr3, rax
-    mov rsp, rdx                 ; Use the value we saved before the CR3 switch
     RESTORE_REGS
     add rsp, 16
     iretq

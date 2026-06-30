@@ -1349,7 +1349,15 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
 
     if (vbe_get_lfb()) {
         printf("[DESKTOP] Launching NyxOS Desktop...\n");
+        // Register compositor as scheduler process so scheduler manages it correctly
+        process_t* comp_proc = create_process("compositor", compositor_run, 0);
+        if (comp_proc) {
+            for (int i = 0; i < process_count; i++) {
+                if (process_table[i] == comp_proc) { current_idx = i; break; }
+            }
+        }
         compositor_init();
+        serial_puts("[COMP] calling compositor_run\n");
         compositor_run();
         printf("[DESKTOP] Compositor exited, rebooting...\n");
         outb(0x64, 0xFE);

@@ -203,7 +203,7 @@ void irq_scheduler_tick(void) {
             next_cr3 = next_proc->page_directory
                 ? (uint64_t)next_proc->page_directory
                 : (uint64_t)kernel_pml4_phys;
-            next_rsp = (uint64_t)(uintptr_t)next_proc->stack;
+            next_rsp = (uint64_t)(uintptr_t)next_proc->stack + KERNEL_BASE;
             return;
         }
     }
