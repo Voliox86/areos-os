@@ -168,49 +168,7 @@ uint64_t next_cr3 = 0;
 
 // Called from the IRQ stub after EOI, with saved_rsp set.
 void irq_scheduler_tick(void) {
-    if (process_count < 2) {
-        next_rsp = saved_rsp;
-        next_cr3 = (uint64_t)kernel_pml4_phys;
-        return;
-    }
-
-    static int tick_counter = 0;
-    tick_counter++;
-    if (tick_counter < 5) {
-        next_rsp = saved_rsp;
-        next_cr3 = (uint64_t)kernel_pml4_phys;
-        return;
-    }
-    tick_counter = 0;
-
-    process_t* current = process_table[current_idx];
-    if (current) {
-        // saved_rsp may be identity-mapped (kernel stack) or higher-half (ring 3 kernel stack via TSS)
-        // Always store as identity-mapped so that +KERNEL_BASE restore is correct
-        uint64_t rsp_val = saved_rsp;
-        if (rsp_val > 0xFFFFFFFFULL) rsp_val -= KERNEL_BASE;
-        current->stack = (void*)(uintptr_t)rsp_val;
-    }
-
-    int next = current_idx;
-    for (int i = 0; i < process_count; i++) {
-        next = (next + 1) % process_count;
-        if (process_table[next] && process_table[next]->state)
-            break;
-    }
-
-    if (next != current_idx) {
-        current_idx = next;
-        process_t* next_proc = process_table[next];
-        if (next_proc && next_proc->stack) {
-            tss_set_stack((uint64_t)(uintptr_t)next_proc->kernel_stack + KERNEL_BASE);
-            next_cr3 = next_proc->page_directory
-                ? (uint64_t)next_proc->page_directory
-                : (uint64_t)kernel_pml4_phys;
-            next_rsp = (uint64_t)(uintptr_t)next_proc->stack + KERNEL_BASE;
-            return;
-        }
-    }
+    // DISABLED: always stay in current context
     next_rsp = saved_rsp;
     next_cr3 = (uint64_t)kernel_pml4_phys;
 }

@@ -102,7 +102,24 @@ isr_common:
     ; Switch to kernel page tables in case we came from user mode
     mov rax, KERNEL_BASE + kernel_pml4_phys
     mov rax, [rax]
+    test rax, rax
+    jz .isr_bad
+    test rax, 0xFFF
+    jnz .isr_bad
     mov cr3, rax
+    jmp .isr_done
+.isr_bad:
+    mov dx, 0x3FD
+.w1: in al, dx; test al, 0x20; jz .w1
+    mov dx, 0x3F8; mov al, 'I'; out dx, al
+    mov dx, 0x3FD
+.w2: in al, dx; test al, 0x20; jz .w2
+    mov dx, 0x3F8; mov al, 'C'; out dx, al
+    mov dx, 0x3FD
+.w3: in al, dx; test al, 0x20; jz .w3
+    mov dx, 0x3F8; mov al, '3'; out dx, al
+.isr_halt: cli; hlt; jmp .isr_halt
+.isr_done:
     SAVE_REGS
     ; Stack: [RSP+0]=R15, ..., [RSP+112]=RAX
     ; After SAVE_REGS: [RSP+120]=int_no, [RSP+128]=error, [RSP+136]=RIP, [RSP+144]=CS, [RSP+152]=RFLAGS, ...
@@ -208,15 +225,26 @@ extern irq_handler
 extern irq_scheduler_tick
 
 irq_common:
-    ; Switch to kernel page tables immediately
-    ; CPU already switched to kernel stack (via TSS.RSP0 = higher half addr)
-    ; and pushed iretq frame. We're running from higher half address.
+    ; Switch to kernel page tables for C code (uses identity-mapped addresses)
     mov rax, kernel_pml4_phys
     mov rbx, KERNEL_BASE
     add rax, rbx
     mov rax, [rax]
+    test rax, rax
+    jz .irq_bad
+    test rax, 0xFFF
+    jnz .irq_bad
     mov cr3, rax
-
+    jmp .irq_done
+.irq_bad:
+    mov dx, 0x3FD
+.w4: in al, dx; test al, 0x20; jz .w4
+    mov dx, 0x3F8; mov al, 'K'; out dx, al
+    mov dx, 0x3FD
+.w5: in al, dx; test al, 0x20; jz .w5
+    mov dx, 0x3F8; mov al, '3'; out dx, al
+.irq_halt: cli; hlt; jmp .irq_halt
+.irq_done:
     SAVE_REGS
     ; Stack: [RSP+0]=R15..[RSP+112]=RAX, [RSP+120]=int_no, [RSP+128]=error, [RSP+136]=RIP
     mov rdi, [rsp + 120]     ; int_no
@@ -224,8 +252,11 @@ irq_common:
     ; Send EOI (handles APIC or legacy PIC)
     mov rdi, [rsp + 120]     ; int_no
     call irq_eoi
-    ; Scheduler tick
-    mov [saved_rsp], rsp
+    ; Scheduler tick — save RSP via higher-half address
+    mov rax, saved_rsp
+    mov rbx, KERNEL_BASE
+    add rax, rbx
+    mov [rax], rsp
     call irq_scheduler_tick
     ; Read next RSP (higher-half address, valid in any CR3 via PML4[511] mirror)
     mov rax, next_rsp
@@ -234,12 +265,26 @@ irq_common:
     mov rdx, [rax]               ; rdx = next_rsp (higher-half address)
     ; Set RSP before switching CR3 — ensures valid stack during CR3 switch
     mov rsp, rdx
-    ; Switch to next process page tables
+    ; Validate next_cr3 before switching
     mov rax, next_cr3
     mov rbx, KERNEL_BASE
     add rax, rbx
     mov rax, [rax]
+    test rax, rax
+    jz .bad_cr3
+    test rax, 0xFFF
+    jnz .bad_cr3
     mov cr3, rax
+    jmp .restore_done
+.bad_cr3:
+    mov dx, 0x3FD
+.b1: in al, dx; test al, 0x20; jz .b1
+    mov dx, 0x3F8; mov al, 'B'; out dx, al
+    mov dx, 0x3FD
+.b2: in al, dx; test al, 0x20; jz .b2
+    mov dx, 0x3F8; mov al, '3'; out dx, al
+.b3: cli; hlt; jmp .b3
+.restore_done:
     RESTORE_REGS
     add rsp, 16
     iretq

@@ -491,7 +491,7 @@ void idt_set_gate(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags);
 void idt_set_gate_ist(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags, uint8_t ist);
 
 // IST stack sizes
-#define IST_STACK_SIZE 4096
+#define IST_STACK_SIZE 8192
 #define IST_DOUBLE_FAULT 1
 void init_isr(void);
 void isr_handler(uint64_t int_no);

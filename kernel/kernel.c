@@ -1169,11 +1169,6 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
     init_screen();
     clear_screen();
 
-    nyxfetch();
-
-    for (volatile long i = 0; i < 200000000; i++);
-    clear_screen();
-
     printf("[INIT] Global Descriptor Table...\n"); init_gdt();
     printf("[INIT] Interrupt Descriptor Table...\n"); init_idt();
     printf("[INIT] Interrupt Service Routines...\n"); init_isr();
@@ -1216,6 +1211,10 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
     printf("[INIT] Physical Memory Manager...\n"); init_memory(mem_total);
 
     printf("[INIT] Paging...\n"); init_paging();
+
+    nyxfetch();
+    for (volatile long i = 0; i < 200000000; i++);
+    clear_screen();
     printf("[INIT] APIC...\n"); init_apic();
     printf("[INIT] Kernel Heap...\n"); init_heap();
     printf("[INIT] Slab Allocator...\n"); slab_init_all();
