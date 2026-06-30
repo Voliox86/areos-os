@@ -17,7 +17,7 @@ static tss_entry_t tss;
 
 // Build a 64-bit descriptor value:
 //   access = access byte (e.g. 0x9A for kernel code)
-//   flags  = nibble (e.g. 0x20 for long mode, 0x00 for data)
+//   flags  = nibble (e.g. 0x2 for long mode, 0x0 for data)
 static uint64_t make_desc(uint8_t access, uint8_t flags) {
     uint64_t v = 0;
     v |= (uint64_t)access << 40;
@@ -50,10 +50,10 @@ void init_gdt(void) {
     gp.base  = (uint64_t)&gdt + KERNEL_BASE;
 
     gdt[0] = 0;                                // null
-    gdt[1] = make_desc(0x9A, 0x20);            // kernel code 64 (L-bit)
-    gdt[2] = make_desc(0x92, 0x00);            // kernel data
-    gdt[3] = make_desc(0xFA, 0x20);            // user code 64
-    gdt[4] = make_desc(0xF2, 0x00);            // user data
+    gdt[1] = make_desc(0x9A, 0x2);             // kernel code 64 (L-bit)
+    gdt[2] = make_desc(0x92, 0x0);             // kernel data
+    gdt[3] = make_desc(0xFA, 0x2);             // user code 64
+    gdt[4] = make_desc(0xF2, 0x0);             // user data
 
     memset_asm(&tss, 0, sizeof(tss));
     tss.iomap_base = sizeof(tss);

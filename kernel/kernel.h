@@ -280,7 +280,7 @@ enum vga_color {
 extern process_t* process_table[MAX_PROCESSES];
 extern uint64_t memory_total;
 extern uint64_t memory_used;
-extern uint32_t tick_count;
+extern volatile uint32_t tick_count;
 extern int process_count;
 extern int current_idx;
 extern net_iface_t net_interfaces[8];

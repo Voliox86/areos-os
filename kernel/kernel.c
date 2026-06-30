@@ -19,7 +19,7 @@ net_iface_t net_interfaces[8];
 mount_t mount_points[MAX_MOUNTS];
 uint64_t memory_total = 0;
 uint64_t memory_used = 0;
-uint32_t tick_count = 0;
+volatile uint32_t tick_count = 0;
 bool kernel_initialized = false;
 int process_count = 0;
 
