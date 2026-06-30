@@ -60,10 +60,10 @@ $argsList = @(
 )
 
 switch ($Mode) {
-    'gui'    { $argsList += "-display", "gtk" }
+    'gui'    { $argsList += "-display", "sdl" }
     'serial' { $argsList += "-nographic"; $argsList += "-serial", "stdio" }
-    'net'    { $argsList += "-display", "gtk"; $argsList += "-nic", "user,model=rtl8139" }
-    'debug'  { $argsList += "-display", "gtk"; $argsList += "-d", "cpu_reset,int" }
+    'net'    { $argsList += "-display", "sdl"; $argsList += "-nic", "user,model=rtl8139" }
+    'debug'  { $argsList += "-display", "sdl"; $argsList += "-d", "cpu_reset,int" }
 }
 
 if ($Sound -or $Mode -eq 'net') {

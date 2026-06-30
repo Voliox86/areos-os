@@ -35,6 +35,11 @@ static void mouse_write(uint8_t val) {
 
 
 int mouse_init(void) {
+    // Flush any stale data from PS/2 controller
+    while (inb(0x64) & 1) inb(0x60);
+    uint8_t st;
+    while ((st = inb(0x64)) & 2);  // wait for input buffer empty
+
     // Enable auxiliary device
     ps2_write(0x64, 0xA8);
 
@@ -63,7 +68,8 @@ int mouse_init(void) {
 
 void mouse_irq_handler(void* unused) {
     (void)unused;
-    if (!(inb(0x64) & 1)) return;
+    uint8_t st = inb(0x64);
+    if ((st & 0x21) != 0x21) return;  // OBF=1, mouse bit=1 → mouse data
     uint8_t data = inb(0x60);
 
     if (packet_idx == 0) {

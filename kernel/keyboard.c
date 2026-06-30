@@ -207,7 +207,8 @@ char scancode_to_ascii(uint8_t sc) {
 // ============================================================
 void keyboard_irq_handler(void* unused) {
     (void)unused;
-    if (inb(0x64) & 0x01) {
+    uint8_t st = inb(0x64);
+    if ((st & 0x21) == 0x01) {  // OBF=1, mouse bit=0 → keyboard data
         uint8_t sc = inb(0x60);
         char c = scancode_to_ascii(sc);
         if (c) {

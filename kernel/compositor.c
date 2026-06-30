@@ -73,14 +73,20 @@ static void restore_cursor_bg(int mx, int my) {
 
 static void draw_cursor(int mx, int my) {
     uint32_t fw = fb_get_width(), fh = fb_get_height();
+    if (fw == 0 || fh == 0) return;
     uint32_t* fb = (uint32_t*)fb_get_addr();
-    for (int y = 0; y < CURSOR_H && (uint32_t)(my + y) < fh; y++)
-        for (int x = 0; x < CURSOR_W && (uint32_t)(mx + x) < fw; x++) {
-            if (cursor_data[y][x] == 1)
-                fb[(my + y) * fw + (mx + x)] = fb_rgb(0,0,0);
-            else if (cursor_data[y][x] == 2)
-                fb[(my + y) * fw + (mx + x)] = fb_rgb(255,255,255);
+    if (!fb) return;
+
+    for (int y = 0; y < CURSOR_H && my + y < (int)fh; y++) {
+        for (int x = 0; x < CURSOR_W && mx + x < (int)fw; x++) {
+            uint8_t p = cursor_data[y][x];
+            if (p == 0) continue;
+            if (p == 2)
+                fb[(my + y) * fw + (mx + x)] = 0xFFFFFF;
+            else
+                fb[(my + y) * fw + (mx + x)] = 0x000000;
         }
+    }
 }
 
 static void draw_button(int x, int y, int w, int h, uint32_t bg, uint32_t fg, const char* label) {
@@ -1322,6 +1328,18 @@ void compositor_run(void) {
                 goto done_click;
             }
 
+            // Arrow keys to move cursor (for debugging)
+            if (k == 'w' || k == 'W') my -= 8;
+            if (k == 's' || k == 'S') my += 8;
+            if (k == 'a' || k == 'A') mx -= 8;
+            if (k == 'd' || k == 'D') mx += 8;
+            if (mx < 0) mx = 0;
+            if (mx >= (int)fw) mx = fw - 1;
+            if (my < 0) my = 0;
+            if (my >= (int)fh) my = fh - 1;
+            // Sync WASD changes back to hardware so next loop iteration doesn't overwrite them
+            mouse_set_pos(mx, my);
+
             // Route all keys to focused window's key handler
             window_t* fwin = find_window(focused_id);
             if (fwin && fwin->on_key && k > 0) {
@@ -1334,6 +1352,19 @@ done_click:
 
         mouse_x = mx; mouse_y = my;
         mouse_btns = btns;
+
+        // Debug: print mouse position to serial every ~50 iterations
+        {
+            static int debug_cnt = 0;
+            debug_cnt++;
+            if ((debug_cnt % 50) == 0) {
+                char dbg[96];
+                snprintf(dbg, sizeof(dbg), "mpos=%d,%d gx=%d gy=%d fw=%u fh=%u fb=0x%lx\n",
+                    mouse_x, mouse_y, mouse_get_x(), mouse_get_y(),
+                    fb_get_width(), fb_get_height(), (uint64_t)fb_get_addr());
+                serial_puts(dbg);
+            }
+        }
 
         uint32_t now = get_ticks();
         if (now - clock_tick > 1000) {
@@ -1348,7 +1379,7 @@ done_click:
 
         save_cursor_bg(mouse_x, mouse_y);
         draw_cursor(mouse_x, mouse_y);
-        sleep(10);
+        for (int d = 0; d < 2000000; d++) __asm__ volatile("pause");
     }
 
     for (int i = 0; i < MAX_WINDOWS; i++)
