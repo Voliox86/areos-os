@@ -22,8 +22,45 @@ fileman_win_t* fileman_create_ctx(void) {
     fm->drag_active = 0;
     fm->drag_file_idx = -1;
     fm->drag_mode = 0;
+    fm->search_active = 0;
+    fm->search_pattern[0] = '\0';
+    fm->search_count = 0;
     snprintf(fm->status, sizeof(fm->status), "Ready");
     return fm;
+}
+
+static int str_contains(const char* s, const char* sub) {
+    if (!sub || !*sub) return 1;
+    while (*s) {
+        const char* a = s;
+        const char* b = sub;
+        while (*a && *b && (*a == *b || (*a >= 'A' && *a <= 'Z' ? *a + 32 : *a) == (*b >= 'A' && *b <= 'Z' ? *b + 32 : *b))) {
+            a++; b++;
+        }
+        if (!*b) return 1;
+        s++;
+    }
+    return 0;
+}
+
+static void fileman_apply_search(fileman_win_t* fm) {
+    fm->search_count = 0;
+    if (!fm->search_active || !fm->search_pattern[0]) {
+        for (int i = 0; i < fm->entry_count; i++)
+            fm->search_indices[fm->search_count++] = i;
+        return;
+    }
+    for (int i = 0; i < fm->entry_count; i++) {
+        if (str_contains(fm->entries[i], fm->search_pattern))
+            fm->search_indices[fm->search_count++] = i;
+    }
+    if (fm->sel_index >= 0) {
+        // Keep selection if still visible
+        int found = 0;
+        for (int i = 0; i < fm->search_count; i++)
+            if (fm->search_indices[i] == fm->sel_index) { found = 1; break; }
+        if (!found) fm->sel_index = -1;
+    }
 }
 
 void fileman_refresh(fileman_win_t* fm) {
@@ -44,6 +81,7 @@ void fileman_refresh(fileman_win_t* fm) {
     }
     vfs_close(fd);
     snprintf(fm->status, sizeof(fm->status), "%d entries", fm->entry_count);
+    fileman_apply_search(fm);
 }
 
 static void fileman_cd(fileman_win_t* fm, const char* dir, window_t* win) {
@@ -219,14 +257,29 @@ void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     bx += 84;
     fb_fill_rect(bx, tb_y + 2, 80, TOOLBAR_H - 4, fb_rgb(60,70,80));
     font_draw_string(bx + (80 - strlen("Refresh") * FONT_WIDTH) / 2, tb_y + (TOOLBAR_H - FONT_HEIGHT) / 2, "Refresh", fb_rgb(220,220,220), fb_rgb(60,70,80));
+    bx += 84;
+    fb_fill_rect(bx, tb_y + 2, 60, TOOLBAR_H - 4, fm->search_active ? fb_rgb(80,70,40) : fb_rgb(60,70,80));
+    font_draw_string(bx + (60 - strlen("Find") * FONT_WIDTH) / 2, tb_y + (TOOLBAR_H - FONT_HEIGHT) / 2, "Find", fb_rgb(220,220,220), fm->search_active ? fb_rgb(80,70,40) : fb_rgb(60,70,80));
 
     // Directory path bar
     int path_y = tb_y + TOOLBAR_H;
     fb_fill_rect(cx, path_y, cw, HEADER_H, fb_rgb(40,45,55));
     font_draw_string(cx + 4, path_y + (HEADER_H - char_h) / 2, fm->cwd, fb_rgb(200,200,255), fb_rgb(40,45,55));
 
+    // Search bar (visible when search_active)
+    int search_bar_h = fm->search_active ? HEADER_H : 0;
+    if (fm->search_active) {
+        int sby = path_y + HEADER_H;
+        fb_fill_rect(cx, sby, cw, (uint32_t)search_bar_h, fb_rgb(60,50,30));
+        char search_disp[128];
+        snprintf(search_disp, sizeof(search_disp), "Search: %s_ (%d/%d)", fm->search_pattern,
+            fm->search_count, fm->entry_count);
+        font_draw_string(cx + 4, sby + (HEADER_H - char_h) / 2, search_disp,
+            fb_rgb(255,255,150), fb_rgb(60,50,30));
+    }
+
     // Header row
-    int list_header_y = path_y + HEADER_H;
+    int list_header_y = path_y + HEADER_H + search_bar_h;
     fb_fill_rect(cx, list_header_y, cw, char_h + 2, fb_rgb(50,55,65));
     font_draw_string(cx + 4, list_header_y + 1, "Name", fb_rgb(255,255,255), fb_rgb(50,55,65));
 
@@ -237,16 +290,18 @@ void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     if (max_rows < 1) max_rows = 1;
     int list_w = (int)cw - SCROLL_W;
 
-    for (int i = fm->scroll_offset; i < fm->entry_count && (i - fm->scroll_offset) < max_rows; i++) {
+    int disp_count = fm->search_active ? fm->search_count : fm->entry_count;
+    for (int i = fm->scroll_offset; i < disp_count && (i - fm->scroll_offset) < max_rows; i++) {
         int row = i - fm->scroll_offset;
+        int ei = fm->search_active ? fm->search_indices[i] : i;
         int ey = list_y + row * char_h;
-        uint32_t bg = (i == fm->sel_index) ? fb_rgb(60,80,120) : fb_rgb(30,30,35);
+        uint32_t bg = (ei == fm->sel_index) ? fb_rgb(60,80,120) : fb_rgb(30,30,35);
         fb_fill_rect(cx + 2, ey, (uint32_t)(list_w - 4), char_h, bg);
 
-        char prefix = fm->entry_types[i] ? '/' : ' ';
+        char prefix = fm->entry_types[ei] ? '/' : ' ';
         char display[68];
-        snprintf(display, sizeof(display), "%c %s", prefix, fm->entries[i]);
-        uint32_t fg = fm->entry_types[i] ? fb_rgb(100,200,255) : fb_rgb(220,220,220);
+        snprintf(display, sizeof(display), "%c %s", prefix, fm->entries[ei]);
+        uint32_t fg = fm->entry_types[ei] ? fb_rgb(100,200,255) : fb_rgb(220,220,220);
         font_draw_string(cx + 4, ey, display, fg, bg);
     }
 
@@ -256,9 +311,9 @@ void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     int sb_h = avail_h;
     fb_fill_rect(sb_x, sb_y, SCROLL_W, (uint32_t)sb_h, fb_rgb(40,40,45));
 
-    if (fm->entry_count > max_rows) {
-        int thumb_top = (fm->scroll_offset * sb_h) / fm->entry_count;
-        int thumb_h = (max_rows * sb_h) / fm->entry_count;
+    if (disp_count > max_rows) {
+        int thumb_top = (fm->scroll_offset * sb_h) / disp_count;
+        int thumb_h = (max_rows * sb_h) / disp_count;
         if (thumb_h < 8) thumb_h = 8;
         if (thumb_top + thumb_h > sb_h) thumb_top = sb_h - thumb_h;
         fb_fill_rect(sb_x, sb_y + thumb_top, SCROLL_W, (uint32_t)thumb_h, fb_rgb(100,100,110));
@@ -280,7 +335,7 @@ void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     }
 
     // Drag ghost
-    if (fm->drag_active && fm->drag_file_idx >= 0 && fm->drag_file_idx < fm->entry_count) {
+    if (fm->drag_active && fm->drag_file_idx >= 0 && fm->drag_file_idx < disp_count) {
         int gx = fm->drag_cur_x + 8;
         int gy = fm->drag_cur_y + 8;
         int gw = 180, gh = FONT_HEIGHT + 6;
@@ -292,9 +347,10 @@ void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
         fb_fill_rect(gx, gy, 1, (uint32_t)gh, fb_rgb(140,180,255));
         fb_fill_rect(gx + gw - 1, gy, 1, (uint32_t)gh, fb_rgb(140,180,255));
         char label[72];
+        int drag_ei = fm->search_active ? fm->search_indices[fm->drag_file_idx] : fm->drag_file_idx;
         snprintf(label, sizeof(label), "%c %s  [%s]",
-            fm->entry_types[fm->drag_file_idx] ? '/' : ' ',
-            fm->entries[fm->drag_file_idx],
+            (drag_ei >= 0 && drag_ei < fm->entry_count && fm->entry_types[drag_ei]) ? '/' : ' ',
+            drag_ei >= 0 && drag_ei < fm->entry_count ? fm->entries[drag_ei] : "?",
             fm->drag_mode == 2 ? "COPY" : "MOVE");
         font_draw_string(gx + 4, gy + 3, label, fb_rgb(255,255,255), fb_rgb(60,80,120));
     }
@@ -354,21 +410,25 @@ void fileman_win_click(window_t* win, int mx, int my, int btn) {
         return;
     }
 
+    int search_bar_h = fm->search_active ? HEADER_H : 0;
+    int disp_count = fm->search_active ? fm->search_count : fm->entry_count;
+
     // Right-click: show context menu
     if (btn == 2) {
         fm->ctx_hover = -1;
 
         // Check if click is in file list area
-        int list_header_y = cy + TOOLBAR_H + HEADER_H;
+        int list_header_y = cy + TOOLBAR_H + HEADER_H + search_bar_h;
         int list_y = list_header_y + char_h + 4;
-        int avail_h = (int)(ch - TOOLBAR_H - HEADER_H - char_h - 4 - HEADER_H - 4);
+        int avail_h = (int)(ch - TOOLBAR_H - HEADER_H - search_bar_h - char_h - 4 - HEADER_H - 4);
         int max_rows = avail_h / (int)char_h;
         if (max_rows < 1) max_rows = 1;
 
         if (my >= list_y && my < list_y + max_rows * (int)char_h) {
             int idx = (my - list_y) / (int)char_h + fm->scroll_offset;
-            if (idx >= 0 && idx < fm->entry_count) {
-                fm->sel_index = idx;
+            if (idx >= 0 && idx < disp_count) {
+                int real_idx = fm->search_active ? fm->search_indices[idx] : idx;
+                fm->sel_index = real_idx;
             }
         }
 
@@ -392,12 +452,29 @@ void fileman_win_click(window_t* win, int mx, int my, int btn) {
         if (rel_x >= 172 && rel_x < 252) { fileman_delete(fm); return; }
         if (rel_x >= 256 && rel_x < 336) { fileman_cd(fm, "..", win); return; }
         if (rel_x >= 340 && rel_x < 420) { fileman_refresh(fm); return; }
+        // Find/Search button
+        if (rel_x >= 424 && rel_x < 484) {
+            if (fm->search_active) {
+                fm->search_active = 0;
+                fm->search_pattern[0] = '\0';
+                fm->scroll_offset = 0;
+                fileman_apply_search(fm);
+                snprintf(fm->status, sizeof(fm->status), "Search closed");
+            } else {
+                fm->search_active = 1;
+                fm->search_pattern[0] = '\0';
+                fm->scroll_offset = 0;
+                fileman_apply_search(fm);
+                snprintf(fm->status, sizeof(fm->status), "Type to search (Esc to close)");
+            }
+            return;
+        }
     }
 
     // File list area
-    int list_header_y = cy + TOOLBAR_H + HEADER_H;
+    int list_header_y = cy + TOOLBAR_H + HEADER_H + search_bar_h;
     int list_y = list_header_y + char_h + 4;
-    int avail_h = (int)(ch - TOOLBAR_H - HEADER_H - char_h - 4 - HEADER_H - 4);
+    int avail_h = (int)(ch - TOOLBAR_H - HEADER_H - search_bar_h - char_h - 4 - HEADER_H - 4);
     int max_rows = avail_h / (int)char_h;
     if (max_rows < 1) max_rows = 1;
     int list_w = (int)cw - SCROLL_W;
@@ -405,11 +482,11 @@ void fileman_win_click(window_t* win, int mx, int my, int btn) {
     // Scrollbar click
     int sb_x = cx + list_w;
     if (mx >= sb_x && mx < sb_x + SCROLL_W && my >= list_y && my < list_y + avail_h) {
-        if (fm->entry_count > max_rows) {
+        if (disp_count > max_rows) {
             int rel_y = my - list_y;
-            fm->scroll_offset = (rel_y * fm->entry_count) / avail_h;
-            if (fm->scroll_offset > fm->entry_count - max_rows)
-                fm->scroll_offset = fm->entry_count - max_rows;
+            fm->scroll_offset = (rel_y * disp_count) / avail_h;
+            if (fm->scroll_offset > disp_count - max_rows)
+                fm->scroll_offset = disp_count - max_rows;
             if (fm->scroll_offset < 0) fm->scroll_offset = 0;
         }
         return;
@@ -417,13 +494,14 @@ void fileman_win_click(window_t* win, int mx, int my, int btn) {
 
     if (my >= list_y && my < list_y + max_rows * (int)char_h) {
         int idx = (my - list_y) / (int)char_h + fm->scroll_offset;
-        if (idx >= 0 && idx < fm->entry_count) {
-            fm->sel_index = idx;
-            if (fm->entry_types[idx]) {
-                fileman_cd(fm, fm->entries[idx], win);
+        if (idx >= 0 && idx < disp_count) {
+            int real_idx = fm->search_active ? fm->search_indices[idx] : idx;
+            fm->sel_index = real_idx;
+            if (fm->entry_types[real_idx]) {
+                fileman_cd(fm, fm->entries[real_idx], win);
             } else {
                 char path[256];
-                fileman_get_path(fm, fm->entries[idx], path, sizeof(path));
+                fileman_get_path(fm, fm->entries[real_idx], path, sizeof(path));
                 int fd = vfs_open(path, 0, 0);
                 if (fd >= 0) {
                     char buf[512];
@@ -431,9 +509,9 @@ void fileman_win_click(window_t* win, int mx, int my, int btn) {
                     vfs_close(fd);
                     if (n > 0) {
                         buf[n] = '\0';
-                        snprintf(fm->status, sizeof(fm->status), "%s (%d bytes): %.200s", fm->entries[idx], n, buf);
+                        snprintf(fm->status, sizeof(fm->status), "%s (%d bytes): %.200s", fm->entries[real_idx], n, buf);
                     } else {
-                        snprintf(fm->status, sizeof(fm->status), "%s (empty)", fm->entries[idx]);
+                        snprintf(fm->status, sizeof(fm->status), "%s (empty)", fm->entries[real_idx]);
                     }
                 }
             }
@@ -445,6 +523,9 @@ void fileman_win_mousemove(window_t* win, int mx, int my, int btns) {
     fileman_win_t* fm = (fileman_win_t*)win->reserved;
     if (!fm) return;
 
+    int search_bar_h = fm->search_active ? HEADER_H : 0;
+    int disp_count = fm->search_active ? fm->search_count : fm->entry_count;
+
     // Track button state
     if (btns & 1) {
         if (!fm->mouse_down) {
@@ -453,17 +534,17 @@ void fileman_win_mousemove(window_t* win, int mx, int my, int btns) {
             fm->drag_start_x = mx;
             fm->drag_start_y = my;
             // Determine which file was under cursor at press time
-            int cx = win->x, cy = win->y + TITLE_H;
+            int cy = win->y + TITLE_H;
             uint32_t char_h = FONT_HEIGHT;
-            int list_header_y = cy + TOOLBAR_H + HEADER_H;
+            int list_header_y = cy + TOOLBAR_H + HEADER_H + search_bar_h;
             int list_y = list_header_y + char_h + 4;
-            int avail_h = (int)(win->h - TOOLBAR_H - HEADER_H - char_h - 4 - HEADER_H - 4);
+            int avail_h = (int)(win->h - TOOLBAR_H - HEADER_H - search_bar_h - char_h - 4 - HEADER_H - 4);
             int max_rows = avail_h / (int)char_h;
             if (max_rows < 1) max_rows = 1;
             if (my >= list_y && my < list_y + max_rows * (int)char_h) {
                 int idx = (my - list_y) / (int)char_h + fm->scroll_offset;
-                if (idx >= 0 && idx < fm->entry_count)
-                    fm->drag_file_idx = idx;
+                if (idx >= 0 && idx < disp_count)
+                    fm->drag_file_idx = fm->search_active ? fm->search_indices[idx] : idx;
                 else
                     fm->drag_file_idx = -1;
             } else {
@@ -485,8 +566,10 @@ void fileman_win_mousemove(window_t* win, int mx, int my, int btns) {
         // Button released
         if (fm->drag_active) {
             // Drop: perform copy
+            int drag_realease_idx = (fm->drag_file_idx >= 0 && fm->drag_file_idx < fm->entry_count)
+                ? fm->drag_file_idx : 0;
             char src[256];
-            fileman_get_path(fm, fm->entries[fm->drag_file_idx], src, sizeof(src));
+            fileman_get_path(fm, fm->entries[drag_realease_idx], src, sizeof(src));
             const char* basename = src;
             for (int i = 0; src[i]; i++)
                 if (src[i] == '/') basename = &src[i] + 1;
@@ -538,6 +621,24 @@ void fileman_win_key(window_t* win, int key) {
 
     // Ctrl shortcuts (when not in input mode)
     if (!fm->input_mode && is_ctrl_pressed()) {
+        if (key == 'f' || key == 'F') {
+            // Toggle search
+            if (fm->search_active) {
+                fm->search_active = 0;
+                fm->search_pattern[0] = '\0';
+                fm->scroll_offset = 0;
+                fileman_apply_search(fm);
+                snprintf(fm->status, sizeof(fm->status), "Search closed");
+            } else {
+                fm->search_active = 1;
+                fm->input_mode = 0; // Ensure not in input mode
+                fm->search_pattern[0] = '\0';
+                fm->scroll_offset = 0;
+                fileman_apply_search(fm);
+                snprintf(fm->status, sizeof(fm->status), "Type search pattern (Esc to close)");
+            }
+            return;
+        }
         if (key == 'c' || key == 'C') {
             if (fm->sel_index >= 0) {
                 fileman_get_path(fm, fm->entries[fm->sel_index], fm->clipboard_path, sizeof(fm->clipboard_path));
@@ -569,52 +670,91 @@ void fileman_win_key(window_t* win, int key) {
         }
     }
 
+    // Search input mode
+    if (fm->search_active && !fm->input_mode) {
+        if (key == 0x1B) {
+            fm->search_active = 0;
+            fm->search_pattern[0] = '\0';
+            fm->scroll_offset = 0;
+            fileman_apply_search(fm);
+            snprintf(fm->status, sizeof(fm->status), "Search closed");
+            return;
+        }
+        if (key == '\b') {
+            int len = strlen(fm->search_pattern);
+            if (len > 0) {
+                fm->search_pattern[len - 1] = '\0';
+                fm->scroll_offset = 0;
+                fileman_apply_search(fm);
+            }
+            return;
+        }
+        if (key >= 0x20 && key <= 0x7E) {
+            int len = strlen(fm->search_pattern);
+            if (len < 62) {
+                fm->search_pattern[len] = (char)key;
+                fm->search_pattern[len + 1] = '\0';
+                fm->scroll_offset = 0;
+                fileman_apply_search(fm);
+            }
+            return;
+        }
+    }
+
     // Navigation keys when not in input mode
     if (!fm->input_mode) {
-        if (fm->entry_count == 0) return;
+        int disp_count = fm->search_active ? fm->search_count : fm->entry_count;
+        if (disp_count == 0) return;
 
         // Calculate visible rows (same as in draw)
         int char_h = FONT_HEIGHT;
         uint32_t ch = win->h;
-        int avail_h = (int)(ch - TOOLBAR_H - HEADER_H - char_h - 4 - HEADER_H - 4);
+        int search_bar_h = fm->search_active ? HEADER_H : 0;
+        int avail_h = (int)(ch - TOOLBAR_H - HEADER_H - search_bar_h - char_h - 4 - HEADER_H - 4);
         int max_rows = avail_h / char_h;
         if (max_rows < 1) max_rows = 1;
 
         if (key == KEY_DOWN) {
             if (fm->sel_index < 0) fm->sel_index = 0;
-            else if (fm->sel_index < fm->entry_count - 1) fm->sel_index++;
+            else if (fm->sel_index < disp_count - 1) {
+                int real_next = fm->search_active ? fm->search_indices[fm->sel_index + 1] : fm->sel_index + 1;
+                fm->sel_index = real_next;
+            }
             if (fm->sel_index >= fm->scroll_offset + max_rows)
                 fm->scroll_offset = fm->sel_index - max_rows + 1;
             return;
         }
         if (key == KEY_UP) {
-            if (fm->sel_index < 0) fm->sel_index = fm->entry_count - 1;
-            else if (fm->sel_index > 0) fm->sel_index--;
+            if (fm->sel_index < 0) fm->sel_index = 0;
+            else if (fm->sel_index > 0) {
+                int real_prev = fm->search_active ? fm->search_indices[fm->sel_index - 1] : fm->sel_index - 1;
+                fm->sel_index = real_prev;
+            }
             if (fm->sel_index < fm->scroll_offset)
                 fm->scroll_offset = fm->sel_index;
             return;
         }
         if (key == KEY_PGDN) {
             fm->scroll_offset += max_rows;
-            if (fm->scroll_offset >= fm->entry_count)
-                fm->scroll_offset = fm->entry_count - 1;
+            if (fm->scroll_offset >= disp_count)
+                fm->scroll_offset = disp_count - 1;
             if (fm->scroll_offset < 0) fm->scroll_offset = 0;
-            fm->sel_index = fm->scroll_offset;
+            fm->sel_index = fm->search_active ? fm->search_indices[fm->scroll_offset] : fm->scroll_offset;
             return;
         }
         if (key == KEY_PGUP) {
             fm->scroll_offset -= max_rows;
             if (fm->scroll_offset < 0) fm->scroll_offset = 0;
-            fm->sel_index = fm->scroll_offset;
+            fm->sel_index = fm->search_active ? fm->search_indices[fm->scroll_offset] : fm->scroll_offset;
             return;
         }
         if (key == KEY_HOME) {
             fm->scroll_offset = 0;
-            fm->sel_index = 0;
+            fm->sel_index = fm->search_active ? fm->search_indices[0] : 0;
             return;
         }
         if (key == KEY_END) {
-            fm->sel_index = fm->entry_count - 1;
+            fm->sel_index = fm->search_active ? fm->search_indices[disp_count - 1] : disp_count - 1;
             fm->scroll_offset = fm->sel_index - max_rows + 1;
             if (fm->scroll_offset < 0) fm->scroll_offset = 0;
             return;

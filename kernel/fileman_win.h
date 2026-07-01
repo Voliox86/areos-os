@@ -25,6 +25,11 @@ typedef struct {
     // Clipboard
     char clipboard_path[256];
     int clipboard_mode; // 0=none, 1=copy, 2=cut
+    // Search
+    int search_active;
+    char search_pattern[64];
+    int search_indices[FILEMAN_MAX_ENTRIES];
+    int search_count;
     // Mouse state (for drag-and-drop)
     int mouse_down;
     int drag_active;
