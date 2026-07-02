@@ -2,8 +2,9 @@
 #include "ata.h"
 
 static int ata_busy_wait(uint16_t ctrl, int timeout_ms) {
+    uint16_t cmd_port = ctrl - ATA_PRIMARY_CTRL + ATA_PRIMARY_CMD;
     while (timeout_ms--) {
-        if (!(inb(ctrl + ATA_PRIMARY_CMD - ATA_PRIMARY_DATA) & ATA_STATUS_BSY))
+        if (!(inb(cmd_port) & ATA_STATUS_BSY))
             return 0;
         for (volatile int i = 0; i < 1000; i++);
     }

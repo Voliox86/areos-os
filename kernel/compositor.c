@@ -309,9 +309,9 @@ static void draw_start_menu(void) {
     const char* items[] = {
         "File Manager", "Text Editor", "Image Viewer", "Terminal",
         "Settings", "Task Manager", "Desktop Demo",
-        "Paint", "Sound Test", "About", "Shutdown",
+        "Paint", "Sound Test", "About", "Shutdown", "Calculator",
     };
-    for (int i = 0; i < 11; i++) {
+    for (int i = 0; i < 12; i++) {
         int iy = sm_y + 28 + i * 28;
         if ((uint32_t)(iy + 28) > fh - TASKBAR_H) break;
         fb_fill_rect(sm_x + 4, iy, START_W - 8, 26, fb_rgb(45,45,50));
@@ -674,6 +674,8 @@ window_t* window_create(int x, int y, uint32_t w, uint32_t h, const char* title,
     win->draw = draw;
     win->on_key = NULL;
     win->on_click = NULL;
+    win->on_mousemove = NULL;
+    win->reserved = NULL;
     int sl = strlen(title);
     if (sl >= MAX_TITLE) sl = MAX_TITLE - 1;
     memcpy(win->title, title, sl);
@@ -707,6 +709,8 @@ void window_destroy(int id) {
     for (int i = 0; i < MAX_WINDOWS; i++)
         if (windows[i] == win) { windows[i] = NULL; break; }
     window_count--;
+    if (win->reserved)
+        kfree(win->reserved);
     kfree(win);
     if (focused_id == id)
         focus_next_window();

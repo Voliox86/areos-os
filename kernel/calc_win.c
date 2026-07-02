@@ -112,10 +112,10 @@ void calc_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     calc_win_t* calc = (calc_win_t*)win->reserved;
     if (!calc) return;
 
-    int x0 = win->x + CALC_MARGIN;
-    int y0 = win->y + CALC_MARGIN;
+    int x0 = cx + CALC_MARGIN;
+    int y0 = cy + CALC_MARGIN;
 
-    fb_fill_rect(win->x, win->y, win->w, win->h, fb_rgb(40, 40, 50));
+    fb_fill_rect(cx, cy, cw, ch, fb_rgb(40, 40, 50));
     uint32_t disp_w = CALC_COLS * (CALC_BTN_W + CALC_GAP) - CALC_GAP;
     fb_fill_rect(x0, y0, disp_w, CALC_DISP_H, fb_rgb(210, 220, 190));
     fb_fill_rect(x0, y0, disp_w, 1, fb_rgb(100, 100, 100));
@@ -165,7 +165,7 @@ void calc_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
 }
 
 void calc_win_click(window_t* win, int mx, int my, int btn) {
-    if (btn != 0) return;
+    if (btn != 1) return;
     calc_win_t* calc = (calc_win_t*)win->reserved;
     if (!calc) return;
 

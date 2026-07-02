@@ -57,6 +57,7 @@ static vfs_node_t* resolve_path(const char* path) {
     if (!path || !*path) return current_dir;
     char buf[256];
     strncpy(buf, path, 255);
+    buf[255] = '\0';
     char* p = buf;
 
     vfs_node_t* dir;
@@ -92,6 +93,7 @@ static vfs_node_t* resolve_parent(const char* path, char* child_name) {
     if (!path || !*path) return NULL;
     char buf[256];
     strncpy(buf, path, 255);
+    buf[255] = '\0';
     char* p = buf;
     if (buf[0] == '/') p++;
 

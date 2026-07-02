@@ -166,7 +166,7 @@ static uint32_t resolve_path(const char* path) {
             uint32_t off = 0;
             while (off < ext2_fs.block_size && off < bytes_left) {
                 ext2_dirent_t* de = (ext2_dirent_t*)(block_buf_local + off);
-                if (de->inode == 0) { off += de->rec_len; continue; }
+                if (de->inode == 0 || de->rec_len < 1) { off += (de->rec_len < 1) ? 1 : de->rec_len; continue; }
                 char dname[256];
                 uint8_t name_len = de->name_len & 0xFF;
                 __builtin_memcpy(dname, de->name, name_len);

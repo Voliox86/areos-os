@@ -28,9 +28,9 @@ void init_process(void) {
 //   r15, r14, r13, r12, r11, r10, r9, r8,
 //   rbp, rdi, rsi, rdx, rcx, rbx, rax,
 //   int_no(32), error(0), rip, cs, rflags, rsp, ss
-static void init_task_stack(process_t* proc, void* entry_point) {
+static int init_task_stack(process_t* proc, void* entry_point) {
     void* stack_mem = kmalloc(4096);
-    if (!stack_mem) return;
+    if (!stack_mem) return -1;
     uint64_t* sp = (uint64_t*)((uintptr_t)stack_mem + 4096);
 
     // iretq frame for kernel process (ring 0)
@@ -49,11 +49,12 @@ static void init_task_stack(process_t* proc, void* entry_point) {
 
     proc->stack = (void*)((uintptr_t)sp);
     proc->kernel_stack = (void*)((uintptr_t)stack_mem + 4096);
+    return 0;
 }
 
-static void init_user_task_stack(process_t* proc, void* entry_point, void* user_stack_top) {
+static int init_user_task_stack(process_t* proc, void* entry_point, void* user_stack_top) {
     void* stack_mem = kmalloc(4096);
-    if (!stack_mem) return;
+    if (!stack_mem) return -1;
     uint64_t* sp = (uint64_t*)((uintptr_t)stack_mem + 4096);
 
     // iretq frame for user process (ring 3)
@@ -73,6 +74,7 @@ static void init_user_task_stack(process_t* proc, void* entry_point, void* user_
 
     proc->stack = (void*)(uintptr_t)sp;
     proc->kernel_stack = (void*)((uintptr_t)stack_mem + 4096);
+    return 0;
 }
 
 process_t* create_process(const char* name, void* entry, uint64_t flags) {
@@ -87,7 +89,10 @@ process_t* create_process(const char* name, void* entry, uint64_t flags) {
     strncpy(p->comm, name, 31);
     p->comm[31] = '\0';
     if (entry) {
-        init_task_stack(p, entry);
+        if (init_task_stack(p, entry) < 0) {
+            kfree(p);
+            return NULL;
+        }
     }
     process_table[process_count++] = p;
     return p;
@@ -112,7 +117,10 @@ process_t* create_user_process(const char* name, void* entry, void* user_stack, 
         user_stack = (void*)(stack_virt + 4096);
     }
 
-    init_user_task_stack(p, entry, user_stack);
+    if (init_user_task_stack(p, entry, user_stack) < 0) {
+        kfree(p);
+        return NULL;
+    }
     process_table[process_count++] = p;
     return p;
 }
@@ -140,8 +148,9 @@ void switch_to_user_process(process_t* proc) {
 void destroy_process(uint64_t pid) {
     for (int i = 0; i < process_count; i++) {
         if (process_table[i] && process_table[i]->pid == pid) {
+            kfree(process_table[i]->stack);
             kfree(process_table[i]);
-            process_table[i] = NULL;
+            process_table[i] = process_table[--process_count];
             return;
         }
     }
