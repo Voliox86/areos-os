@@ -5,7 +5,7 @@
 
 #define SHA256_DIGEST_SIZE 32
 #define SHA256_BLOCK_SIZE  64
-#define PBKDF2_ITERATIONS  100000
+#define PBKDF2_ITERATIONS  1000
 
 typedef struct {
     uint8_t  data[SHA256_BLOCK_SIZE];
