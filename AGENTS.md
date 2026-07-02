@@ -34,6 +34,7 @@ Evolve NyxOS into a functional x86_64 kernel with filesystem, networking, shell,
 | v4.2.0 | NX bit (No-Execute) + SMEP (Supervisor Mode Execution Prevention), PAGE_NX added to user stack/heap/data, Local APIC + I/O APIC init, CPUID detection, IST (Interrupt Stack Table) for double fault (#8) and NMI (#2), repo cleanup (README x86_64, .gitignore, AGENTS.md) |
 | v5.0.0 | Full GUI application suite: Text Editor (file open/save, cursor nav), Image Viewer (test pattern, zoom/pan), Sound Test (PC speaker + SB16 sine/square/sweep). Brighter wallpaper gradient (sky-blue + grass). 8 desktop icons. **All placeholders replaced with real apps.** No crashes, zero warnings in build. |
 | v5.1.0 | Stability and bugfix release: TSS struct alignment fix (IST pointers shifted 4 bytes early → triple fault on double fault/NMI), GDT limit correction, APIC/PIC IRQ masking fix (PIC left fully masked when APIC active), switch_to_user_process inline asm operand reversal fix, VGA 8x16 font data corruption fix (marker bytes inserted in each glyph → garbage text in GUI). QEMU display changed to sdl for Windows compatibility. |
+| v5.3.0 | Login system: boot animation (~5s, NyxOS-themed, 23-step progress bar), credential storage on EXT2 (/etc/passwd), framebuffer login screen with keyboard input, default user nyx/nyx, fallback when no EXT2 disk, login failure → reboot, success → launch desktop. |
 
 ## Architecture
 ### Boot flow
@@ -46,7 +47,8 @@ Evolve NyxOS into a functional x86_64 kernel with filesystem, networking, shell,
 7. `mouse_init()` → `speaker_init()` → `sb16_init()` → register IRQ handlers → `sti`
 8. `initramfs_load()` → `initramfs_boot()` (create initramfs files in VFS)
 9. Auto-detect EXT2 on ATA disk → mount at `/mnt`
-10. `compositor_init()` + `compositor_run()` (GUI desktop) OR `launch_shell()` (fallback)
+10. `bootsplash_update(23, …)` → `bootsplash_clear()` → `auth_setup()` → `login_screen()`
+11. `compositor_init()` + `compositor_run()` (GUI desktop) OR `launch_shell()` (fallback)
 
 ### Critical constraints
 - Paging identity-maps 64 MB (16 page tables). Any static data, BSS, or heap beyond 64 MB causes triple-fault.
@@ -183,8 +185,14 @@ kernel/
 - **Boot loop resolved**: kernel boots to desktop in GUI mode and runs stably for extended periods. No double faults, page faults, or crashes observed after running 60+ seconds.
 - Build: zero errors, zero warnings. Kernel confirmed stable in both serial and GUI (SDL) mode.
 
+## v5.3.0 — Login system
+- **Boot animation**: Full-screen NyxOS-themed splash (~5s) with dark gradient, ASCII bird logo, twinkling stars (60 points), animated spinner (8 rotating dots), progress bar (23 steps with percentage and status text). Fades to black before desktop.
+- **Auth backend** (`auth.c/h`): Credential storage in `/etc/passwd` on EXT2 (`username:salt:hex_hash`). First boot creates default user `nyx`/`nyx`. Fallback to hardcoded default when no EXT2 disk. Hash uses djb2 with per-user salt.
+- **Login screen** (`login.c/h`): Framebuffer-based login panel (centered dark panel with title, username/password fields). Keyboard input via direct `kbd_buffer` polling with `cli`/`sti`. Password masked with `*`. Enter switches fields or submits. No cursor or mouse to avoid page faults.
+- **Integration**: `bootsplash_clear()` → `auth_setup()` → `login_screen()` → compositor in kernel_main. Login failure → reboot via `outb(0x64, 0xFE)`. Success → launch NyxOS Desktop.
+- **Keyboard buffer exposed**: `kbd_buffer`, `kbd_head`, `kbd_tail` made non-static in `keyboard.c` for direct polling from login.c.
+
 ## Next features to add
-- Calculator window (basic arithmetic)
 - File Manager: copy/paste, drag-and-drop files
 - Network: DNS resolver, HTTP client library
 - SMP (multi-core) bringup via APIC IPI

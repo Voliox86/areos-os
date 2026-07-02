@@ -6,12 +6,12 @@
   <strong>Custom x86_64 kernel · C and Assembly · General-purpose OS</strong>
   <br/><br/>
   <!-- Badges -->
-  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.1.0">
-    <img src="https://img.shields.io/badge/release-v5.1.0-00ff9d?style=flat" />
+  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.3.0">
+    <img src="https://img.shields.io/badge/release-v5.3.0-00ff9d?style=flat" />
   </a>
   <img src="https://img.shields.io/badge/kernel-120%20KB-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/arch-x86__64-00ff9d?style=flat" />
-    <img src="https://img.shields.io/badge/status-v5.1.0-00ff9d?style=flat" />
+    <img src="https://img.shields.io/badge/status-v5.3.0-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/TCP-yes-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/GUI-window%20compositor-00ff9d?style=flat" />
   <a href="https://github.com/kazah-png/nyx-os/issues/1">
@@ -67,7 +67,7 @@ ______          \'/
 The project implements core kernel primitives, a custom network stack (RTL8139 NIC + ARP/IP/UDP/ICMP/DHCP + TCP), a window compositor GUI, and a Sound Blaster 16 audio driver — all written in C and x86_64 Assembly with no external libraries.
 
 <div align="center">
-  <img src="gui.png?v=2" alt="NyxOS Desktop v5.1.0" width="700" />
+  <img src="gui.png?v=2" alt="NyxOS Desktop v5.3.0" width="700" />
   <p><em>NyxOS Desktop — 8 app icons, sky-blue wallpaper, taskbar</em></p>
 </div>
 
@@ -426,7 +426,7 @@ qemu-system-x86_64 -kernel kernel/nyx-kernel.bin -m 512M -hda ext2-test.img -nic
 See the full **[NyxOS Status Report](https://github.com/kazah-png/nyx-os/issues/1)** for a detailed feature checklist.
 
 ### What works
-- ✅ Full boot sequence to GUI desktop (or text shell fallback)
+- ✅ Full boot sequence with animation and login screen → GUI desktop (or text shell fallback)
 - ✅ 40+ shell commands with Tab completion, env vars, pipes, history
 - ✅ Ramdisk VFS + EXT2 read/write (auto-mount at /mnt)
 - ✅ Real networking (RTL8139 + ARP/IP/UDP/ICMP/DHCP/TCP)
@@ -450,14 +450,16 @@ See the full **[NyxOS Status Report](https://github.com/kazah-png/nyx-os/issues/
 - ✅ Desktop polish (wallpaper, right-click context menu, Settings window, File Manager toolbar)
 
 ### Known issues
-- ⚠️ **Boot instability:** the kernel boots to the GUI desktop and runs for ~30–60 seconds, then triple-faults (QEMU window closes). The crash occurs spontaneously without user interaction. Root cause suspected in the scheduler's `saved_rsp`/`next_rsp` handling during process context switches. A partial fix addresses double-`KERNEL_BASE` corruption of ring-3 kernel stacks, but the system is not yet fully stable.
+- ⚠️ **Login stability:** login screen works but may have edge cases with very fast typing or buffer overflow.
 - ⚠️ **User process scheduling:** init.elf (ring 3 user process) is loaded but never runs in practice — the scheduler always picks the placeholder init process (has no stack), which prevents any actual process switch. Removing init from the rotation causes an immediate crash when switching to the user process.
 
 ### What's being built
-- 🔄 Drag-reorder desktop icons
-- 🔄 Right-click context menu in File Manager (rename, copy, paste)
+- 🔄 Login screen: mouse click support for field switching
+- 🔄 File Manager: copy/paste, drag-and-drop files
+- 🔄 Network: DNS resolver, HTTP client library
 - 🔄 SMP (multi-core) bringup via APIC IPI
 - 🔄 Page fault advanced features (COW, demand paging)
+- 🔄 EXT2 write improvements (write via mount)
 
 ---
 
