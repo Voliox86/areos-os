@@ -3,6 +3,7 @@
 
 BITS 16
 ORG 0x8000
+DEFAULT ABS          ; explicit absolute addressing (flat binary)
 
 ; BSP must fill these before SIPI:
 ;   0x8FE0 — CR3 page-table physical address

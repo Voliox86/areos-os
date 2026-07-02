@@ -988,7 +988,7 @@ static void cmd_hexdump(int argc, char** argv) {
         count = 1024;
     }
     printf("Dumping %d bytes from 0x%x:\n", count, addr);
-    uint8_t* ptr = (uint8_t*)addr;
+    uint8_t* ptr = (uint8_t*)(uintptr_t)addr;
     for (uint32_t i = 0; i < count; i += 16) {
         char addr_str[9];
         uint32_t a = addr + i;
@@ -1899,20 +1899,20 @@ void init_load_modules(void) {
     uint32_t mods_count = mb[5];
     uint32_t mods_addr = mb[6];
     printf("[MODULES] %d module(s) at %x\n", mods_count, mods_addr);
-    uint32_t* mod_entry = (uint32_t*)mods_addr;
+    uint32_t* mod_entry = (uint32_t*)(uintptr_t)mods_addr;
     for (uint32_t i = 0; i < mods_count; i++) {
         uint32_t mod_start = mod_entry[0];
         uint32_t mod_end = mod_entry[1];
         uint32_t mod_str = mod_entry[2];
         uint32_t mod_size = mod_end - mod_start;
-        const char* name = (const char*)mod_str;
+        const char* name = (const char*)(uintptr_t)mod_str;
         char path[64];
         if (name && *name) {
             snprintf(path, sizeof(path), "/%s", name);
         } else {
             snprintf(path, sizeof(path), "/boot/module%d", i);
         }
-        vfs_create_from_mem(path, (uint8_t*)(uint32_t)mod_start, mod_size);
+        vfs_create_from_mem(path, (uint8_t*)(uintptr_t)mod_start, mod_size);
         mod_entry += 4;
     }
 }

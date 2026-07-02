@@ -35,6 +35,7 @@ Evolve NyxOS into a functional x86_64 kernel with filesystem, networking, shell,
 | v5.0.0 | Full GUI application suite: Text Editor (file open/save, cursor nav), Image Viewer (test pattern, zoom/pan), Sound Test (PC speaker + SB16 sine/square/sweep). Brighter wallpaper gradient (sky-blue + grass). 8 desktop icons. **All placeholders replaced with real apps.** No crashes, zero warnings in build. |
 | v5.1.0 | Stability and bugfix release: TSS struct alignment fix (IST pointers shifted 4 bytes early → triple fault on double fault/NMI), GDT limit correction, APIC/PIC IRQ masking fix (PIC left fully masked when APIC active), switch_to_user_process inline asm operand reversal fix, VGA 8x16 font data corruption fix (marker bytes inserted in each glyph → garbage text in GUI). QEMU display changed to sdl for Windows compatibility. |
 | v5.3.0 | Login system: boot animation (~5s, NyxOS-themed, 23-step progress bar), credential storage on EXT2 (/etc/passwd), framebuffer login screen with keyboard input, default user nyx/nyx, fallback when no EXT2 disk, login failure → reboot, success → launch desktop. |
+| v5.4.0 | Audit/hardening pass: fixed clean-build break (`sha256.h` pulled host `<stdint.h>`, conflicting with kernel int types); build is warning-free again (0 warnings from ~160 — pointer-truncation casts routed through `uintptr_t`, keyboard keymap over-initializers trimmed, dead code removed). **Security:** ring-3 syscall boundary hardened — user pointers validated against the canonical user half, and userspace now gets small integer fds via a translation table instead of raw (forgeable) kernel VFS handles (closed an info-leak + arbitrary-kernel-r/w reachable via `exec`). **Bugfix:** enabled EFER.SCE — `syscall` was raising #UD in ring 3 (root cause of user-process crash-on-entry). Panic handler now prints faulting RIP/CS/ring/error. |
 
 ## Architecture
 ### Boot flow
@@ -193,8 +194,32 @@ kernel/
 - **Keyboard buffer exposed**: `kbd_buffer`, `kbd_head`, `kbd_tail` made non-static in `keyboard.c` for direct polling from login.c.
 
 ## Next features to add
+- **Finish the ring-3 syscall path** (biggest functionality gap). Status after v5.4.0:
+  `exec <elf>` now reaches ring 3 and executes (EFER.SCE fixed), but the first
+  pointer-passing syscall hangs. Root cause: `syscall_entry` (isr_stubs.asm)
+  switches to kernel CR3, then `syscall_handler` dereferences the user buffer
+  (e.g. SYS_WRITE `buf`, SYS_PRINT string) which is not mapped under kernel CR3.
+  Fix options: (a) copy_from_user/copy_to_user helpers that read user memory
+  while still on the user CR3 before switching, or map the user page, or
+  (b) don't switch CR3 in syscall_entry (user PML4 already mirrors the kernel
+  higher half via PML4[511], so kernel code/data is reachable without a switch —
+  verify no low-identity-only accesses first). Debug with the new panic output
+  (RIP/CS/ring) and `qemu -d int,cpu_reset`.
 - File Manager: copy/paste, drag-and-drop files
 - Network: DNS resolver, HTTP client library
 - SMP (multi-core) bringup via APIC IPI
 - Page fault advanced features (COW, demand paging, swapped pages)
 - EXT2 write improvements (write via mount, not just raw ext2_write_file)
+
+## Security notes (v5.4.0)
+- Ring-3 syscall args are validated: `user_ptr_ok`/`user_str_ok` in `syscall.c`
+  reject any pointer outside the canonical user half `[0x1000, 0x800000000000)`,
+  so a user process can't name a kernel address as a syscall buffer.
+- Userspace fds are opaque small integers (`UFD_BASE`+slot) mapped to internal
+  VFS handles in `syscall.c`; kernel VFS pointers are never exposed to or
+  accepted from ring 3.
+- Still open: passwd salt is derived deterministically from the username
+  (`gen_salt_hex` = HMAC(secret, username)) rather than random-per-user; the
+  on-disk XOR of `/etc/passwd` is obfuscation, not encryption (the stored
+  values are already PBKDF2 hashes). Fine for a hobby OS; note it's not a real
+  secret-at-rest scheme.

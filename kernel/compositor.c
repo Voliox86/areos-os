@@ -463,7 +463,7 @@ static void draw_background(void) {
         uint8_t b = 200 + a * 40 / 255;
         if (r > 200) r = 200;
         if (g > 220) g = 220;
-        if (b > 255) b = 255;
+        /* b (uint8_t) cannot exceed 255, so no clamp needed */
         fb_fill_rect(0, glow_start + i, fw, 1, fb_rgb(r, g, b));
     }
     // Ground/grass strip at very bottom

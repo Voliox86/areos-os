@@ -18,7 +18,7 @@
 
 #define VBE_DISPI_ID4  0xB0C4
 
-#define LFB_VIRT_BASE 0xE0000000
+#define LFB_VIRT_BASE 0xE0000000UL
 #define MAX_FB_PAGES  1024
 
 static int vbe_initialized = 0;
@@ -102,13 +102,13 @@ int vbe_set_mode(uint32_t width, uint32_t height, uint32_t bpp) {
     }
 
     for (uint32_t i = 0; i < fb_pages; i++) {
-        map_page((void*)(lfb_phys + i * 0x1000),
+        map_page((void*)(uintptr_t)(lfb_phys + i * 0x1000),
                  (void*)(LFB_VIRT_BASE + i * 0x1000), 3 | PAGE_NX);
     }
 
     vbe_lfb = (void*)LFB_VIRT_BASE;
     serial_puts("[VBE] LFB mapped at ");
-    serial_puts(itoa((int)(uint32_t)vbe_lfb, buf, 16));
+    serial_puts(itoa((int)(uintptr_t)vbe_lfb, buf, 16));
     serial_puts(" ("); 
     serial_puts(itoa((int)fb_pages, buf, 10));
     serial_puts(" pages)\n");

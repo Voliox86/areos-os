@@ -37,7 +37,9 @@ int login_screen(void) {
     for (uint32_t y = 0; y < fh; y++) {
         uint32_t t = y * 255 / fh;
         uint8_t r = 12 + t * 14 / 255, g = 16 + t * 16 / 255, b = 26 + t * 22 / 255;
-        if (r > 30) r = 30; if (g > 40) g = 40; if (b > 55) b = 55;
+        if (r > 30) r = 30;
+        if (g > 40) g = 40;
+        if (b > 55) b = 55;
         fb_fill_rect(0, y, fw, 1, fb_rgb(r, g, b));
     }
 

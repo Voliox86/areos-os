@@ -451,7 +451,8 @@ See the full **[NyxOS Status Report](https://github.com/kazah-png/nyx-os/issues/
 
 ### Known issues
 - ⚠️ **Login stability:** login screen works but may have edge cases with very fast typing or buffer overflow.
-- ⚠️ **User process scheduling:** init.elf (ring 3 user process) is loaded but never runs in practice — the scheduler always picks the placeholder init process (has no stack), which prevents any actual process switch. Removing init from the rotation causes an immediate crash when switching to the user process.
+- ⚠️ **Ring-3 syscall path (partial):** `exec <elf>` now enters ring 3 and executes user code (the earlier crash was `syscall` raising #UD because EFER.SCE was never enabled — fixed in v5.4.0). The remaining gap: the first pointer-passing syscall hangs because `syscall_entry` switches to kernel CR3 and then dereferences the user buffer, which isn't mapped there. Needs copy_from_user/copy_to_user or a CR3-handling change. See `AGENTS.md → Next features` for the fix plan.
+- ⚠️ **Preemptive scheduling disabled:** `irq_scheduler_tick()` currently keeps the running context (no context switch on the timer IRQ); multitasking is cooperative via background-task callbacks. The process table, PIDs, and `switch_context` exist but aren't driven by the timer.
 
 ### What's being built
 - 🔄 Login screen: mouse click support for field switching

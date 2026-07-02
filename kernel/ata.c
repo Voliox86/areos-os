@@ -88,7 +88,7 @@ int ata_write_sectors(uint8_t drive, uint32_t lba, uint8_t count, const void* bu
     return count;
 }
 
-int ata_identify(uint8_t drive, uint16_t buf[256]) {
+int ata_identify(uint8_t drive, uint16_t* buf) {
     if (ata_busy_wait(ATA_PRIMARY_CTRL, 30000) < 0)
         return -1;
 

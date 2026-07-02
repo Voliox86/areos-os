@@ -98,7 +98,7 @@ void smp_init(void) {
 
         extern uint64_t kernel_pml4_phys;
         uint32_t data_off = tramp_size - 32;
-        volatile uint64_t* td_data = (volatile uint64_t*)(0x8000 + data_off);
+        volatile uint64_t* td_data = (volatile uint64_t*)(uintptr_t)(0x8000 + data_off);
         td_data[0] = kernel_pml4_phys;
         td_data[1] = cpu_info[i].stack_top;
         volatile uint32_t* cpu_id_ptr = (volatile uint32_t*)((uint8_t*)td_data + 16);

@@ -14,14 +14,6 @@ uint8_t rtc_read_register(uint8_t reg) {
     return inb(CMOS_DATA);
 }
 
-static uint8_t rtc_read_register_safe(uint8_t reg) {
-    uint8_t val;
-    while (rtc_is_update_in_progress());
-    val = rtc_read_register(reg);
-    while (rtc_is_update_in_progress());
-    return val;
-}
-
 void rtc_init(void) {
     outb(CMOS_ADDR, RTC_STATUS_B);
     io_wait();
@@ -39,7 +31,6 @@ void rtc_init(void) {
 void rtc_read_time(rtc_time_t* t) {
     if (!t) return;
 
-    uint8_t century;
     uint8_t reg_b = rtc_read_register(RTC_STATUS_B);
     int binary = (reg_b & 0x04) != 0;
 

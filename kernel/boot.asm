@@ -1,5 +1,6 @@
 ; NyxOS boot.asm - Multiboot2 → Long Mode entry (x86_64)
 BITS 32
+DEFAULT ABS          ; make the (already-default) absolute addressing explicit
 
 section .multiboot
 align 8

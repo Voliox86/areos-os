@@ -283,7 +283,7 @@ int sb16_init(void) {
     // Use large static DMA buffer (identity-mapped, physically contiguous, within 16MB)
     sb16.dma_buffer = sb16_dma_static_buf;
     sb16.dma_buffer_size = SB16_DMA_BUF_SIZE;
-    sb16.dma_buffer_phys = (uint32_t)sb16_dma_static_buf;
+    sb16.dma_buffer_phys = (uint32_t)(uintptr_t)sb16_dma_static_buf;
     memset_asm(sb16.dma_buffer, 0, sb16.dma_buffer_size);
     sb16.initialized = 1;
     serial_puts("[SB16] Initialized successfully\n");

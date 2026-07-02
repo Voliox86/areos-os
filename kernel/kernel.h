@@ -111,6 +111,7 @@ typedef __builtin_va_list va_list;
 
 // EFER MSR (0xC0000080)
 #define MSR_EFER    0xC0000080
+#define EFER_SCE    (1 << 0)     // System Call Extensions — enables syscall/sysret
 #define EFER_LME    (1 << 8)
 #define EFER_LMA    (1 << 10)
 #define EFER_NXE    (1 << 11)
@@ -492,7 +493,7 @@ void idt_set_gate_ist(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags, u
 #define IST_STACK_SIZE 8192
 #define IST_DOUBLE_FAULT 1
 void init_isr(void);
-void isr_handler(uint64_t int_no);
+void isr_handler(uint64_t int_no, uint64_t rip, uint64_t error, uint64_t cs);
 void init_irq(void);
 void irq_handler(uint64_t irq_no);
 void irq_install_handler(int irq, void (*handler)(void*));

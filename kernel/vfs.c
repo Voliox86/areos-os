@@ -164,15 +164,15 @@ int vfs_open(const char* path, int flags, mode_t mode) {
             ino->parent = parent;
             parent->children[parent->child_count++] = ino;
         }
-        return (int)(uint32_t)ino;
+        return (int)(uintptr_t)ino;
     }
 
     if (!ino || ino->type != 0) return -1;
-    return (int)(uint32_t)ino;
+    return (int)(uintptr_t)ino;
 }
 
 int vfs_read(int fd, void* buf, size_t count) {
-    vfs_node_t* ino = (vfs_node_t*)(uint32_t)fd;
+    vfs_node_t* ino = (vfs_node_t*)(uintptr_t)(uint32_t)fd;
     if (!ino || ino->type != 0) return -1;
     if (count > ino->size) count = ino->size;
     if (ino->data) memcpy(buf, ino->data, count);
@@ -180,7 +180,7 @@ int vfs_read(int fd, void* buf, size_t count) {
 }
 
 int vfs_write(int fd, const void* buf, size_t count) {
-    vfs_node_t* ino = (vfs_node_t*)(uint32_t)fd;
+    vfs_node_t* ino = (vfs_node_t*)(uintptr_t)(uint32_t)fd;
     if (!ino || ino->type != 0) return -1;
     if (!ino->data || ino->size < count) {
         uint8_t* new_data = (uint8_t*)kmalloc(count + BLOCK_SIZE);
@@ -213,17 +213,17 @@ int vfs_create_from_mem(const char* path, uint8_t* data, uint32_t size) {
     ino->data = data;
     ino->parent = parent;
     parent->children[parent->child_count++] = ino;
-    return (int)(uint32_t)ino;
+    return (int)(uintptr_t)ino;
 }
 
 uint32_t vfs_fsize(int fd) {
-    vfs_node_t* ino = (vfs_node_t*)(uint32_t)fd;
+    vfs_node_t* ino = (vfs_node_t*)(uintptr_t)(uint32_t)fd;
     if (!ino || ino->type != 0) return 0;
     return ino->size;
 }
 
 uint8_t* vfs_fdata(int fd) {
-    vfs_node_t* ino = (vfs_node_t*)(uint32_t)fd;
+    vfs_node_t* ino = (vfs_node_t*)(uintptr_t)(uint32_t)fd;
     if (!ino || ino->type != 0) return NULL;
     return ino->data;
 }
@@ -307,6 +307,7 @@ dirent_t* vfs_readdir(int fd) {
 // ==================== Mount table ====================
 
 int vfs_mount(const char* mount_point, int fs_type, void* fs_data) {
+    (void)fs_data;
     if (mount_count >= MAX_MOUNT_POINTS) return -1;
     mount_entry_t* me = &mount_table[mount_count];
     strncpy(me->mount_point, mount_point, MAX_PATH - 1);

@@ -40,7 +40,7 @@ static int cpuid_apic_detected(void) {
     return (edx & (1 << 9)) != 0; // CPUID.01h:EDX.APIC bit
 }
 
-static int cpuid_x2apic_detected(void) {
+static int __attribute__((unused)) cpuid_x2apic_detected(void) {
     uint32_t eax, ebx, ecx, edx;
     __asm__ volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(1));
     return (ecx & (1 << 21)) != 0; // CPUID.01h:ECX.x2APIC bit
@@ -112,7 +112,7 @@ void init_apic(void) {
            ioapic_id, ioapic_ver & 0xFF, ioapic_nr_irqs);
 
     // Mask all I/O APIC redirection entries
-    for (int i = 0; i < ioapic_nr_irqs; i++) {
+    for (uint32_t i = 0; i < ioapic_nr_irqs; i++) {
         uint32_t reg = IOAPIC_REDTBL + i * 2;
         uint64_t entry = IOAPIC_INT_MASKED;
         ioapic_write(reg, (uint32_t)entry);

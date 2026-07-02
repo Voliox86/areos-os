@@ -124,6 +124,9 @@ isr_common:
     ; Stack: [RSP+0]=R15, ..., [RSP+112]=RAX
     ; After SAVE_REGS: [RSP+120]=int_no, [RSP+128]=error, [RSP+136]=RIP, [RSP+144]=CS, [RSP+152]=RFLAGS, ...
     mov rdi, [rsp + 120]     ; int_no
+    mov rsi, [rsp + 136]     ; faulting RIP
+    mov rdx, [rsp + 128]     ; error code
+    mov rcx, [rsp + 144]     ; CS (ring is CS & 3)
     call isr_handler
     RESTORE_REGS
     add rsp, 16               ; pop error code + int number

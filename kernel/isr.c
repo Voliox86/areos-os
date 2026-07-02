@@ -27,9 +27,11 @@ static const char* exception_names[32] = {
     "Reserved", "Reserved", "Security Exception", "Reserved"
 };
 
-void isr_handler(uint64_t int_no) {
+void isr_handler(uint64_t int_no, uint64_t rip, uint64_t error, uint64_t cs) {
     if (int_no < 32) {
-        printf("\n[PANIC] Exception: %s\n", exception_names[int_no]);
+        printf("\n[PANIC] Exception: %s (#%lu)\n", exception_names[int_no], int_no);
+        printf("[PANIC] RIP=0x%lx  CS=0x%lx (ring %lu)  error=0x%lx\n",
+               rip, cs, cs & 3, error);
         if (int_no == 14) {
             uint64_t cr2 = read_cr2();
             printf("[PANIC] Page fault at 0x%lx\n", cr2);

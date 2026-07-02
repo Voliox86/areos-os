@@ -493,7 +493,6 @@ int ext2_create_file(const char* path) {
 
     // Find a block with space or allocate a new one
     uint32_t iblock = 0;
-    uint32_t block_num = 0;
     uint8_t* buf = get_block_buf();
     if (!buf) return -1;
     int found_space = 0;
@@ -695,7 +694,6 @@ static int add_dirent_to_parent(uint32_t parent_ino, const char* name,
     entry_size = (entry_size + 3) & ~3;
 
     uint32_t iblock = 0;
-    uint32_t block_num = 0;
     uint8_t* buf = get_block_buf();
     if (!buf) return -1;
     int found_space = 0;

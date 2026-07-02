@@ -14,6 +14,10 @@ static process_t* get_cur_proc(void) {
 
 // Set up syscall MSRs for the syscall/sysret mechanism
 void setup_syscall_msrs(void) {
+    // Enable SYSCALL/SYSRET (EFER.SCE). Without this the `syscall` instruction
+    // raises #UD in ring 3 — the reason user processes crashed on entry.
+    write_msr(MSR_EFER, read_msr(MSR_EFER) | EFER_SCE);
+
     // STAR:  [63:48] = sysret CS for ring 3, [47:32] = syscall CS (ring 0)
     //        [31:0]  = not used (legacy SYSCALL EIP)
     uint64_t star = ((uint64_t)USER_CS << 48) | ((uint64_t)KERNEL_CS << 32);
@@ -34,6 +38,55 @@ void set_kernel_rsp(uint64_t rsp) {
     kernel_rsp = rsp;
 }
 
+/* ------------------------------------------------------------------ */
+/*  Ring-3 syscall boundary guards                                    */
+/* ------------------------------------------------------------------ */
+/* Canonical user space is the lower half: [USER_SPACE_MIN, USER_SPACE_END).
+ * Anything at or above USER_SPACE_END is non-canonical or the higher-half
+ * kernel. Rejecting those stops a ring-3 process from handing the kernel a
+ * kernel address as a syscall buffer (which would be an arbitrary kernel
+ * read/write or info-leak primitive). */
+#define USER_SPACE_MIN 0x1000ULL
+#define USER_SPACE_END 0x0000800000000000ULL
+
+static int user_ptr_ok(uint64_t ptr, uint64_t len) {
+    if (ptr < USER_SPACE_MIN) return 0;
+    if (len > USER_SPACE_END) return 0;
+    if (ptr + len < ptr) return 0;              /* wrap-around */
+    if (ptr + len > USER_SPACE_END) return 0;
+    return 1;
+}
+
+static int user_str_ok(uint64_t ptr) {
+    /* String length is unknown here; validating the base pointer keeps a
+     * higher-half kernel address from ever being dereferenced as a string. */
+    return ptr >= USER_SPACE_MIN && ptr < USER_SPACE_END;
+}
+
+/* Per-process-agnostic fd table: ring 3 gets small integer fds and never sees
+ * (or can forge) a raw kernel VFS handle. 0-2 are the standard streams. */
+#define UFD_BASE 3
+#define UFD_MAX  32
+static int  ufd_handle[UFD_MAX];    /* internal VFS handle for each slot */
+static char ufd_inuse[UFD_MAX];
+
+static int ufd_alloc(int internal) {
+    for (int i = 0; i < UFD_MAX; i++) {
+        if (!ufd_inuse[i]) { ufd_inuse[i] = 1; ufd_handle[i] = internal; return UFD_BASE + i; }
+    }
+    return -1;
+}
+static int ufd_lookup(int ufd, int* internal) {
+    int i = ufd - UFD_BASE;
+    if (i < 0 || i >= UFD_MAX || !ufd_inuse[i]) return -1;
+    *internal = ufd_handle[i];
+    return 0;
+}
+static void ufd_release(int ufd) {
+    int i = ufd - UFD_BASE;
+    if (i >= 0 && i < UFD_MAX) ufd_inuse[i] = 0;
+}
+
 uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
     (void)a4; (void)a5;
     switch (no) {
@@ -48,29 +101,40 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
             int fd = (int)a1;
             const char* buf = (const char*)a2;
             int len = (int)a3;
+            if (len < 0 || !user_ptr_ok(a2, (uint64_t)len)) return -1;
             if (fd == 1 || fd == 2) {
                 for (int i = 0; i < len; i++) putchar(buf[i]);
             }
             return len;
         }
         case SYS_PRINT: {
+            if (!user_str_ok(a1)) return -1;
             printf("%s", (const char*)a1);
             return 0;
         }
         case SYS_OPEN: {
+            if (!user_str_ok(a1)) return -1;
             const char* path = (const char*)a1;
             int flags = (int)a2;
             int mode = (int)a3;
-            return vfs_open(path, flags, mode);
+            int internal = vfs_open(path, flags, mode);
+            if (internal < 0) return -1;
+            int ufd = ufd_alloc(internal);
+            if (ufd < 0) { vfs_close(internal); return -1; }  /* table full */
+            return ufd;
         }
         case SYS_READ: {
-            int fd = (int)a1;
-            void* buf = (void*)a2;
+            int internal;
+            if (ufd_lookup((int)a1, &internal) != 0) return -1;
             int count = (int)a3;
-            return vfs_read(fd, buf, count);
+            if (count < 0 || !user_ptr_ok(a2, (uint64_t)count)) return -1;
+            return vfs_read(internal, (void*)a2, count);
         }
         case SYS_CLOSE: {
-            return vfs_close((int)a1);
+            int internal;
+            if (ufd_lookup((int)a1, &internal) != 0) return -1;
+            ufd_release((int)a1);
+            return vfs_close(internal);
         }
         case SYS_GETPID: {
             process_t* cur = get_cur_proc();
@@ -97,11 +161,14 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
             return old_brk;
         }
         case SYS_FSIZE: {
-            return vfs_fsize((int)a1);
+            int internal;
+            if (ufd_lookup((int)a1, &internal) != 0) return -1;
+            return vfs_fsize(internal);
         }
         case SYS_EXEC: {
+            if (!user_str_ok(a1)) return -1;
             const char* path = (const char*)a1;
-            int fd = vfs_open(path, 0, 0);
+            int fd = vfs_open(path, 0, 0);      /* kernel-side handle, never exposed */
             if (fd < 0) return -1;
             uint32_t size = vfs_fsize(fd);
             uint8_t* data = vfs_fdata(fd);

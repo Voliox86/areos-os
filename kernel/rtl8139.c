@@ -150,7 +150,7 @@ int rtl8139_init(void) {
 
                 // Set TX buffer addresses
                 for (int i = 0; i < 4; i++) {
-                    rtl_writel(RTL_REG_TXADDR0 + i*4, (uint32_t)tx_buffers[i]);
+                    rtl_writel(RTL_REG_TXADDR0 + i*4, (uint32_t)(uintptr_t)tx_buffers[i]);
                 }
 
                 // Configure RX: accept broadcast, multicast, physical match
