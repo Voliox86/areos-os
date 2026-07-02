@@ -16,9 +16,9 @@ static int e0_prefix = 0;          // Flag para el prefijo 0xE0
 // Buffer circular para caracteres (ISR -> getchar)
 // ------------------------------------------------------------
 #define KBD_BUFFER_SIZE 256
-static volatile char kbd_buffer[KBD_BUFFER_SIZE];
-static volatile int kbd_head = 0;
-static volatile int kbd_tail = 0;
+volatile char kbd_buffer[KBD_BUFFER_SIZE];
+volatile int kbd_head = 0;
+volatile int kbd_tail = 0;
 
 static volatile int kbd_keycodes[KBD_BUFFER_SIZE];
 static volatile int kbd_kc_head = 0;

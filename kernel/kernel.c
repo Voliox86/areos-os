@@ -14,6 +14,8 @@
 #include "smp.h"
 #include "initramfs.h"
 #include "bootsplash.h"
+#include "auth.h"
+#include "login.h"
 
 // Variables globales del kernel
 process_t* process_table[MAX_PROCESSES];
@@ -1417,6 +1419,15 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
     bootsplash_update(23, 23, "Launching desktop...");
     if (vbe_get_lfb()) {
         bootsplash_clear();
+        printf("[AUTH] Setting up user accounts...\n");
+        auth_setup();
+        printf("[LOGIN] Starting login screen...\n");
+        if (!login_screen()) {
+            printf("[LOGIN] Login failed, rebooting...\n");
+            outb(0x64, 0xFE);
+            while(1) { __asm__ volatile("hlt"); }
+        }
+        printf("[LOGIN] Login successful, starting desktop...\n");
         printf("[DESKTOP] Launching NyxOS Desktop...\n");
         // Register compositor as scheduler process so scheduler manages it correctly
         process_t* comp_proc = create_process("compositor", compositor_run, 0);

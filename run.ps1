@@ -60,10 +60,10 @@ $argsList = @(
 )
 
 switch ($Mode) {
-    'gui'    { $argsList += "-display", "sdl" }
+    'gui'    { $argsList += "-display", "sdl"; $argsList += "-serial", "file:qemu_serial.txt" }
     'serial' { $argsList += "-nographic"; $argsList += "-serial", "stdio" }
-    'net'    { $argsList += "-display", "sdl"; $argsList += "-nic", "user,model=rtl8139" }
-    'debug'  { $argsList += "-display", "sdl"; $argsList += "-d", "cpu_reset,int" }
+    'net'    { $argsList += "-display", "sdl"; $argsList += "-serial", "file:qemu_serial.txt"; $argsList += "-nic", "user,model=rtl8139" }
+    'debug'  { $argsList += "-display", "sdl"; $argsList += "-serial", "file:qemu_serial.txt"; $argsList += "-d", "cpu_reset,int" }
 }
 
 if ($Sound -or $Mode -eq 'net') {
