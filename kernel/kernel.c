@@ -1419,6 +1419,7 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
 void nyxfetch(void) {
     clear_screen();
     set_terminal_color(vga_entry_color(VGA_LIGHT_BROWN, VGA_BLACK));
+
     const char* logo[] = {
         "______          \\'/",
         "      .-'` .    `'-.    -= * =-",
@@ -1440,19 +1441,84 @@ void nyxfetch(void) {
         "    N I G H T F A L L",
         NULL
     };
-    for (int i = 0; logo[i] != NULL; i++) {
+    for (int i = 0; logo[i] != NULL; i++)
         printf("%s\n", logo[i]);
-    }
+
     set_terminal_color(vga_entry_color(VGA_LIGHT_CYAN, VGA_BLACK));
     printf("  -------------------------------------\n");
+
+    char cpu_brand[49] = "Unknown";
+    uint32_t e, b, c, d;
+    __asm__ volatile("cpuid" : "=a"(e), "=b"(b), "=c"(c), "=d"(d) : "a"(0x80000000));
+    if (e >= 0x80000004) {
+        uint32_t* bp = (uint32_t*)cpu_brand;
+        for (uint32_t leaf = 0x80000002; leaf <= 0x80000004; leaf++) {
+            __asm__ volatile("cpuid" : "=a"(e), "=b"(b), "=c"(c), "=d"(d) : "a"(leaf));
+            *bp++ = e; *bp++ = b; *bp++ = c; *bp++ = d;
+        }
+        cpu_brand[48] = '\0';
+        char* p = cpu_brand + 47;
+        while (p >= cpu_brand && *p == ' ') *p-- = '\0';
+        if (cpu_brand[0] == '\0') strcpy(cpu_brand, "Unknown");
+    }
+
+    uint32_t total_sec = get_ticks() / 1000;
+    uint32_t days = total_sec / 86400;
+    uint32_t hours = (total_sec % 86400) / 3600;
+    uint32_t mins = (total_sec % 3600) / 60;
+    uint32_t secs = total_sec % 60;
+    char uptime[32];
+    if (days > 0)
+        snprintf(uptime, sizeof(uptime), "%u days %02u:%02u:%02u", days, hours, mins, secs);
+    else
+        snprintf(uptime, sizeof(uptime), "%02u:%02u:%02u", hours, mins, secs);
+
+    uint64_t free_mem = memory_total > memory_used ? memory_total - memory_used : 0;
+    uint32_t mem_pct = memory_total > 0 ? (uint32_t)((memory_used * 100) / memory_total) : 0;
+
+    rtc_time_t rtc;
+    rtc_read_time(&rtc);
+
+    uint32_t fb_w = fb_get_width(), fb_h = fb_get_height();
+    char res_str[24];
+    if (fb_w && fb_h)
+        snprintf(res_str, sizeof(res_str), "%u x %u", fb_w, fb_h);
+    else
+        strcpy(res_str, "VGA text (80x25)");
+
+    char ip_str[16] = "Not connected";
+    for (int i = 0; i < 8; i++) {
+        if (net_interfaces[i].name[0] && net_interfaces[i].ip) {
+            uint32_t ip = net_interfaces[i].ip;
+            snprintf(ip_str, sizeof(ip_str), "%d.%d.%d.%d",
+                     (ip >> 24) & 0xFF, (ip >> 16) & 0xFF,
+                     (ip >> 8) & 0xFF, ip & 0xFF);
+            break;
+        }
+    }
+
+    char disk_str[48] = "Not mounted";
+    if (ext2_fs.block_size > 0) {
+        uint64_t total_kb = (uint64_t)ext2_fs.sb.total_blocks * ext2_fs.block_size / 1024;
+        uint64_t free_kb = (uint64_t)ext2_fs.sb.free_blocks * ext2_fs.block_size / 1024;
+        snprintf(disk_str, sizeof(disk_str), "%llu KiB / %llu KiB", free_kb, total_kb);
+    }
+
+    printf("  OS:         %s x86_64\n", KERNEL_NAME);
+    printf("  Host:       QEMU Standard PC\n");
     printf("  Kernel:     %s %s (%s)\n", KERNEL_NAME, KERNEL_VERSION, KERNEL_CODENAME);
-    printf("  Arch:       x86_64 (64-bit)\n");
-    printf("  Memory:     %llu MB total, %llu MB free\n",
-           memory_total / (1024*1024),
-           (memory_total - memory_used) / (1024*1024));
-    printf("  Heap:       %llu KB\n", KERNEL_HEAP_SIZE / 1024);
-    printf("  Paging:     %s\n", (read_cr0() & 0x80000000) ? "Enabled" : "Disabled");
-    printf("  Uptime:     %d ticks\n", tick_count);
+    printf("  Uptime:     %s\n", uptime);
+    printf("  Resolution: %s\n", res_str);
+    printf("  CPU:        %s (%d)\n", cpu_brand, cpu_count);
+    printf("  Memory:     %llu MiB / %llu MiB (%u%%)\n",
+           free_mem / (1024*1024), memory_total / (1024*1024), mem_pct);
+    printf("  Processes:  %d\n", process_count);
+    printf("  Disk (/mnt): %s\n", disk_str);
+    printf("  Network:    %s\n", ip_str);
+    printf("  Shell:      NyxOS Terminal\n");
+    printf("  Date/Time:  %u-%u-%u %u:%u:%u\n",
+           (unsigned int)rtc.year, (unsigned int)rtc.month, (unsigned int)rtc.day,
+           (unsigned int)rtc.hour, (unsigned int)rtc.minute, (unsigned int)rtc.second);
     printf("  -------------------------------------\n");
     set_terminal_color(vga_entry_color(VGA_LIGHT_GREEN, VGA_BLACK));
 }
@@ -1754,6 +1820,11 @@ int snprintf(char *buf, size_t size, const char *fmt, ...) {
                 char tmp[16];
                 itoa((int)val, tmp, 10);
                 char *t = tmp;
+                int tlen = 0; while (t[tlen]) tlen++;
+                if (width > tlen) {
+                    int pad = width - tlen;
+                    while (pad-- > 0 && written < (int)size - 1) { *p++ = '0'; written++; }
+                }
                 while (*t && written < (int)size - 1) { *p++ = *t++; written++; }
                 fmt++;
             } else if (*fmt == 'x' || *fmt == 'X') {
