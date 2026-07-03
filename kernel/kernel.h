@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.7.5"
+#define KERNEL_VERSION "5.7.6"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -563,6 +563,14 @@ void kernel_poll_net(void);
 void init_background_tasks(void);
 void run_background_tasks(void);
 void irq_scheduler_tick(void);
+
+// Preemptive scheduler (process.c): dormant until sched_enable(); mtdemo_start()
+// spins up two demo kernel threads and turns preemption on for the self-test.
+void sched_enable(void);
+void sched_disable(void);
+int  sched_is_enabled(void);
+int  mtdemo_start(void);
+extern volatile uint64_t mtdemo_a_count, mtdemo_b_count;
 
 void init_timer(uint32_t frequency);
 uint32_t get_ticks(void);

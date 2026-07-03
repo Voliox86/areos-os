@@ -51,6 +51,7 @@ static void cmd_nyxfetch(int argc, char** argv);
 static void cmd_echo(int argc, char** argv);
 static void cmd_reboot(int argc, char** argv);
 static void cmd_ps(int argc, char** argv);
+static void cmd_mtdemo(int argc, char** argv);
 static void cmd_mem(int argc, char** argv);
 static void cmd_crash(int argc, char** argv);
 static void cmd_hexdump(int argc, char** argv);
@@ -109,6 +110,7 @@ static const command_t commands[] = {
     {"uname",     cmd_uname,     "Show system information", false},
     {"reboot",    cmd_reboot,    "Reboot the system", false},
     {"ps",        cmd_ps,        "List processes", false},
+    {"mtdemo",    cmd_mtdemo,    "Preemptive multitasking self-test", false},
     {"mem",       cmd_mem,       "Show memory usage", false},
 
     {"crash",     cmd_crash,     "Trigger a kernel panic", false},
@@ -310,6 +312,22 @@ static void cmd_ps(int argc, char** argv) {
                 process_table[i]->comm);
         }
     }
+}
+
+static void cmd_mtdemo(int argc, char** argv) {
+    (void)argc; (void)argv;
+    uint64_t a0 = mtdemo_a_count, b0 = mtdemo_b_count;
+    int r = mtdemo_start();
+    if (r == -1) { printf("mtdemo: could not create demo threads\n"); return; }
+    if (r == 1)  { printf("mtdemo already ran this session (threads retired). Reboot to run again.\n"); return; }
+    printf("Preemptive scheduler ENABLED.\n");
+    printf("Two kernel threads (mtdemoA/B) are now time-sliced with the desktop.\n");
+    printf("Sampling their counters over ~400ms (both should rise):\n");
+    sleep(400);   // main thread yields; scheduler runs A and B in the gaps
+    printf("  mtdemoA: %u -> %u\n", (unsigned)a0, (unsigned)mtdemo_a_count);
+    printf("  mtdemoB: %u -> %u\n", (unsigned)b0, (unsigned)mtdemo_b_count);
+    printf("They run ~3s of heartbeats, then retire so the desktop returns to\n");
+    printf("full speed. Heartbeats also go to the serial log; 'ps' lists them.\n");
 }
 
 static void cmd_which(int argc, char** argv) {
@@ -1344,13 +1362,14 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
     irq_install_handler(12, mouse_irq_handler);
     printf("[INIT] Unmasking IRQs...\n");
     bootsplash_update(19, 23, "Unmasking interrupts...");
-    // NOTE: the PIT timer (IRQ0) does not currently fire — QEMU routes it to
-    // I/O APIC pin 2 (ACPI interrupt-source override), not pin 0, so this
-    // unmask is a no-op and tick_count never advances. Routing pin 2→vector 32
-    // *does* deliver ticks, but that exposes a latent #UD in the irq_common
-    // restore path (crashes on the first tick). Left as-is pending an
-    // interactive fix — see AGENTS.md. Multitasking remains cooperative.
-    irq_unmask(0); // Timer (see note above)
+    // The PIT (ISA IRQ0) is delivered on I/O APIC pin 2, not pin 0: QEMU's ACPI
+    // MADT publishes an interrupt-source override (ISA IRQ0 → GSI 2). Unmasking
+    // pin 0 therefore does nothing; we redirect pin 2 → vector 32 (the irq0 stub)
+    // and unmask it, so tick_count advances and sleep()/uptime come alive. The
+    // #UD that used to crash the first tick was the SAVE_REGS-before-CR3-switch
+    // bug in irq_common, fixed in v5.7.5 — ticks are safe now.
+    ioapic_redirect_irq(2, 32, (uint8_t)apic_get_id()); // PIT → vector 32 via pin 2
+    ioapic_unmask_irq(2);
     irq_unmask(1); // Keyboard
     irq_unmask(5); // SB16
     irq_unmask(12); // Mouse

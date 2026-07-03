@@ -33,11 +33,16 @@ static int init_task_stack(process_t* proc, void* entry_point) {
     if (!stack_mem) return -1;
     uint64_t* sp = (uint64_t*)((uintptr_t)stack_mem + 4096);
 
-    // iretq frame for kernel process (ring 0)
-    *--sp = 0x08;              // ss = kernel data
+    // iretq frame for kernel process (ring 0). In long mode iretq ALWAYS pops
+    // SS:RSP, even without a privilege change, so SS must be the kernel *data*
+    // selector (0x10) — a writable data segment. It used to say 0x08 (the kernel
+    // *code* selector); loading a code segment into SS #GP's (error=SS selector).
+    // That bug stayed latent until preemptive scheduling actually iretq'd into one
+    // of these frames.
+    *--sp = KERNEL_DS;         // ss = kernel data (0x10)
     *--sp = (uint64_t)(uintptr_t)stack_mem + 4096; // rsp
     *--sp = 0x202;             // rflags (IF set)
-    *--sp = 0x08;              // cs = kernel code
+    *--sp = KERNEL_CS;         // cs = kernel code (0x08)
     *--sp = (uint64_t)(uintptr_t)entry_point; // rip
 
     *--sp = 0;                 // error code
@@ -223,15 +228,58 @@ uint64_t saved_rsp = 0;
 uint64_t next_rsp = 0;
 uint64_t next_cr3 = 0;
 
-// Preemptive scheduling is DISABLED. The mechanism is wired (irq_common saves
-// the context, calls this, then switches RSP+CR3), and init_task_stack builds a
-// compatible frame — but the timer IRQ0 never actually fires (see kernel.c), and
-// forcing it to fire exposes a latent #UD in the irq_common restore path. Until
-// that is fixed interactively, multitasking stays cooperative and this keeps the
-// current context every tick.
+// Preemptive round-robin scheduling over KERNEL threads (page_directory==NULL).
+// Wiring: irq_common (isr_stubs.asm) saves the interrupted context, stores its
+// RSP in saved_rsp, calls this, then loads next_rsp/next_cr3 and iretq's into the
+// chosen thread. We only switch between kernel threads that share
+// kernel_pml4_phys, so next_cr3 is always the kernel PML4 — no ring or
+// address-space transition happens here. The kernel is built -mno-sse/-mno-mmx,
+// so the 15 GPRs SAVE_REGS pushes are the complete thread state; nothing else to
+// save. Enabled at runtime via sched_enable() (see the `mtdemo` command); dormant
+// by default, in which case every tick simply keeps the current context — exactly
+// the old cooperative behaviour.
+static volatile int sched_enabled = 0;
+static process_t* idle_proc = NULL;
+
+void sched_enable(void)     { sched_enabled = 1; }
+void sched_disable(void)    { sched_enabled = 0; }
+int  sched_is_enabled(void) { return sched_enabled; }
+
 void irq_scheduler_tick(void) {
+    // Default: resume the thread we interrupted.
     next_rsp = saved_rsp;
     next_cr3 = (uint64_t)kernel_pml4_phys;
+
+    // Dormant, nothing to schedule, or a cooperative ring-3 process owns the main
+    // thread (switch_to_user_process is blocking) — never preempt in those cases.
+    if (!sched_enabled || process_count == 0 || g_user_proc != NULL) return;
+    if (current_idx < 0 || current_idx >= process_count || !process_table[current_idx])
+        return;
+
+    // Remember where to resume the outgoing thread.
+    process_table[current_idx]->stack = (void*)saved_rsp;
+
+    // Pick the next runnable kernel thread, round-robin. Skip user processes (not
+    // our job here) and the idle thread (only run it if nothing else can).
+    for (int i = 1; i <= process_count; i++) {
+        int idx = (current_idx + i) % process_count;
+        process_t* p = process_table[idx];
+        if (!p || p->state != 1) continue;
+        if (p->page_directory != NULL) continue;   // user process — not our job here
+        if (p == idle_proc) continue;               // idle only if nothing else runs
+        if (p->stack == NULL) continue;             // no saved context yet — e.g. the
+                                                    // "init" placeholder (init_process
+                                                    // never builds a stack frame); a
+                                                    // real thread only gets a NULL stack
+                                                    // if it has never run and was never
+                                                    // given an init_task_stack frame, so
+                                                    // switching to it would iretq off a
+                                                    // null RSP. Skip until it has one.
+        current_idx = idx;
+        next_rsp = (uint64_t)p->stack;
+        return;                 // next_cr3 already = kernel PML4
+    }
+    // No other runnable kernel thread — stay on the current one (already set).
 }
 
 void schedule(void) {
@@ -248,7 +296,7 @@ static int idle_created = 0;
 void ensure_idle_process(void) {
     if (idle_created) return;
     idle_created = 1;
-    create_process("idle", (void*)idle_task, 0);
+    idle_proc = create_process("idle", (void*)idle_task, 0);
 }
 
 static void task_blink(void) {
@@ -291,4 +339,66 @@ void run_background_tasks(void) {
 void init_background_tasks(void) {
     register_background_task("blink", task_blink);
     register_background_task("uptime", task_uptime);
+}
+
+// --- Multitasking self-test (the `mtdemo` shell command) --------------------
+// Two kernel threads that spin forever, each bumping its own counter and emitting
+// a ~1 Hz serial heartbeat. Turning them on proves the preemptive scheduler
+// time-slices them alongside the GUI compositor (which runs as the main "init"
+// thread). Safe by construction: each thread touches only its own counter and the
+// serial port, never GUI or shared kernel state.
+volatile uint64_t mtdemo_a_count = 0;
+volatile uint64_t mtdemo_b_count = 0;
+static int mtdemo_started = 0;
+static process_t* mtdemo_a_proc = NULL;
+static process_t* mtdemo_b_proc = NULL;
+
+// Each demo thread spins for MTDEMO_BEATS ~1 Hz heartbeats, then retires itself by
+// setting state=0 so the scheduler stops picking it — this hands the CPU back to
+// the compositor and the desktop returns to full speed. A retired thread never
+// runs past the hlt loop (the scheduler skips state!=1), so it stays parked.
+#define MTDEMO_BEATS 3
+
+static void mtdemo_thread_a(void) {
+    uint32_t last = tick_count; int beats = 0;
+    for (;;) {
+        mtdemo_a_count++;
+        uint32_t t = tick_count;
+        if (t - last >= 1000) {
+            last = t;
+            serial_puts("[mtdemo] thread A alive\n");
+            if (++beats >= MTDEMO_BEATS) break;
+        }
+    }
+    if (mtdemo_a_proc) mtdemo_a_proc->state = 0;   // retire
+    for (;;) __asm__ volatile("hlt");
+}
+
+static void mtdemo_thread_b(void) {
+    uint32_t last = tick_count; int beats = 0;
+    for (;;) {
+        mtdemo_b_count++;
+        uint32_t t = tick_count;
+        if (t - last >= 1000) {
+            last = t;
+            serial_puts("[mtdemo] thread B alive\n");
+            if (++beats >= MTDEMO_BEATS) break;
+        }
+    }
+    if (mtdemo_b_proc) mtdemo_b_proc->state = 0;   // retire
+    for (;;) __asm__ volatile("hlt");
+}
+
+// Create the two demo threads and switch preemption on. Single-run per boot: the
+// threads retire themselves after their heartbeats and park, so there's nothing to
+// meaningfully restart. Returns 0 on a fresh start, 1 if already run this session,
+// -1 if the threads couldn't be created.
+int mtdemo_start(void) {
+    if (mtdemo_started) return 1;
+    mtdemo_a_proc = create_process("mtdemoA", (void*)mtdemo_thread_a, 0);
+    mtdemo_b_proc = create_process("mtdemoB", (void*)mtdemo_thread_b, 0);
+    if (!mtdemo_a_proc || !mtdemo_b_proc) return -1;
+    mtdemo_started = 1;
+    sched_enable();
+    return 0;
 }

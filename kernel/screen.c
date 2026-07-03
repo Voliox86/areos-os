@@ -157,55 +157,80 @@ static void print_u64(uint64_t v, int base) {
     while (*p) { putchar(*p++); }
 }
 
+// Render an unsigned value into out[] (no prefix), returning its length.
+static int u64_to_str(uint64_t v, int base, char* out) {
+    char tmp[24]; int i = 0;
+    if (v == 0) tmp[i++] = '0';
+    while (v) { tmp[i++] = "0123456789abcdef"[v % base]; v /= base; }
+    for (int j = 0; j < i; j++) out[j] = tmp[i - 1 - j];
+    out[i] = '\0';
+    return i;
+}
+
+// Emit a string padded to `width`. Right-aligned pads on the left with `pad`
+// ('0' or ' '); left-aligned (`left`) always pads on the right with spaces.
+static void emit_padded(const char* s, int width, int left, char pad, int* count) {
+    int len = 0; for (const char* q = s; *q; q++) len++;
+    int npad = width > len ? width - len : 0;
+    if (!left) for (int i = 0; i < npad; i++) { putchar(pad); (*count)++; }
+    for (const char* p = s; *p; p++) { putchar(*p); (*count)++; }
+    if (left)  for (int i = 0; i < npad; i++) { putchar(' '); (*count)++; }
+}
+
 int vprintf(const char* fmt, va_list args) {
     int count = 0;
     while (*fmt) {
         if (*fmt == '%' && *(fmt + 1)) {
             fmt++;
+            // Flags: '-' left-align, '0' zero-pad.
+            int left = 0, zero = 0;
+            for (;;) {
+                if (*fmt == '-') { left = 1; fmt++; }
+                else if (*fmt == '0') { zero = 1; fmt++; }
+                else break;
+            }
+            // Width (decimal). Precision is not supported.
+            int width = 0;
+            while (*fmt >= '0' && *fmt <= '9') { width = width * 10 + (*fmt - '0'); fmt++; }
+            // Length modifier.
             int long_count = 0;
             while (*fmt == 'l') { long_count++; fmt++; }
+            char pad = (zero && !left) ? '0' : ' ';
+            char nbuf[32];
             switch (*fmt) {
                 case 's': {
                     char* s = va_arg(args, char*);
-                    while (*s) { putchar(*s++); count++; }
+                    if (!s) s = "(null)";
+                    emit_padded(s, width, left, ' ', &count);   // strings always space-pad
                     break;
                 }
                 case 'd':
                 case 'i': {
-                    if (long_count >= 2) {
-                        int64_t v = va_arg(args, int64_t);
-                        if (v < 0) { putchar('-'); v = -v; count++; }
-                        print_u64((uint64_t)v, 10);
-                    } else {
-                        int v = va_arg(args, int);
-                        char buf[16];
-                        char* p = itoa(v, buf, 10);
-                        while (*p) { putchar(*p++); count++; }
-                    }
+                    int64_t v = (long_count >= 2) ? va_arg(args, int64_t)
+                                                  : (int64_t)va_arg(args, int);
+                    int neg = v < 0;
+                    uint64_t uv = neg ? (uint64_t)(-v) : (uint64_t)v;
+                    int k = 0;
+                    if (neg) nbuf[k++] = '-';
+                    k += u64_to_str(uv, 10, nbuf + k);
+                    nbuf[k] = '\0';
+                    emit_padded(nbuf, width, left, pad, &count);
                     break;
                 }
                 case 'u': {
-                    if (long_count >= 2) {
-                        uint64_t v = va_arg(args, uint64_t);
-                        print_u64(v, 10);
-                    } else {
-                        unsigned int v = va_arg(args, unsigned int);
-                        char buf[16];
-                        char* p = itoa((int)v, buf, 10);
-                        while (*p) { putchar(*p++); count++; }
-                    }
+                    uint64_t v = (long_count >= 2) ? va_arg(args, uint64_t)
+                                                   : (uint64_t)va_arg(args, unsigned int);
+                    u64_to_str(v, 10, nbuf);
+                    emit_padded(nbuf, width, left, pad, &count);
                     break;
                 }
                 case 'x':
                 case 'X': {
-                    uint64_t v;
-                    if (long_count >= 1) {
-                        v = va_arg(args, uint64_t);
-                    } else {
-                        v = va_arg(args, unsigned int);
-                    }
-                    putchar('0'); putchar('x'); count += 2;
-                    print_u64(v, 16);
+                    uint64_t v = (long_count >= 1) ? va_arg(args, uint64_t)
+                                                   : (uint64_t)va_arg(args, unsigned int);
+                    putchar('0'); putchar('x'); count += 2;   // keep the historic 0x prefix
+                    u64_to_str(v, 16, nbuf);
+                    emit_padded(nbuf, width, left, pad, &count);
                     break;
                 }
                 case 'p': {

@@ -43,6 +43,7 @@ Evolve NyxOS into a functional x86_64 kernel with filesystem, networking, shell,
 | v5.7.2 | **Fd-based `readdir` on EXT2 mounts (file-manager can browse disk).** `vfs_open` on a mount path now probes `readdir` (ext2_readdir returns −1 for non-dirs) — if it's a directory it loads all entries once into the mount-backed node; `vfs_readdir` serves them by index and `vfs_close` frees them. Completes the mount FS surface: fd-based file read/write **and** directory listing on `/mnt` (path-based `ls`/`mkdir`/`rm` already worked and persist). Verified: `vfs_open("/mnt")` + `vfs_readdir` loop lists `lost+found/`, files, and created subdirs with correct dir/file typing. |
 | v5.7.5 | **GUI stability fixed — the `KERNEL_BASE+3` crash is dead** (and with it the timer/scheduler blocker). Root cause, found with QEMU `-d int` (which, unlike serial `printf`, doesn't perturb the Heisenbug): `irq_common` did the CR3 switch using **rax/rbx as scratch BEFORE `SAVE_REGS`**, so on return the interrupted code resumed with a corrupted RBX (= `KERNEL_BASE`); if it then computed a call/jump from rbx it landed at `KERNEL_BASE+3` → `#UD`. Intermittent because it only bit when the IRQ interrupted an instruction about to use rax/rbx — so it showed up under IRQ load (typing in the GUI terminal, or the timer firing). Fix: move `SAVE_REGS` to the very top of `irq_common` (and `isr_common`), same as the earlier `syscall_entry` fix. Also: boot stack 16 KB→128 KB and moved *above* the page tables (a deep compositor call chain could have overflowed into them); removed the `mpos=`/`.` serial debug spam. **Verified visually** (QEMU SDL + monitor `sendkey`/`screendump`): login → desktop, 12+ terminal commands incl. a full DHCP lease, zero crashes. The timer/scheduler can now be revisited (they crashed via this exact bug). |
 | v5.7.4 | **Full network stack: DNS + TCP + HTTP work.** Building on v5.7.3's DHCP, fixed the rest of the host↔network byte-order bugs (all masked until the IP checksum was fixed): **DNS** — `qdcount`/`flags` stored LE (query had 256 questions → dropped), returned/parsed IPs and the timeout loop (used dead `tick_count` → infinite hang); **ARP** — sender/target IPs written high-byte-first (asked "who has 3.2.0.10"), `sleep()` hang, host-order static gateway entry with the wrong MAC (removed); **TCP** — `offset_flags`/`window`/checksum stored LE, checksum pseudo-header + RX `offset_flags` in the wrong order, and `payload_len` counted Ethernet padding (60-byte min frame added 2 phantom bytes → wrong ack → RST). **Routing** — `ip_send` now sends off-subnet traffic via the gateway (was ARP-ing internet IPs directly) and skips loopback when auto-selecting (was using lo's IP for the TCP pseudo-header). **http_get** waits for the handshake before sending. `parse_ip` + all IP prints normalized to network order (`ifconfig`/DHCP show 10.0.2.15, not reversed). Verified end-to-end via `-object filter-dump` pcap: DHCP→lease, DNS resolves, and `http_get(1.1.1.1:80)` returns a parsed **HTTP 301** with body. (A real HTTP server works; a captive-portal/proxy in some envs returns a non-HTTP page.) |
+| v5.7.6 | **Preemptive scheduler + timer live.** (1) **Timer enabled:** the PIT (ISA IRQ0) is delivered on I/O APIC **pin 2** (QEMU ACPI interrupt-source override), not pin 0 — so the old `irq_unmask(0)` was a no-op and `tick_count` stayed 0. Now `ioapic_redirect_irq(2,32,apic_id)`+`ioapic_unmask_irq(2)` deliver ticks; `sleep()`/uptime work (nyxfetch shows real uptime). (2) **Preemptive round-robin** over kernel threads in `irq_scheduler_tick` (behind `sched_enable()`; dormant by default → keeps the old cooperative behaviour). The compositor runs as the `compositor` process; `init` is a placeholder. Fixed two latent bugs that only fire once you actually `iretq` into a built frame: **(a)** `init_task_stack` set **SS=0x08** (kernel *code* selector) — long-mode `iretq` always pops SS, and loading a code seg #GP's; must be `KERNEL_DS` (0x10). **(b)** the round-robin would switch into the `init` placeholder whose `stack==NULL` (never given a frame) → `iretq` off a null RSP → #GP→#PF→#DF→triple fault; now skips NULL-stack threads. Both found with `qemu -d int,cpu_reset`. (3) **`mtdemo`** shell command: spins up two demo kernel threads that heartbeat ~1 Hz for 3 s then self-retire (`state=0`) so the desktop returns to full speed — the scheduler self-test. Verified visually: `mtdemo` runs both threads concurrently with a stable GUI (counters ~470–515M in 400 ms), then they retire; `ps` lists them. (4) **printf width/flags:** `vprintf` now parses `-`/`0` flags + width (`%-4d`, `%5u`, `%-16s`) — previously the `default` case swallowed `%-4d` **without consuming the arg**, shifting every later arg and garbling `ps`. Backward-compatible (width 0 ⇒ identical output). |
 | v5.7.3 | **Networking works — DHCP completes** (`dhcp` command gets a lease from QEMU slirp). The stack was 100% broken; fixed 7 bugs, chief among them a byte-order bug that killed *every* packet: (1) **IP header checksum stored little-endian** — `ip->checksum = ip_checksum()` wrote the network-order value LE-reversed, so slirp silently dropped all our IP frames (found via `-object filter-dump` pcap: checksum verified to 0x649b not 0xffff). (2) **`ip_send` ARP-resolved broadcast** (255.255.255.255) → hung; now uses the broadcast MAC directly. (3) **RTL8139 RX ring** re-derived the read offset from `CAPR+16` but wrote it back without `−16` (asymmetric, misaligned after packet 1) and never checked BUFE — rewrote to track the offset itself, check the empty bit, and init CAPR=0xFFF0. (4) **RCR** missing MXDMA/RXFTH fields. (5) **DHCP magic cookie** stored byte-reversed and (6) at BOOTP offset 240 instead of 236. (7) **DHCP poll loop** had no inter-poll delay (finished before replies arrived; timer is dead so it busy-waits on port 0x80). Verified end-to-end: DISCOVER→OFFER→REQUEST→ACK, lease 10.0.2.15. **Still TODO** (same byte-order class of bug, now unmasked): DNS (`hdr->flags`/return IP host-order), TCP/HTTP (seq/ack/ports/checksum), and the `ifconfig` IP *display* order (shows 10.0.2.15 reversed). |
 
 ## Architecture
@@ -209,21 +210,22 @@ kernel/
     small files, revisit for large/append-heavy workloads.
   - `copy_from_user`/`copy_to_user` assume user physical pages fall in the 64 MB
     identity map; fine for small programs, revisit if RAM use grows.
-  - Only one user process runs at a time (`switch_to_user_process` is blocking).
-    Real concurrency needs the preemptive scheduler (below).
-- **Preemptive scheduler** — now UNBLOCKED (the `irq_common` #UD bug is fixed in
-  v5.7.5). Remaining work, both now tractable with visual QEMU verification:
-  1. **Enable the timer.** The LAPIC timer is masked and the PIT (ISA IRQ0) is
-     delivered on I/O APIC **pin 2** (QEMU ACPI interrupt-source override), but
-     the boot only unmasks pin 0 — so `tick_count` never advances and `sleep()`/
-     uptime are dead. `ioapic_redirect_irq(2, 32, 0)` + `ioapic_unmask_irq(2)`
-     delivers ticks. (Previously this surfaced the `irq_common` #UD; that's fixed
-     now, so re-test carefully in the GUI.)
-  2. **Reinstate `irq_scheduler_tick` round-robin.** It was written and is sound
-     (`init_task_stack` already builds an `irq_common`-compatible frame; filter
-     to `page_directory==NULL` kernel threads; idle picked last) — it's in git
-     history from the v5.5-era attempt. Re-enable behind `sched_enable()` and
-     verify the GUI stays stable with two demo kernel threads.
+  - Only one *user* process runs at a time (`switch_to_user_process` is blocking).
+    The preemptive scheduler (done, v5.7.6) round-robins **kernel** threads;
+    preempting ring-3 processes is the next step (see below).
+- **Preemptive scheduler** — DONE (v5.7.6). Timer fires (PIT via I/O APIC pin 2 →
+  vector 32), `irq_scheduler_tick` round-robins runnable kernel threads behind
+  `sched_enable()`, verified with the `mtdemo` self-test (two demo threads run
+  concurrently with a stable GUI, then self-retire). Remaining follow-ups:
+  1. **Preempt user (ring-3) processes.** The scheduler currently skips
+     `page_directory != NULL` procs and bails while `g_user_proc` is set, so a
+     running ELF isn't time-sliced. Extend the switch to save/restore user CR3 +
+     the TSS RSP0 and cycle user processes too (needs per-proc kernel stacks,
+     already allocated).
+  2. **Real preemption for the GUI as a peer.** Today the compositor is one of the
+     round-robin threads; a priority/nice scheme would keep it responsive while
+     background threads run. Add sleeping/blocked states + a wait queue so threads
+     can block instead of spin (mtdemo threads currently `hlt`-park after retiring).
 - File Manager: copy/paste, drag-and-drop files
 - Network: DHCP/DNS/TCP/HTTP all work (v5.7.3–v5.7.4). Possible follow-ups: TCP
   retransmit/large multi-segment responses, `ping` (ICMP) verification, and DNS
