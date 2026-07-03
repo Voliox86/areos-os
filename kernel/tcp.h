@@ -41,6 +41,7 @@ int tcp_init(void);
 int tcp_connect(uint32_t dst_ip, uint16_t dst_port, uint16_t src_port);
 int tcp_send(int conn_id, const uint8_t* data, uint32_t len);
 int tcp_recv(int conn_id, uint8_t* buf, uint32_t max_len);
+int tcp_state(int conn_id);
 int tcp_close(int conn_id);
 void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip);
 

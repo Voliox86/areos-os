@@ -51,8 +51,7 @@ void icmp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip) {
         uint16_t id = ((icmp->id << 8) & 0xFF00) | ((icmp->id >> 8) & 0x00FF);
         uint16_t seq = ((icmp->seq << 8) & 0xFF00) | ((icmp->seq >> 8) & 0x00FF);
         printf("[ICMP] Echo reply from %d.%d.%d.%d: id=%d seq=%d\n",
-            (src_ip >> 24) & 0xFF, (src_ip >> 16) & 0xFF,
-            (src_ip >> 8) & 0xFF, src_ip & 0xFF, id, seq);
+            src_ip&0xFF, (src_ip>>8)&0xFF, (src_ip>>16)&0xFF, (src_ip>>24)&0xFF, id, seq);
     }
 }
 

@@ -14,6 +14,16 @@ int http_get(const char* host, uint16_t port, const char* path,
     int conn = tcp_connect(dst_ip, port, 12346);
     if (conn < 0) return -1;
 
+    // Drive the 3-way handshake to completion before sending (tcp_connect only
+    // fires the SYN; the SYN-ACK is processed in tcp_handle_packet on poll).
+    int established = 0;
+    for (int i = 0; i < 400 && !established; i++) {
+        kernel_poll_net();
+        for (volatile int d = 0; d < 40000; d++) __asm__ volatile("pause");
+        if (tcp_state(conn) == TCP_STATE_ESTABLISHED) established = 1;
+    }
+    if (!established) { tcp_close(conn); return -1; }
+
     char req[512];
     int req_len = snprintf(req, sizeof(req),
         "GET %s HTTP/1.1\r\n"
@@ -30,15 +40,22 @@ int http_get(const char* host, uint16_t port, const char* path,
     if (!buf) { tcp_close(conn); return -1; }
     uint32_t total = 0;
 
-    for (int tries = 0; tries < 100; tries++) {
+    // Poll for the response. Give a remote server time to reply (the timer is
+    // dead, so this is a bounded busy-poll). Stop once we have the full response
+    // (headers + Content-Length worth of body) or the peer closes.
+    int idle = 0;
+    for (int tries = 0; tries < 800; tries++) {
         kernel_poll_net();
         int n = tcp_recv(conn, buf + total, HTTP_MAX_RESPONSE - total - 1);
         if (n > 0) {
-            total += n;
+            total += n; idle = 0;
             if (total >= HTTP_MAX_RESPONSE - 1) break;
+        } else if (n < 0) {
+            break;                       // peer closed the connection
+        } else if (total > 0 && ++idle > 200) {
+            break;                       // have data and it went quiet
         }
-        if (n < 0) break;
-        for (volatile int d = 0; d < 50000; d++) __asm__ volatile("pause");
+        for (volatile int d = 0; d < 20000; d++) __asm__ volatile("pause");
     }
     buf[total] = '\0';
     tcp_close(conn);

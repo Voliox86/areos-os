@@ -3,7 +3,11 @@
 
 #define DHCP_SERVER_PORT 67
 #define DHCP_CLIENT_PORT 68
-#define DHCP_MAGIC_COOKIE 0x63825363
+// Stored little-endian so memcpy() lays the bytes on the wire in the required
+// order 63 82 53 63 (99.130.83.99). The RX path compares the received 4 bytes
+// read back as a LE uint32 against this same value, so both stay consistent.
+// (Was 0x63825363, which memcpy wrote reversed — slirp dropped every DISCOVER.)
+#define DHCP_MAGIC_COOKIE 0x63538263
 
 #define DHCP_DISCOVER 1
 #define DHCP_OFFER    2
@@ -57,9 +61,9 @@ int dhcp_request(int iface_idx) {
     memcpy(&pkt[4], &dhcp_xid, 4);
     pkt[10] = 0x80; pkt[11] = 0x00;
     memcpy(&pkt[28], net_interfaces[iface_idx].mac, 6);
-    int opt = 240;
     uint32_t cookie = DHCP_MAGIC_COOKIE;
-    memcpy(&pkt[opt], &cookie, 4); opt += 4;
+    memcpy(&pkt[236], &cookie, 4);   // magic cookie at BOOTP offset 236
+    int opt = 240;                    // DHCP options begin at 240
     pkt[opt++] = DHCP_OPT_MSG_TYPE;
     pkt[opt++] = 1;
     pkt[opt++] = DHCP_DISCOVER;
@@ -68,18 +72,22 @@ int dhcp_request(int iface_idx) {
     udp_send(0xFFFFFFFF, DHCP_SERVER_PORT, DHCP_CLIENT_PORT, pkt, opt, iface_idx);
     printf("[DHCP] DISCOVER sent (xid=0x%x)\n", dhcp_xid);
 
-    for (int retry = 0; retry < 100; retry++) {
+    for (int retry = 0; retry < 400; retry++) {
         kernel_poll_net();
+        // Give replies time to arrive between polls. The PIT timer never fires
+        // (see kernel.c) so sleep()/tick_count are unavailable; busy-wait on an
+        // unused I/O port instead (~timer-independent, works under QEMU TCG).
+        for (int d = 0; d < 1500; d++) inb(0x80);
 
         if (dhcp_rx_len > 0) {
             uint8_t *rx = dhcp_rx_buf;
             uint32_t rx_xid;
             memcpy(&rx_xid, &rx[4], 4);
             uint32_t cookie;
-            memcpy(&cookie, &rx[240], 4);
+            memcpy(&cookie, &rx[236], 4);   // magic cookie at BOOTP offset 236
 
             if (rx_xid == dhcp_xid && rx[0] == 2 && cookie == DHCP_MAGIC_COOKIE) {
-                int o = 244;
+                int o = 240;                 // options begin at 240
                 uint8_t msg_type = 0;
                 while (o < dhcp_rx_len && rx[o] != DHCP_OPT_END) {
                     if (rx[o] == DHCP_OPT_MSG_TYPE && rx[o+1] == 1) {
@@ -93,16 +101,14 @@ int dhcp_request(int iface_idx) {
                     memcpy(&dhcp_offered_ip, &rx[16], 4);
                     dhcp_server_ip = dhcp_rx_src;
                     printf("[DHCP] OFFER: IP %d.%d.%d.%d from server %d.%d.%d.%d\n",
-                        (dhcp_offered_ip>>24)&0xFF, (dhcp_offered_ip>>16)&0xFF,
-                        (dhcp_offered_ip>>8)&0xFF, dhcp_offered_ip&0xFF,
-                        (dhcp_server_ip>>24)&0xFF, (dhcp_server_ip>>16)&0xFF,
-                        (dhcp_server_ip>>8)&0xFF, dhcp_server_ip&0xFF);
+                        dhcp_offered_ip&0xFF, (dhcp_offered_ip>>8)&0xFF, (dhcp_offered_ip>>16)&0xFF, (dhcp_offered_ip>>24)&0xFF,
+                        dhcp_server_ip&0xFF, (dhcp_server_ip>>8)&0xFF, (dhcp_server_ip>>16)&0xFF, (dhcp_server_ip>>24)&0xFF);
                     dhcp_state = 1;
                 }
 
                 if (msg_type == DHCP_ACK && dhcp_state == 2) {
                     net_interfaces[iface_idx].ip = dhcp_offered_ip;
-                    int o2 = 244;
+                    int o2 = 240;                // options begin at 240
                     while (o2 < dhcp_rx_len && rx[o2] != DHCP_OPT_END) {
                         if (rx[o2] == DHCP_OPT_SUBNET_MASK && rx[o2+1] == 4)
                             memcpy(&net_interfaces[iface_idx].netmask, &rx[o2+2], 4);
@@ -116,12 +122,9 @@ int dhcp_request(int iface_idx) {
                         o2 += rx[o2+1] + 2;
                     }
                     printf("[DHCP] ACK: IP=%d.%d.%d.%d mask=%d.%d.%d.%d gw=%d.%d.%d.%d\n",
-                        (dhcp_offered_ip>>24)&0xFF, (dhcp_offered_ip>>16)&0xFF,
-                        (dhcp_offered_ip>>8)&0xFF, dhcp_offered_ip&0xFF,
-                        (net_interfaces[iface_idx].netmask>>24)&0xFF, (net_interfaces[iface_idx].netmask>>16)&0xFF,
-                        (net_interfaces[iface_idx].netmask>>8)&0xFF, net_interfaces[iface_idx].netmask&0xFF,
-                        (net_interfaces[iface_idx].gateway>>24)&0xFF, (net_interfaces[iface_idx].gateway>>16)&0xFF,
-                        (net_interfaces[iface_idx].gateway>>8)&0xFF, net_interfaces[iface_idx].gateway&0xFF);
+                        dhcp_offered_ip&0xFF, (dhcp_offered_ip>>8)&0xFF, (dhcp_offered_ip>>16)&0xFF, (dhcp_offered_ip>>24)&0xFF,
+                        net_interfaces[iface_idx].netmask&0xFF, (net_interfaces[iface_idx].netmask>>8)&0xFF, (net_interfaces[iface_idx].netmask>>16)&0xFF, (net_interfaces[iface_idx].netmask>>24)&0xFF,
+                        net_interfaces[iface_idx].gateway&0xFF, (net_interfaces[iface_idx].gateway>>8)&0xFF, (net_interfaces[iface_idx].gateway>>16)&0xFF, (net_interfaces[iface_idx].gateway>>24)&0xFF);
                     return 0;
                 }
             }
@@ -134,8 +137,9 @@ int dhcp_request(int iface_idx) {
             memcpy(&pkt[4], &dhcp_xid, 4);
             pkt[10] = 0x80; pkt[11] = 0x00;
             memcpy(&pkt[28], net_interfaces[iface_idx].mac, 6);
-            opt = 240; cookie = DHCP_MAGIC_COOKIE;
-            memcpy(&pkt[opt], &cookie, 4); opt += 4;
+            cookie = DHCP_MAGIC_COOKIE;
+            memcpy(&pkt[236], &cookie, 4);   // magic cookie at 236, options at 240
+            opt = 240;
             pkt[opt++] = DHCP_OPT_MSG_TYPE; pkt[opt++] = 1; pkt[opt++] = DHCP_REQUEST;
             pkt[opt++] = DHCP_OPT_REQUESTED_IP; pkt[opt++] = 4;
             memcpy(&pkt[opt], &dhcp_offered_ip, 4); opt += 4;

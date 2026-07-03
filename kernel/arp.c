@@ -32,14 +32,10 @@ extern int eth_send(const uint8_t* dst_mac, uint16_t type, const uint8_t* data, 
 static uint8_t arp_broadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 void arp_init(void) {
+    // No static entries: the previous gateway entry used host byte order and our
+    // own MAC (wrong). The gateway (10.0.2.2 under QEMU) answers ARP, so it is
+    // resolved dynamically like any other host.
     memset_asm(arp_cache, 0, sizeof(arp_cache));
-    // Static ARP entry for QEMU user-mode gateway (10.0.2.2)
-    int idx = 0;
-    arp_cache[idx].ip = 0x0A000202;
-    arp_cache[idx].mac[0] = 0x52; arp_cache[idx].mac[1] = 0x54;
-    arp_cache[idx].mac[2] = 0x00; arp_cache[idx].mac[3] = 0x12;
-    arp_cache[idx].mac[4] = 0x34; arp_cache[idx].mac[5] = 0x56;
-    arp_cache[idx].valid = 1;
 }
 
 static int arp_cache_lookup(uint32_t ip, uint8_t* mac) {
@@ -74,15 +70,18 @@ void arp_send_request(uint32_t target_ip, int iface_idx) {
     arp.plen = ARP_PLEN;
     arp.oper = (ARP_OP_REQUEST << 8) | (ARP_OP_REQUEST >> 8);
     memcpy(arp.sender_mac, net_interfaces[iface_idx].mac, 6);
-    arp.sender_ip[0] = (net_interfaces[iface_idx].ip >> 24) & 0xFF;
-    arp.sender_ip[1] = (net_interfaces[iface_idx].ip >> 16) & 0xFF;
-    arp.sender_ip[2] = (net_interfaces[iface_idx].ip >> 8) & 0xFF;
-    arp.sender_ip[3] = net_interfaces[iface_idx].ip & 0xFF;
+    // IPs are stored network-order (low byte = first octet), so the wire bytes
+    // are the uint32 bytes in ascending order.
+    uint32_t sip = net_interfaces[iface_idx].ip;
+    arp.sender_ip[0] = sip & 0xFF;
+    arp.sender_ip[1] = (sip >> 8) & 0xFF;
+    arp.sender_ip[2] = (sip >> 16) & 0xFF;
+    arp.sender_ip[3] = (sip >> 24) & 0xFF;
     memset_asm(arp.target_mac, 0, 6);
-    arp.target_ip[0] = (target_ip >> 24) & 0xFF;
-    arp.target_ip[1] = (target_ip >> 16) & 0xFF;
-    arp.target_ip[2] = (target_ip >> 8) & 0xFF;
-    arp.target_ip[3] = target_ip & 0xFF;
+    arp.target_ip[0] = target_ip & 0xFF;
+    arp.target_ip[1] = (target_ip >> 8) & 0xFF;
+    arp.target_ip[2] = (target_ip >> 16) & 0xFF;
+    arp.target_ip[3] = (target_ip >> 24) & 0xFF;
     eth_send(arp_broadcast, 0x0806, (uint8_t*)&arp, sizeof(arp_packet_t), iface_idx);
 }
 
@@ -90,19 +89,19 @@ void arp_handle_packet(uint8_t* packet, uint32_t len) {
     if (len < sizeof(arp_packet_t)) return;
     arp_packet_t* arp = (arp_packet_t*)packet;
     uint16_t oper = ((arp->oper << 8) & 0xFF00) | ((arp->oper >> 8) & 0x00FF);
-    uint32_t sender_ip = ((uint32_t)arp->sender_ip[0] << 24) |
-                         ((uint32_t)arp->sender_ip[1] << 16) |
-                         ((uint32_t)arp->sender_ip[2] << 8) |
-                         arp->sender_ip[3];
+    uint32_t sender_ip = (uint32_t)arp->sender_ip[0] |
+                         ((uint32_t)arp->sender_ip[1] << 8) |
+                         ((uint32_t)arp->sender_ip[2] << 16) |
+                         ((uint32_t)arp->sender_ip[3] << 24);
     arp_cache_add(sender_ip, arp->sender_mac);
     if (oper == ARP_OP_REQUEST) {
         for (int i = 0; i < 8; i++) {
             if (!net_interfaces[i].name[0]) continue;
             uint32_t iface_ip = net_interfaces[i].ip;
-            uint32_t target_ip = ((uint32_t)arp->target_ip[0] << 24) |
-                                 ((uint32_t)arp->target_ip[1] << 16) |
-                                 ((uint32_t)arp->target_ip[2] << 8) |
-                                 arp->target_ip[3];
+            uint32_t target_ip = (uint32_t)arp->target_ip[0] |
+                                 ((uint32_t)arp->target_ip[1] << 8) |
+                                 ((uint32_t)arp->target_ip[2] << 16) |
+                                 ((uint32_t)arp->target_ip[3] << 24);
             if (iface_ip == target_ip) {
                 arp_packet_t reply;
                 reply.htype = arp->htype;
@@ -122,23 +121,21 @@ void arp_handle_packet(uint8_t* packet, uint32_t len) {
 }
 
 int arp_resolve(uint32_t ip, uint8_t* mac, int iface_idx) {
-    if (arp_cache_lookup(ip, mac)) {
-        printf("[ARP] Cache hit for %d.%d.%d.%d\n",
-               (ip>>24)&0xFF, (ip>>16)&0xFF, (ip>>8)&0xFF, ip&0xFF);
-        return 1;
-    }
+    if (arp_cache_lookup(ip, mac)) return 1;
     arp_send_request(ip, iface_idx);
     printf("[ARP] Resolving %d.%d.%d.%d...\n",
-           (ip>>24)&0xFF, (ip>>16)&0xFF, (ip>>8)&0xFF, ip&0xFF);
-    for (int retry = 0; retry < 20; retry++) {
-        sleep(50);
+           ip&0xFF, (ip>>8)&0xFF, (ip>>16)&0xFF, (ip>>24)&0xFF);
+    // sleep() busy-waits on tick_count, which never advances (the PIT timer
+    // doesn't fire — see kernel.c), so it would hang forever. Poll with a
+    // port-I/O busy-wait between iterations instead.
+    for (int retry = 0; retry < 120; retry++) {
         kernel_poll_net();
+        for (int d = 0; d < 1500; d++) inb(0x80);
         if (arp_cache_lookup(ip, mac)) {
             printf("[ARP] Resolved\n");
             return 1;
         }
-        if (retry == 3 || retry == 10) {
-            printf("[ARP] Retry %d...\n", retry);
+        if (retry == 10 || retry == 50) {
             arp_send_request(ip, iface_idx);
         }
     }

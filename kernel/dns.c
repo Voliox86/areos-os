@@ -3,6 +3,9 @@
 
 #define DNS_PORT 53
 
+// Host<->network 16-bit swap (x86 is little-endian; the wire is big-endian).
+#define bswap16(x) ((uint16_t)((((x) & 0xFF) << 8) | (((x) >> 8) & 0xFF)))
+
 static uint32_t dns_server_ip = 0;
 
 void dns_set_server(uint32_t ip) { dns_server_ip = ip; }
@@ -28,8 +31,9 @@ static void dns_response_handler(uint8_t* data, uint32_t len, uint32_t src_ip, u
     (void)src_port;
     if (len < sizeof(dns_header_t)) return;
     dns_header_t* hdr = (dns_header_t*)data;
-    if (!(hdr->flags & DNS_FLAG_QR)) return;
-    if (hdr->ancount == 0) return;
+    if (!(bswap16(hdr->flags) & DNS_FLAG_QR)) return;
+    uint16_t ancount = bswap16(hdr->ancount);
+    if (ancount == 0) return;
 
     // Skip header
     uint32_t off = sizeof(dns_header_t);
@@ -42,7 +46,7 @@ static void dns_response_handler(uint8_t* data, uint32_t len, uint32_t src_ip, u
     }
 
     // Parse answer section
-    for (uint16_t a = 0; a < hdr->ancount && off < len; a++) {
+    for (uint16_t a = 0; a < ancount && off < len; a++) {
         // Skip NAME (compressed pointer or sequence)
         if (off < len && (data[off] & 0xC0)) {
             off += 2;
@@ -58,8 +62,10 @@ static void dns_response_handler(uint8_t* data, uint32_t len, uint32_t src_ip, u
         off += 2;
 
         if (type == 1 && rdlength == 4 && off + 4 <= len) {
-            dns_response_ip = (data[off] << 24) | (data[off+1] << 16) |
-                              (data[off+2] << 8) | data[off+3];
+            // Store in network order (low byte = first octet) to match
+            // net_interfaces[].ip and what ip_send/udp_send put on the wire.
+            dns_response_ip = (uint32_t)data[off] | ((uint32_t)data[off+1] << 8) |
+                              ((uint32_t)data[off+2] << 16) | ((uint32_t)data[off+3] << 24);
             dns_response_ready = 1;
             return;
         }
@@ -106,7 +112,8 @@ uint32_t dns_resolve(const char* hostname, int iface_idx) {
         while (*p && *p != '.') { c = c * 10 + (*p - '0'); p++; }
         if (*p == '.') p++;
         while (*p) { d = d * 10 + (*p - '0'); p++; }
-        return ((uint32_t)a << 24) | ((uint32_t)b << 16) | ((uint32_t)c << 8) | d;
+        // Network order: low byte = first octet (matches net_interfaces[].ip).
+        return (uint32_t)a | ((uint32_t)b << 8) | ((uint32_t)c << 16) | ((uint32_t)d << 24);
     }
 
     if (!dns_server_ip) {
@@ -126,9 +133,9 @@ uint32_t dns_resolve(const char* hostname, int iface_idx) {
     __builtin_memset(pkt, 0, sizeof(pkt));
 
     dns_header_t* hdr = (dns_header_t*)pkt;
-    hdr->id = 0x1234;
-    hdr->flags = 0x0100; // standard query, recursion desired
-    hdr->qdcount = 1;
+    hdr->id = bswap16(0x1234);
+    hdr->flags = bswap16(0x0100); // standard query, recursion desired
+    hdr->qdcount = bswap16(1);    // was stored LE -> 256 questions on the wire
 
     int off = sizeof(dns_header_t);
     int nlen = encode_dns_name(pkt + off, hostname);
@@ -143,16 +150,19 @@ uint32_t dns_resolve(const char* hostname, int iface_idx) {
     dns_response_ready = 0;
     dns_response_ip = 0;
 
-    uint16_t src_port = 0xC000 + (tick_count & 0x3FFF); // dynamic source port
+    static uint16_t dns_sport = 0xC000;
+    uint16_t src_port = dns_sport++ | 0xC000;   // vary the source port per query
     udp_register_listener(src_port, dns_response_handler);
     udp_send(dns_server_ip, DNS_PORT, src_port, pkt, off, iface_idx);
 
-    // Wait for response with timeout
-    uint32_t t0 = tick_count;
-    while (tick_count - t0 < 50) { // 50ms timeout
+    // Poll for the response. The PIT timer never fires (see kernel.c) so a
+    // tick_count-based timeout would spin forever — bound the retries and
+    // busy-wait between polls instead (same approach as dhcp_request).
+    for (int retry = 0; retry < 400; retry++) {
         kernel_poll_net();
+        for (int d = 0; d < 1500; d++) inb(0x80);
         if (dns_response_ready) {
-            udp_register_listener(src_port, NULL); // unregister
+            udp_register_listener(src_port, NULL);
             return dns_response_ip;
         }
     }

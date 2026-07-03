@@ -44,15 +44,18 @@ static tcp_conn_t* find_conn_by_tuple(uint32_t src_ip, uint32_t dst_ip,
 }
 
 static uint16_t tcp_checksum(tcp_conn_t* conn, const uint8_t* tcp_seg, uint32_t tcp_len) {
+    // IPs are stored network-order (low byte = first octet), so the pseudo-header
+    // bytes are the uint32 bytes in ascending order — must match the IP header on
+    // the wire or the checksum is invalid.
     uint8_t pseudo[12];
-    pseudo[0] = (conn->src_ip >> 24) & 0xFF;
-    pseudo[1] = (conn->src_ip >> 16) & 0xFF;
-    pseudo[2] = (conn->src_ip >> 8) & 0xFF;
-    pseudo[3] = conn->src_ip & 0xFF;
-    pseudo[4] = (conn->dst_ip >> 24) & 0xFF;
-    pseudo[5] = (conn->dst_ip >> 16) & 0xFF;
-    pseudo[6] = (conn->dst_ip >> 8) & 0xFF;
-    pseudo[7] = conn->dst_ip & 0xFF;
+    pseudo[0] = conn->src_ip & 0xFF;
+    pseudo[1] = (conn->src_ip >> 8) & 0xFF;
+    pseudo[2] = (conn->src_ip >> 16) & 0xFF;
+    pseudo[3] = (conn->src_ip >> 24) & 0xFF;
+    pseudo[4] = conn->dst_ip & 0xFF;
+    pseudo[5] = (conn->dst_ip >> 8) & 0xFF;
+    pseudo[6] = (conn->dst_ip >> 16) & 0xFF;
+    pseudo[7] = (conn->dst_ip >> 24) & 0xFF;
     pseudo[8] = 0;
     pseudo[9] = 6;
     pseudo[10] = (tcp_len >> 8) & 0xFF;
@@ -89,15 +92,22 @@ static int send_segment(tcp_conn_t* conn, uint8_t flags, const uint8_t* data, ui
              | ((conn->seq >> 8) & 0x0000FF00) | ((conn->seq >> 24) & 0x000000FF);
     hdr->ack = ((conn->ack << 24) & 0xFF000000) | ((conn->ack << 8) & 0x00FF0000)
              | ((conn->ack >> 8) & 0x0000FF00) | ((conn->ack >> 24) & 0x000000FF);
-    hdr->offset_flags = ((5 << 12) & 0xF000) | (flags & 0x003F);
-    hdr->window = 0x2000;
+    // offset_flags and window are 16-bit fields that must be in network byte
+    // order on the wire; a plain LE store reversed them (bad data offset/flags,
+    // tiny window) so slirp rejected the segment.
+    uint16_t of = ((5 << 12) & 0xF000) | (flags & 0x003F);
+    hdr->offset_flags = (uint16_t)((of >> 8) | (of << 8));
+    hdr->window = (uint16_t)((0x2000 >> 8) | (0x2000 << 8));
     hdr->checksum = 0;
     hdr->urgent = 0;
 
     if (data && data_len > 0)
         memcpy(seg + sizeof(tcp_header_t), data, data_len);
 
-    hdr->checksum = tcp_checksum(conn, seg, tcp_len);
+    // tcp_checksum returns the network-order value as a host integer; store it
+    // byte-swapped so the header bytes are network order (same as the IP cksum).
+    uint16_t ck = tcp_checksum(conn, seg, tcp_len);
+    hdr->checksum = (uint16_t)((ck >> 8) | (ck << 8));
 
     int result = ip_send(conn->dst_ip, 6, seg, tcp_len, -1);
 
@@ -124,10 +134,13 @@ int tcp_connect(uint32_t dst_ip, uint16_t dst_port, uint16_t src_port) {
     int slot = find_slot();
     if (slot < 0) return -1;
 
-    // Find interface
+    // Find a real interface (skip loopback) — conn->src_ip feeds both the IP
+    // header and the TCP pseudo-header checksum, so it must be the NIC we send on.
     int iface_idx = -1;
     for (int i = 0; i < 8; i++) {
-        if (net_interfaces[i].name[0]) { iface_idx = i; break; }
+        if (net_interfaces[i].name[0] && strcmp(net_interfaces[i].name, "lo") != 0) {
+            iface_idx = i; break;
+        }
     }
     if (iface_idx < 0) return -1;
 
@@ -177,6 +190,11 @@ int tcp_recv(int conn_id, uint8_t* buf, uint32_t max_len) {
     return (int)to_copy;
 }
 
+int tcp_state(int conn_id) {
+    if (conn_id < 0 || conn_id >= TCP_MAX_CONNS) return -1;
+    return conns[conn_id].active ? conns[conn_id].state : TCP_STATE_CLOSED;
+}
+
 int tcp_close(int conn_id) {
     if (conn_id < 0 || conn_id >= TCP_MAX_CONNS) return -1;
     tcp_conn_t* conn = &conns[conn_id];
@@ -199,8 +217,9 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip) {
     uint16_t src_port = ((hdr->src_port << 8) & 0xFF00) | ((hdr->src_port >> 8) & 0x00FF);
     uint32_t seq = ((hdr->seq << 24) & 0xFF000000) | ((hdr->seq << 8) & 0x00FF0000)
                  | ((hdr->seq >> 8) & 0x0000FF00) | ((hdr->seq >> 24) & 0x000000FF);
-    uint8_t flags = hdr->offset_flags & 0x003F;
-    uint8_t data_offset = (hdr->offset_flags >> 12) & 0x0F;
+    uint16_t off_flags = (uint16_t)((hdr->offset_flags >> 8) | (hdr->offset_flags << 8));
+    uint8_t flags = off_flags & 0x003F;
+    uint8_t data_offset = (off_flags >> 12) & 0x0F;
     uint32_t header_len = data_offset * 4;
     if (header_len > len) return;
     uint8_t* payload = packet + header_len;

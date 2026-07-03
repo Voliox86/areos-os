@@ -22,6 +22,7 @@
 #define RTL_CR_RST       0x10
 #define RTL_CR_RE        0x08
 #define RTL_CR_TE        0x04
+#define RTL_CR_BUFE      0x01   // RX buffer empty (CMD register bit 0)
 #define RTL_RCR_AB       0x08
 #define RTL_RCR_AM       0x04
 #define RTL_RCR_APM      0x02
@@ -36,6 +37,7 @@ static uint8_t* rx_buffer = NULL;
 static uint8_t* tx_buffers[4];
 static int tx_cur = 0;
 static int rtl_initialized = 0;
+static uint16_t rtl_rx_offset = 0;   // driver-maintained RX ring read offset
 
 // PCI config I/O
 static uint32_t pci_read_config(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset) {
@@ -153,8 +155,17 @@ int rtl8139_init(void) {
                     rtl_writel(RTL_REG_TXADDR0 + i*4, (uint32_t)(uintptr_t)tx_buffers[i]);
                 }
 
-                // Configure RX: accept broadcast, multicast, physical match
-                rtl_writew(RTL_REG_RCR, RTL_RCR_AB | RTL_RCR_AM | RTL_RCR_APM | RTL_RCR_AAP);
+                // Initialize the RX read pointer. CAPR = read_offset - 16, so
+                // 0xFFF0 means the driver starts reading at offset 0.
+                rtl_rx_offset = 0;
+                rtl_writew(RTL_REG_CAPR, 0xFFF0);
+
+                // Configure RX: accept broadcast/multicast/physical/all, plus
+                // MXDMA=unlimited (bits 8-10) and RXFTH=no threshold (bits 13-15).
+                // Without these the RX DMA never delivered packets to the ring.
+                // RCR is a 32-bit register — use a full 32-bit write.
+                rtl_writel(RTL_REG_RCR, RTL_RCR_AB | RTL_RCR_AM | RTL_RCR_APM | RTL_RCR_AAP
+                                        | (0x7 << 8) | (0x7 << 13));
 
                 // Enable transmitter and receiver
                 rtl_writeb(RTL_REG_CR, RTL_CR_TE | RTL_CR_RE);
@@ -192,36 +203,41 @@ int rtl8139_send_packet(const uint8_t* data, uint32_t len) {
     return len;
 }
 
+// The RTL8139 stores CAPR as (read_offset - 16), so rtl_rx_offset (file scope)
+// tracks the offset ourselves and we write CAPR = offset-16, rather than
+// re-deriving it from CAPR each call (which was asymmetric and misaligned the
+// ring after the first packet).
 int rtl8139_receive_packet(uint8_t* buffer, uint32_t max_len) {
     if (!rtl_initialized) return -1;
-    uint16_t capr = rtl_readb(RTL_REG_CAPR) | (rtl_readb(RTL_REG_CAPR + 1) << 8);
-    uint16_t rx_read = capr + 16;
-    if (rx_read >= RX_BUF_SIZE) rx_read -= RX_BUF_SIZE;
-    uint16_t capr2 = rtl_readb(RTL_REG_CAPR) | (rtl_readb(RTL_REG_CAPR+1) << 8);
-    if ((int)rx_read == (int)capr2) return 0;
+    if (rtl_readb(RTL_REG_CR) & RTL_CR_BUFE) return 0;   // ring empty
 
-    uint16_t packet_len = rx_buffer[rx_read+2] | (rx_buffer[rx_read+3] << 8);
-    if (packet_len == 0xFFF0) {
-        uint16_t val = rx_read + 4;
-        rtl_writeb(RTL_REG_CAPR, (uint8_t)(val & 0xFF));
-        rtl_writeb(RTL_REG_CAPR + 1, (uint8_t)((val >> 8) & 0xFF));
+    uint16_t off = rtl_rx_offset;
+    // RX packet header: [0..1]=status, [2..3]=length (data + 4-byte CRC).
+    uint16_t status = rx_buffer[off] | (rx_buffer[off + 1] << 8);
+    uint16_t length = rx_buffer[off + 2] | (rx_buffer[off + 3] << 8);
+
+    // A bad frame or an implausible length means the ring is out of sync —
+    // resync to the start rather than looping on garbage.
+    if (!(status & 0x01) || length < 4 || length > RX_BUF_SIZE) {
+        rtl_rx_offset = 0;
+        rtl_writew(RTL_REG_CAPR, (uint16_t)(0 - 16));
         return 0;
     }
-    packet_len -= 4;
-    if (packet_len > max_len) packet_len = max_len;
-    uint16_t data_start = (rx_read + 4) % RX_BUF_SIZE;
 
-    if (data_start + packet_len <= RX_BUF_SIZE) {
-        memcpy(buffer, &rx_buffer[data_start], packet_len);
-    } else {
-        uint32_t first_part = RX_BUF_SIZE - data_start;
-        memcpy(buffer, &rx_buffer[data_start], first_part);
-        memcpy(buffer + first_part, rx_buffer, packet_len - first_part);
+    uint16_t data_len = length - 4;                       // strip CRC
+    if (data_len > max_len) data_len = max_len;
+    uint16_t data_start = (uint16_t)((off + 4) % RX_BUF_SIZE);
+    if (data_start + data_len <= RX_BUF_SIZE) {
+        memcpy(buffer, &rx_buffer[data_start], data_len);
+    } else {                                              // wraps the ring
+        uint32_t first = RX_BUF_SIZE - data_start;
+        memcpy(buffer, &rx_buffer[data_start], first);
+        memcpy(buffer + first, rx_buffer, data_len - first);
     }
-    uint16_t new_capr = rx_read + packet_len + 4;
-    if (new_capr >= RX_BUF_SIZE) new_capr -= RX_BUF_SIZE;
-    rtl_writeb(RTL_REG_CAPR, (uint8_t)(new_capr & 0xFF));
-    rtl_writeb(RTL_REG_CAPR + 1, (uint8_t)((new_capr >> 8) & 0xFF));
+
+    // Advance past this packet (header + data + CRC), 4-byte aligned.
+    rtl_rx_offset = (uint16_t)(((off + length + 4 + 3) & ~3) % RX_BUF_SIZE);
+    rtl_writew(RTL_REG_CAPR, (uint16_t)(rtl_rx_offset - 16));
     rtl_writew(RTL_REG_ISR, RTL_ISR_ROK);
-    return packet_len;
+    return data_len;
 }

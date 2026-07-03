@@ -760,6 +760,8 @@ static void cmd_exec(int argc, char** argv) {
 }
 
 static uint32_t parse_ip(const char* s) {
+    // Network byte order: first octet in the low byte, matching net_interfaces[].ip
+    // and what ip_send puts on the wire (so ping/setip target the right address).
     uint32_t ip = 0;
     for (int i = 0; i < 4; i++) {
         uint32_t octet = 0;
@@ -767,7 +769,7 @@ static uint32_t parse_ip(const char* s) {
             octet = octet * 10 + (*s - '0');
             s++;
         }
-        ip = (ip << 8) | (octet & 0xFF);
+        ip |= (octet & 0xFF) << (i * 8);
         if (*s == '.') s++;
     }
     return ip;
@@ -786,7 +788,7 @@ static void cmd_setip(int argc, char** argv) {
             net_interfaces[i].netmask = mask;
             net_interfaces[i].gateway = gw;
             printf("Set %s IP to %d.%d.%d.%d\n", net_interfaces[i].name,
-                (ip>>24)&0xFF, (ip>>16)&0xFF, (ip>>8)&0xFF, ip&0xFF);
+                ip&0xFF, (ip>>8)&0xFF, (ip>>16)&0xFF, (ip>>24)&0xFF);
             return;
         }
     }
@@ -851,8 +853,7 @@ static void cmd_tcptest(int argc, char** argv) {
     }
     if (!dst_ip) { printf("tcptest: could not resolve %s\n", argv[1]); return; }
     printf("TCP test: connecting to %d.%d.%d.%d:%d...\n",
-           (dst_ip >> 24) & 0xFF, (dst_ip >> 16) & 0xFF,
-           (dst_ip >> 8) & 0xFF, dst_ip & 0xFF,
+           dst_ip&0xFF, (dst_ip>>8)&0xFF, (dst_ip>>16)&0xFF, (dst_ip>>24)&0xFF,
            dst_port);
     int conn = tcp_connect(dst_ip, dst_port, 12345);
     if (conn < 0) {
@@ -1111,10 +1112,7 @@ static void cmd_ifconfig(int argc, char** argv) {
                 net_interfaces[i].mac[0], net_interfaces[i].mac[1],
                 net_interfaces[i].mac[2], net_interfaces[i].mac[3],
                 net_interfaces[i].mac[4], net_interfaces[i].mac[5],
-                (net_interfaces[i].ip >> 24) & 0xFF,
-                (net_interfaces[i].ip >> 16) & 0xFF,
-                (net_interfaces[i].ip >> 8) & 0xFF,
-                net_interfaces[i].ip & 0xFF);
+                net_interfaces[i].ip&0xFF, (net_interfaces[i].ip>>8)&0xFF, (net_interfaces[i].ip>>16)&0xFF, (net_interfaces[i].ip>>24)&0xFF);
         }
     }
 }
@@ -1131,7 +1129,7 @@ static void cmd_dns(int argc, char** argv) {
     uint32_t ip = dns_resolve(argv[1], iface_idx);
     if (ip) {
         printf("%s -> %d.%d.%d.%d\n", argv[1],
-            (ip>>24)&0xFF, (ip>>16)&0xFF, (ip>>8)&0xFF, ip&0xFF);
+            ip&0xFF, (ip>>8)&0xFF, (ip>>16)&0xFF, (ip>>24)&0xFF);
     } else {
         printf("dns: failed to resolve %s\n", argv[1]);
     }
@@ -1165,7 +1163,7 @@ static void cmd_ping(int argc, char** argv) {
         if (iface_idx >= 0) ip = dns_resolve(argv[1], iface_idx);
         if (!ip) { printf("ping: failed to resolve %s\n", argv[1]); return; }
     }
-    printf("PING %d.%d.%d.%d...\n", (ip>>24)&0xFF, (ip>>16)&0xFF, (ip>>8)&0xFF, ip&0xFF);
+    printf("PING %d.%d.%d.%d...\n", ip&0xFF, (ip>>8)&0xFF, (ip>>16)&0xFF, (ip>>24)&0xFF);
     int iface_idx = -1;
     for (int i = 0; i < 8; i++) {
         if (net_interfaces[i].name[0] && strcmp(net_interfaces[i].name, "lo") != 0) {
@@ -1535,8 +1533,7 @@ void nyxfetch(void) {
         if (net_interfaces[i].name[0] && net_interfaces[i].ip) {
             uint32_t ip = net_interfaces[i].ip;
             snprintf(ip_str, sizeof(ip_str), "%d.%d.%d.%d",
-                     (ip >> 24) & 0xFF, (ip >> 16) & 0xFF,
-                     (ip >> 8) & 0xFF, ip & 0xFF);
+                     ip&0xFF, (ip>>8)&0xFF, (ip>>16)&0xFF, (ip>>24)&0xFF);
             break;
         }
     }
