@@ -94,6 +94,8 @@ static void cmd_play(int argc, char** argv);
 static void cmd_sb16play(int argc, char** argv);
 static void cmd_exec(int argc, char** argv);
 static void cmd_spawn(int argc, char** argv);
+static void cmd_jobs(int argc, char** argv);
+static void cmd_wait(int argc, char** argv);
 static void cmd_usertest(int argc, char** argv);
 static void cmd_tcptest(int argc, char** argv);
 static void cmd_httpget(int argc, char** argv);
@@ -153,6 +155,8 @@ static const command_t commands[] = {
     {"sb16play",  cmd_sb16play,  "Test SB16 playback: sb16play [freq] [ms]", false},
     {"exec",      cmd_exec,      "Run ELF in foreground (waits): exec <file>", false},
     {"spawn",     cmd_spawn,     "Run ELF in background: spawn <file>", false},
+    {"jobs",      cmd_jobs,      "List background jobs", false},
+    {"wait",      cmd_wait,      "Wait for background jobs: wait [pid]", false},
     {"usertest",  cmd_usertest,  "Spawn preemptive ring-3 test processes", false},
     {"tcptest",   cmd_tcptest,   "Test TCP: tcptest <ip> <port>", false},
     {"httpget",   cmd_httpget,   "HTTP GET: httpget <url>", false},
@@ -763,6 +767,38 @@ static void cmd_spawn(int argc, char** argv) {
     int pid = spawn_user_path(argv[1]);
     if (pid < 0) { printf("spawn: could not load %s (err %d)\n", argv[1], pid); return; }
     printf("[spawn] %s running in background as PID %d\n", argv[1], pid);
+}
+
+// List the shell's background jobs (scheduler-managed user processes).
+static void cmd_jobs(int argc, char** argv) {
+    (void)argc; (void)argv;
+    extern process_t* process_table[MAX_PROCESSES];
+    int n = 0;
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        process_t* p = process_table[i];
+        if (p && p->sched_managed) {
+            const char* st = (p->state == PROC_RUN)     ? "running" :
+                             (p->state == PROC_ZOMBIE)  ? "exited"  :
+                             (p->state == PROC_BLOCKED) ? "blocked" : "?";
+            if (n++ == 0) printf("PID  PPID STATE   NAME\n");
+            printf("%-4d %-4d %-7s %s\n", p->pid, p->ppid, st, p->comm);
+        }
+    }
+    if (n == 0) printf("No background jobs.\n");
+}
+
+// Wait for a background job to finish: `wait <pid>` for one, or `wait` for all of
+// the shell's children. Blocks the shell (like a foreground job) until they exit.
+static void cmd_wait(int argc, char** argv) {
+    if (argc >= 2) {
+        uint32_t pid = (uint32_t)atoi(argv[1]);
+        int code = kwait(pid);
+        if (code == -1) printf("wait: no such child %d\n", pid);
+        else            printf("wait: PID %d exited (code %d)\n", pid, code);
+        return;
+    }
+    kwait_all();
+    printf("wait: all background jobs done.\n");
 }
 
 // Load an ELF from `path` and hand it to the preemptive scheduler as a background

@@ -359,6 +359,32 @@ void wake_waiters(process_t* child) {
     }
 }
 
+// Block the caller until ALL of its children (procs with ppid == our pid) have
+// exited — the `wait` shell command with no argument. Same block/wake machinery as
+// kwait(), but woken by ANY child's exit (wake_waiters matches waiting_for==0).
+// Zombies are counted as done and freed by reap_zombies() once we return.
+void kwait_all(void) {
+    process_t* self = get_current_process();
+    if (!self) return;
+    for (;;) {
+        // Atomic re-check + block (interrupts off ⇒ no child can exit-and-wake in
+        // the gap ⇒ no lost wakeup on a single core).
+        __asm__ volatile("cli");
+        int pending = 0;
+        for (int i = 0; i < process_count; i++) {
+            process_t* p = process_table[i];
+            if (p && p != self && p->ppid == self->pid && p->state != PROC_ZOMBIE) {
+                pending = 1;
+                break;
+            }
+        }
+        if (!pending) { __asm__ volatile("sti"); return; }
+        self->state = PROC_BLOCKED;
+        self->waiting_for = 0;               // wake on any child's exit
+        __asm__ volatile("sti; hlt");
+    }
+}
+
 static void idle_task(void) {
     while (1) {
         __asm__ volatile("hlt");

@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.7.10"
+#define KERNEL_VERSION "5.7.11"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -593,6 +593,8 @@ void reap_zombies(void);
 // Block the current thread until child `pid` exits; returns its exit code (or -1
 // if there is no such process). Used by `exec` to run a foreground job.
 int  kwait(uint32_t pid);
+// Block the current thread until all of its children have exited (the `wait` cmd).
+void kwait_all(void);
 // Called from SYS_EXIT: wake a parent blocked in kwait() on this child.
 void wake_waiters(process_t* child);
 
