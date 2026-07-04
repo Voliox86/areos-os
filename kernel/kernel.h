@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.7.8"
+#define KERNEL_VERSION "5.7.9"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -537,7 +537,6 @@ void heap_free(void* ptr);
 void init_process(void);
 process_t* create_process(const char* name, void* entry, uint64_t flags);
 process_t* create_user_process(const char* name, void* entry, void* user_stack, uint64_t* page_dir);
-void switch_to_user_process(process_t* proc);
 void reap_user_process(process_t* proc);
 void destroy_process(uint64_t pid);
 process_t* find_process(uint64_t pid);

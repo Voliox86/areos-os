@@ -191,9 +191,9 @@ syscall_entry:
     pop r11                      ; user RFLAGS
     pop rcx                      ; user RIP
     ; Return to ring 3 via iretq (NASM's bare `sysret` is the 32-bit form — it
-    ; drops to compat mode and truncates RSP to 32 bits; iretq is what
-    ; switch_to_user_process already uses to enter ring 3, with no STAR/GDT
-    ; selector-ordering constraints). Build the iret frame: SS, RSP, RFLAGS, CS, RIP.
+    ; drops to compat mode and truncates RSP to 32 bits; iretq is how the scheduler
+    ; also enters ring 3, with no STAR/GDT selector-ordering constraints). Build the
+    ; iret frame: SS, RSP, RFLAGS, CS, RIP.
     push 0x23                    ; user SS (USER_DS, RPL 3)
     push qword [user_rsp]        ; user RSP
     push r11                     ; RFLAGS
@@ -297,19 +297,6 @@ irq_common:
     mov dx, 0x3F8; mov al, '3'; out dx, al
 .b3: cli; hlt; jmp .b3
 .restore_done:
-    RESTORE_REGS
-    add rsp, 16
-    iretq
-
-; Trampoline for direct user process launch from kernel code
-; Called via higher-half address (indirect call through register)
-; rdi = proc->stack (already a higher-half alias — init_user_task_stack stores it
-;       that way so it stays mapped after the CR3 switch to the user page tables)
-; rsi = proc->page_directory (physical address of user PML4)
-global switch_to_user_trampoline
-switch_to_user_trampoline:
-    mov rsp, rdi            ; switch to user's kernel stack (higher-half alias)
-    mov cr3, rsi            ; switch to user page tables (physical)
     RESTORE_REGS
     add rsp, 16
     iretq

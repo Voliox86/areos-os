@@ -136,62 +136,20 @@ process_t* create_user_process(const char* name, void* entry, void* user_stack, 
     return p;
 }
 
-extern void switch_to_user_trampoline(void);
-extern uint64_t ku_setjmp(uint64_t* buf);
-extern void ku_longjmp(uint64_t* buf, uint64_t val);
-
-// The user process currently executing in ring 3 (launched via switch_to_user_process).
-// The cooperative scheduler doesn't advance current_idx for these, so syscall handlers
-// use this to resolve getpid()/sbrk()/exit() to the right process.
-process_t* g_user_proc = NULL;
-
-// Saved kernel context so a user exit() can unwind back to the caller (the shell's
-// `exec`) instead of halting the whole system.
-static uint64_t user_return_ctx[8];
-
-// Called from the SYS_EXIT handler to return control to switch_to_user_process's caller.
-void return_from_user_process(void) {
-    ku_longjmp(user_return_ctx, 1);
-    for (;;) __asm__ volatile("hlt");   // unreachable
-}
-
-void switch_to_user_process(process_t* proc) {
-    if (!proc || !proc->page_directory) return;
-
-    // Save a return point. When the user process exits, the SYS_EXIT handler calls
-    // return_from_user_process(), which longjmps back here with a non-zero result.
-    if (ku_setjmp(user_return_ctx) != 0) {
-        g_user_proc = NULL;
-        __asm__ volatile("sti");        // re-enable interrupts for the caller (shell)
-        return;
-    }
-
-    g_user_proc = proc;
-    tss_set_stack((uint64_t)(uintptr_t)proc->kernel_stack + KERNEL_BASE);
-    uint64_t tramp = (uint64_t)switch_to_user_trampoline + KERNEL_BASE;
-    uint64_t rsp_val = (uint64_t)(uintptr_t)proc->stack;
-    uint64_t cr3_val = (uint64_t)proc->page_directory;
-    __asm__ volatile(
-        "cli \n"
-        "mov %0, %%rdi \n"
-        "mov %1, %%rsi \n"
-        "mov %2, %%rax \n"
-        "call *%%rax \n"
-        :: "r"(rsp_val), "r"(cr3_val), "r"(tramp)
-        : "rdi", "rsi", "rax"
-    );
-    for (;;) __asm__ volatile("hlt");
-}
+// The setjmp/longjmp blocking-exec launcher (`switch_to_user_process`,
+// `g_user_proc`, `return_from_user_process`, the `switch_to_user_trampoline`
+// trampoline, and `ku_setjmp`/`ku_longjmp`) was removed in v5.7.9: `exec` now runs
+// foreground jobs via spawn_user_path()+kwait() on the preemptive scheduler, and
+// syscalls resolve the current process through current_idx (get_current_process).
 
 // Free everything owned by an exited user process: its page directory (all user
 // pages + tables), the kernel/context stack (init_user_task_stack kmalloc'd
 // kernel_stack-4096 as the base), the process_t, and its process-table slot.
-// Only call once the process is no longer executing (e.g. after
-// switch_to_user_process returns via the exit longjmp).
+// Only call once the process is no longer executing (e.g. a zombie reaped from a
+// kernel thread, or a killed process).
 void reap_user_process(process_t* proc) {
     if (!proc) return;
     extern void free_page_directory(uint64_t* pml4);
-    if (proc == g_user_proc) g_user_proc = NULL;
     for (int i = 0; i < process_count; i++) {
         if (process_table[i] == proc) {
             process_table[i] = process_table[--process_count];
@@ -272,17 +230,6 @@ static void sched_target(process_t* p) {
 }
 
 void irq_scheduler_tick(void) {
-    // A blocking switch_to_user_process owns the CPU in ring 3 (g_user_proc set).
-    // It's launched outside the scheduler and isn't tracked by current_idx, so we
-    // must resume it in ITS OWN address space — dropping to the kernel CR3 here
-    // would iretq back to ring 3 with the user code unmapped (#PF). Handle this
-    // before anything else, regardless of whether preemption is otherwise enabled.
-    if (g_user_proc != NULL) {
-        next_rsp = saved_rsp;
-        next_cr3 = (uint64_t)g_user_proc->page_directory;
-        return;
-    }
-
     // Default: resume the thread we interrupted, preserving its address space (a
     // ring-3 process keeps its own CR3 if it's the only thing runnable).
     process_t* cur = (current_idx >= 0 && current_idx < process_count)

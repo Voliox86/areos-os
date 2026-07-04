@@ -8,8 +8,8 @@ void init_syscalls(void) {
 }
 
 static process_t* get_cur_proc(void) {
-    extern process_t* g_user_proc;
-    if (g_user_proc) return g_user_proc;
+    // The running process is whatever the scheduler last switched to (syscalls run
+    // with interrupts masked, so current_idx can't change under us mid-call).
     extern process_t* get_current_process(void);
     return get_current_process();
 }
@@ -176,28 +176,22 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
     switch (no) {
         case SYS_EXIT: {
             printf("[USER] exit(%lu)\n", a1);
+            // Every user process now runs under the scheduler, so exit is uniform:
+            // become a zombie and yield forever. The scheduler skips non-RUN states,
+            // so the next tick switches to another thread and never returns here;
+            // reap_zombies() (a compositor background task) frees the address space +
+            // stacks — we can't, we're still on this proc's kernel stack in its CR3.
+            // Record the status and wake a parent blocked in kwait() (all with
+            // interrupts masked, so it's atomic w.r.t. the parent).
             process_t* cur = get_cur_proc();
-            if (cur && cur->sched_managed) {
-                // Preemptively-scheduled process: become a zombie and yield forever.
-                // The scheduler skips non-RUN states, so the next tick switches to
-                // another thread and never comes back here; reap_zombies() (a
-                // compositor background task) frees the address space + stacks. We
-                // can't free them here — we're still executing on this proc's kernel
-                // stack in its CR3. Record the status and wake a parent blocked in
-                // kwait() (all with interrupts masked, so it's atomic vs. the parent).
+            if (cur) {
                 cur->exit_code = (int)a1;
                 cur->state = PROC_ZOMBIE;
                 wake_waiters(cur);
-                __asm__ volatile("sti");            // let the timer preempt us away
-                for (;;) __asm__ volatile("hlt");
             }
-            // Cooperative (blocking exec) process: unwind back to the shell's exec,
-            // re-enabling interrupts there, instead of halting the whole system.
-            if (cur) cur->state = PROC_PARKED;
-            extern void return_from_user_process(void);
-            return_from_user_process();
-            for (;;) __asm__ volatile("hlt");   // unreachable
-            return 0;
+            __asm__ volatile("sti");            // let the timer preempt us away
+            for (;;) __asm__ volatile("hlt");
+            return 0;   // unreachable
         }
         case SYS_WRITE: {
             int fd = (int)a1;

@@ -4,43 +4,9 @@ BITS 64
 
 global switch_context
 global create_task_stack
-global ku_setjmp
-global ku_longjmp
 
-; ku_setjmp(uint64_t* buf)  -> returns 0 the first time, or `val` when resumed
-; via ku_longjmp. buf layout: rbx,rbp,r12,r13,r14,r15,rsp(post-ret),return-addr.
-; Used to return control to switch_to_user_process's caller when a user process
-; calls exit() from within the (separate) syscall stack.
-ku_setjmp:
-    mov [rdi + 0],  rbx
-    mov [rdi + 8],  rbp
-    mov [rdi + 16], r12
-    mov [rdi + 24], r13
-    mov [rdi + 32], r14
-    mov [rdi + 40], r15
-    lea rax, [rsp + 8]          ; RSP as it will be after our RET
-    mov [rdi + 48], rax
-    mov rax, [rsp]             ; return address
-    mov [rdi + 56], rax
-    xor eax, eax               ; first return: 0
-    ret
-
-; ku_longjmp(uint64_t* buf, uint64_t val)  -- never returns to caller
-ku_longjmp:
-    mov rbx, [rdi + 0]
-    mov rbp, [rdi + 8]
-    mov r12, [rdi + 16]
-    mov r13, [rdi + 24]
-    mov r14, [rdi + 32]
-    mov r15, [rdi + 40]
-    mov rsp, [rdi + 48]        ; restore stack to setjmp's post-RET point
-    mov rax, rsi              ; return value
-    test rax, rax
-    jnz .nz
-    inc rax                   ; longjmp(,0) must appear as 1
-.nz:
-    mov rcx, [rdi + 56]
-    jmp rcx                   ; resume as if ku_setjmp returned `val`
+; (ku_setjmp/ku_longjmp removed in v5.7.9 with the setjmp/longjmp blocking-exec
+; path — see process.c. switch_context/create_task_stack are kept below.)
 
 ; switch_context(uint64_t* old_rsp_ptr, uint64_t new_rsp)
 ; RDI = old_rsp_ptr, RSI = new_rsp (x86_64 ABI)
