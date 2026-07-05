@@ -29,6 +29,7 @@ wget-log*
 # === IDE ===
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 *~

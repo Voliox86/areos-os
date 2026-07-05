@@ -1,0 +1,168 @@
+/* NyxOS docs — interactions: starfield, scroll-spy, reveal, terminal typing */
+(function () {
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ---------- starfield ---------- */
+  (function starfield() {
+    var c = document.getElementById("starfield");
+    if (!c) return;
+    var ctx = c.getContext("2d");
+    var stars = [], w, h, dpr = Math.min(window.devicePixelRatio || 1, 2);
+    function resize() {
+      var cw = document.documentElement.clientWidth, ch = document.documentElement.clientHeight;
+      w = c.width = cw * dpr; h = c.height = ch * dpr;   // buffer; CSS inset:0 sizes the element
+      var n = Math.min(160, Math.floor((cw * ch) / 12000));
+      stars = [];
+      for (var i = 0; i < n; i++) {
+        stars.push({
+          x: Math.random() * w, y: Math.random() * h,
+          r: (Math.random() * 1.3 + 0.2) * dpr,
+          a: Math.random() * 0.6 + 0.15,
+          tw: Math.random() * 0.02 + 0.004,
+          hue: Math.random() < 0.15 ? "124,92,255" : (Math.random() < 0.2 ? "0,255,157" : "230,232,240")
+        });
+      }
+    }
+    var t = 0;
+    function draw() {
+      ctx.clearRect(0, 0, w, h);
+      for (var i = 0; i < stars.length; i++) {
+        var s = stars[i];
+        var a = s.a + Math.sin(t * s.tw * 60 + i) * 0.12;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.r, 0, 6.283);
+        ctx.fillStyle = "rgba(" + s.hue + "," + Math.max(0, a).toFixed(2) + ")";
+        ctx.fill();
+      }
+      t += 1;
+      if (!reduce) requestAnimationFrame(draw);
+    }
+    resize();
+    addEventListener("resize", resize, { passive: true });
+    if (reduce) draw(); else requestAnimationFrame(draw);
+  })();
+
+  /* ---------- nav: scrolled state + mobile toggle ---------- */
+  var nav = document.getElementById("nav");
+  var onScroll = function () {
+    nav.classList.toggle("scrolled", window.scrollY > 12);
+    if (window.scrollY < 260) {
+      [].slice.call(document.querySelectorAll(".nav-links a.active")).forEach(function (x) { x.classList.remove("active"); });
+    }
+  };
+  onScroll();
+  addEventListener("scroll", onScroll, { passive: true });
+
+  var toggle = document.getElementById("navToggle");
+  var links = document.getElementById("navLinks");
+  if (toggle) {
+    toggle.addEventListener("click", function () { links.classList.toggle("open"); });
+    links.addEventListener("click", function (e) {
+      if (e.target.tagName === "A") links.classList.remove("open");
+    });
+  }
+
+  /* ---------- scroll-spy ---------- */
+  var sections = [].slice.call(document.querySelectorAll("main section[id]"));
+  var navMap = {};
+  [].slice.call(document.querySelectorAll(".nav-links a")).forEach(function (a) {
+    navMap[a.getAttribute("href").slice(1)] = a;
+  });
+  if ("IntersectionObserver" in window) {
+    var spy = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        var a = navMap[en.target.id];
+        if (!a) return;
+        if (en.isIntersecting) {
+          [].slice.call(document.querySelectorAll(".nav-links a")).forEach(function (x) { x.classList.remove("active"); });
+          a.classList.add("active");
+        }
+      });
+    }, { rootMargin: "-45% 0px -50% 0px" });
+    sections.forEach(function (s) { spy.observe(s); });
+  }
+
+  /* ---------- reveal on scroll ---------- */
+  var reveals = [].slice.call(document.querySelectorAll(".reveal"));
+  if (reduce || !("IntersectionObserver" in window)) {
+    reveals.forEach(function (r) { r.classList.add("in"); });
+  } else {
+    var ro = new IntersectionObserver(function (entries, obs) {
+      entries.forEach(function (en) {
+        if (en.isIntersecting) { en.target.classList.add("in"); obs.unobserve(en.target); }
+      });
+    }, { threshold: 0.12 });
+    reveals.forEach(function (r) { ro.observe(r); });
+  }
+
+  /* ---------- hero terminal typing ---------- */
+  (function terminal() {
+    var el = document.getElementById("typed");
+    if (!el) return;
+    var PROMPT = '<span class="p">nyx:root$</span> ';
+    var seq = [
+      { type: "cmd", text: "nyxfetch" },
+      { type: "out", lines: [
+        '',
+        '     <span class="m">.-~~-.</span>',
+        '   <span class="m">.\'  o   \'.</span>       <span class="k">N Y X O S</span>  <span class="v">5.7.20</span>',
+        '  <span class="m">/   .--.   \\</span>      <span class="p">kernel</span>  x86_64 · long mode',
+        ' <span class="m">|   (    )   |</span>     <span class="p">sched</span>   preemptive weighted RR',
+        '  <span class="m">\\   \'--\'   /</span>      <span class="p">net</span>     TCP/IP · DHCP · HTTP',
+        '   <span class="m">\'.      .\'</span>       <span class="p">fs</span>      ramdisk VFS + EXT2',
+        '     <span class="m">\'-~~-\'</span>         <span class="p">gui</span>     compositor · 32 windows',
+        ''
+      ]},
+      { type: "cmd", text: "ping 127.0.0.1" },
+      { type: "out", lines: [
+        '64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 <span class="k">time=0 ms</span>',
+        '<span class="p">4 packets transmitted, 4 received, 0% loss</span>',
+        ''
+      ]},
+      { type: "cmd", text: "tcpserve 80" },
+      { type: "out", lines: [
+        'Accepted a connection. <span class="v">GET / HTTP/1.1</span>',
+        '&rarr; <span class="k">HTTP/1.1 200 OK</span> · Hello from NyxOS TCP!',
+        ''
+      ]}
+    ];
+
+    var html = "";
+    var si = 0;
+    function step() {
+      if (si >= seq.length) { setTimeout(function(){ si = 0; html=""; el.innerHTML=""; step(); }, 6000); return; }
+      var item = seq[si++];
+      if (item.type === "cmd") {
+        html += PROMPT;
+        el.innerHTML = html;
+        typeChars(item.text, 0);
+      } else {
+        printLines(item.lines, 0);
+      }
+    }
+    function typeChars(text, i) {
+      if (i >= text.length) { html += "\n"; el.innerHTML = html; setTimeout(step, 320); return; }
+      el.innerHTML = html + text.slice(0, i + 1);
+      setTimeout(function () { typeChars(text, i + 1); }, 34 + Math.random() * 34);
+    }
+    function printLines(lines, i) {
+      if (i >= lines.length) { setTimeout(step, 420); return; }
+      html += lines[i] + "\n";
+      el.innerHTML = html;
+      setTimeout(function () { printLines(lines, i + 1); }, 90);
+    }
+    if (reduce) {
+      // Render final state without animation
+      seq.forEach(function (item) {
+        if (item.type === "cmd") html += PROMPT + item.text + "\n";
+        else html += item.lines.join("\n") + "\n";
+      });
+      el.innerHTML = html;
+    } else {
+      setTimeout(step, 500);
+    }
+  })();
+
+  /* ---------- year in footer (if any) ---------- */
+})();

@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NyxOS — a 64-bit operating system, written from scratch</title>
+  <meta name="description" content="NyxOS is a from-scratch x86_64 operating system in C and Assembly: preemptive multitasking, a windowed desktop, a real TCP/IP stack, and an EXT2 filesystem." />
+  <meta property="og:title" content="NyxOS — a 64-bit OS from scratch" />
+  <meta property="og:description" content="Preemptive multitasking, a window compositor, a real TCP/IP stack, EXT2 — all in C and x86_64 Assembly." />
+  <meta property="og:type" content="website" />
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <canvas id="starfield" aria-hidden="true"></canvas>
+  <div class="glow glow-1" aria-hidden="true"></div>
+  <div class="glow glow-2" aria-hidden="true"></div>
+
+  <!-- ============ NAV ============ -->
+  <header class="nav" id="nav">
+    <a href="#top" class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="26" height="26"><path d="M22 4a12 12 0 1 0 6 22A10 10 0 0 1 22 4Z" fill="url(#mg)"/><circle cx="12" cy="9" r="1" fill="#00ff9d"/><circle cx="24" cy="20" r="1.3" fill="#7c5cff"/><circle cx="9" cy="18" r="0.8" fill="#e6e8ee"/><defs><linearGradient id="mg" x1="0" y1="0" x2="32" y2="32"><stop stop-color="#00ff9d"/><stop offset="1" stop-color="#7c5cff"/></linearGradient></defs></svg>
+      </span>
+      <span class="brand-name">Nyx<span>OS</span></span>
+    </a>
+    <nav class="nav-links" id="navLinks">
+      <a href="#overview">Overview</a>
+      <a href="#features">Features</a>
+      <a href="#manual">Manual</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#networking">Networking</a>
+      <a href="#releases">Releases</a>
+    </nav>
+    <div class="nav-actions">
+      <a class="btn btn-ghost" href="https://dsc.gg/nyxos" target="_blank" rel="noopener">Discord</a>
+      <a class="btn btn-solid" href="https://github.com/kazah-png/nyx-os" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M12 .5A11.5 11.5 0 0 0 .5 12a11.5 11.5 0 0 0 7.86 10.92c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.2 1.77 1.2 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.8 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.43-2.69 5.4-5.25 5.69.41.36.78 1.05.78 2.12v3.15c0 .31.21.67.8.56A11.5 11.5 0 0 0 23.5 12 11.5 11.5 0 0 0 12 .5Z"/></svg>
+        GitHub
+      </a>
+      <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+    </div>
+  </header>
+
+  <main id="top">
+    <!-- ============ HERO ============ -->
+    <section class="hero">
+      <div class="hero-copy reveal">
+        <span class="eyebrow">From-scratch · x86_64 · long mode</span>
+        <h1 class="hero-title">Nyx<span class="grad">OS</span></h1>
+        <p class="hero-sub">
+          A 64-bit operating system written from scratch in <strong>C</strong> and
+          <strong>x86_64 Assembly</strong> — preemptive multitasking, a windowed
+          desktop, a real TCP/IP stack, and an EXT2 filesystem. No libraries. Just the metal.
+        </p>
+        <div class="hero-badges">
+          <span class="pill pill-accent">● v5.7.20</span>
+          <span class="pill">GPL-2.0+</span>
+          <span class="pill">0 build warnings</span>
+        </div>
+        <div class="hero-cta">
+          <a class="btn btn-solid btn-lg" href="#manual">Read the manual →</a>
+          <a class="btn btn-ghost btn-lg" href="https://github.com/kazah-png/nyx-os" target="_blank" rel="noopener">Browse the source</a>
+        </div>
+      </div>
+
+      <div class="hero-term reveal">
+        <div class="term">
+          <div class="term-bar">
+            <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+            <span class="term-title">nyx:root — terminal</span>
+          </div>
+          <pre class="term-body"><code id="typed"></code><span class="cursor">▋</span></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ STATS ============ -->
+    <section class="stats reveal" aria-label="At a glance">
+      <div class="stat"><b>x86_64</b><span>long mode · 4-level paging</span></div>
+      <div class="stat"><b>C + NASM</b><span>zero external libraries</span></div>
+      <div class="stat"><b>40+</b><span>shell commands</span></div>
+      <div class="stat"><b>TCP/IP</b><span>DHCP · DNS · HTTP</span></div>
+      <div class="stat"><b>32 windows</b><span>compositor + taskbar</span></div>
+      <div class="stat"><b>EXT2</b><span>read / write, auto-mount</span></div>
+    </section>
+
+    <!-- ============ OVERVIEW ============ -->
+    <section id="overview" class="section">
+      <div class="section-head reveal">
+        <span class="kicker">Overview</span>
+        <h2>An operating system you can read end to end</h2>
+        <p class="lead">
+          NyxOS boots via Multiboot2 (GRUB-compatible), enters long mode with 4-level
+          paging, and provides a clean foundation for kernel development: a preemptive
+          scheduler, ring-3 userspace with ELF64 and syscalls, a windowed GUI, and a
+          from-scratch network stack — all built up one honest, verified increment at a time.
+        </p>
+      </div>
+      <div class="shot reveal">
+        <div class="shot-frame">
+          <div class="shot-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="shot-url">NyxOS Desktop · window compositor</span></div>
+          <img src="gui.png" alt="The NyxOS desktop: wallpaper, app icons, windows and a taskbar" loading="lazy" />
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ FEATURES ============ -->
+    <section id="features" class="section">
+      <div class="section-head reveal">
+        <span class="kicker">Features</span>
+        <h2>What's inside the kernel</h2>
+        <p class="lead">Every subsystem is written from scratch and verified in QEMU.</p>
+      </div>
+      <div class="grid">
+        <article class="card reveal">
+          <div class="card-ic">⏻</div>
+          <h3>Boot &amp; initialization</h3>
+          <p>Multiboot2, x86_64 long mode, GDT/IDT with a full exception set, PIT at 1000&nbsp;Hz, Local + I/O APIC, and PS/2 keyboard &amp; mouse drivers.</p>
+        </article>
+        <article class="card reveal">
+          <div class="card-ic">▤</div>
+          <h3>Memory management</h3>
+          <p>Bitmap physical allocator, a 16&nbsp;MB kernel heap, 4-level paging with a higher-half mapping, per-process page tables, and <span class="mono">NX</span> + <span class="mono">SMEP</span> hardening.</p>
+        </article>
+        <article class="card reveal">
+          <div class="card-ic">⚙</div>
+          <h3>Processes &amp; scheduler</h3>
+          <p>Preemptive weighted round-robin over kernel threads and ring-3 processes, with full shell job control — <span class="mono">exec</span>, <span class="mono">spawn</span>, <span class="mono">jobs</span>, <span class="mono">wait</span>, <span class="mono">kill</span>, <span class="mono">nice</span>.</p>
+        </article>
+        <article class="card reveal">
+          <div class="card-ic">◈</div>
+          <h3>ELF userspace</h3>
+          <p>An ELF64 loader, an embedded initramfs, 10 syscalls via <span class="mono">syscall/sysret</span>, a minimal libc, and isolated per-process file descriptors.</p>
+        </article>
+        <article class="card reveal">
+          <div class="card-ic">❯</div>
+          <h3>Shell</h3>
+          <p>40+ built-in commands with Tab completion, environment-variable expansion, command history, output redirection, and pipes.</p>
+        </article>
+        <article class="card reveal">
+          <div class="card-ic">🖧</div>
+          <h3>Networking</h3>
+          <p>RTL8139 driver, ARP/IPv4/UDP/ICMP/DHCP/DNS, and a full TCP stack: retransmission with RTO, passive open (<span class="mono">listen</span>/<span class="mono">accept</span>), loopback, and an HTTP client &amp; server.</p>
+        </article>
+        <article class="card reveal">
+          <div class="card-ic">🗔</div>
+          <h3>GUI compositor</h3>
+          <p>Up to 32 windows with z-ordering, drag &amp; resize, four workspaces, a taskbar and Start menu — plus a Terminal, File Manager, Editor, Paint and more.</p>
+        </article>
+        <article class="card reveal">
+          <div class="card-ic">🖴</div>
+          <h3>Filesystem</h3>
+          <p>A ramdisk VFS with an EXT2 read/write driver auto-mounted at <span class="mono">/mnt</span>, per-fd byte offsets, and persistence across reboots on a disk image.</p>
+        </article>
+        <article class="card reveal">
+          <div class="card-ic">♪</div>
+          <h3>Multimedia</h3>
+          <p>A Bochs VBE framebuffer (1024×768×32), a Sound Blaster 16 driver (DMA + IRQ + mixer), PC-speaker tones, and a DOOM port with sound.</p>
+        </article>
+      </div>
+    </section>
+
+    <!-- ============ ARCHITECTURE ============ -->
+    <section id="architecture" class="section">
+      <div class="section-head reveal">
+        <span class="kicker">Architecture</span>
+        <h2>How it fits together</h2>
+        <p class="lead">A higher-half kernel, isolated user address spaces, and an interrupt-driven core.</p>
+      </div>
+      <div class="arch">
+        <div class="arch-col reveal">
+          <h3>Boot flow</h3>
+          <ol class="flow">
+            <li><b>GRUB / Multiboot2</b> hands off with a memory map + framebuffer.</li>
+            <li><b>Long mode</b> — GDT, 64-bit code/data, TSS, IDT with IST stacks.</li>
+            <li><b>Paging</b> — identity-map low memory, mirror the kernel into the higher half.</li>
+            <li><b>Drivers</b> — PIT, APIC, PS/2, RTL8139, ATA/EXT2, VBE, SB16.</li>
+            <li><b>Login</b> — PBKDF2-hashed credentials (<span class="mono">nyx / nyx</span>).</li>
+            <li><b>Desktop</b> — the window compositor launches as a scheduled process.</li>
+          </ol>
+        </div>
+        <div class="arch-col reveal">
+          <h3>Memory layout</h3>
+          <div class="memmap">
+            <div class="mem row"><span class="mono">0xFFFFFF80_00000000</span><em>Higher-half kernel (PML4[511])</em></div>
+            <div class="mem row"><span class="mono">0x00000000_00100000</span><em>Kernel linked low (1&nbsp;MB)</em></div>
+            <div class="mem row"><span class="mono">user half</span><em>Per-process, isolated (no identity map)</em></div>
+            <div class="mem row accent"><span class="mono">NX + SMEP</span><em>User pages non-exec; kernel can't run user code</em></div>
+          </div>
+          <h3 style="margin-top:1.4rem">Interrupt core</h3>
+          <p class="muted">The PIT (ISA IRQ0) is routed via the I/O APIC on pin&nbsp;2 → vector&nbsp;32, driving a 1000&nbsp;Hz tick. The scheduler preempts on that tick; syscalls and IRQs switch <span class="mono">CR3</span> on entry so each process sees only its own address space.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ MANUAL ============ -->
+    <section id="manual" class="section">
+      <div class="section-head reveal">
+        <span class="kicker">Manual</span>
+        <h2>Getting started</h2>
+        <p class="lead">Build the kernel, boot it in QEMU, and log in.</p>
+      </div>
+
+      <div class="steps">
+        <div class="step reveal">
+          <span class="step-n">1</span>
+          <div>
+            <h3>Clone &amp; build</h3>
+            <div class="code">
+              <div class="code-bar"><span>bash · Linux / WSL</span></div>
+<pre><code><span class="c-c"># cross-compiler (x86_64-elf-gcc) or host gcc -m64</span>
+git clone https://github.com/kazah-png/nyx-os.git
+cd nyx-os
+make -C kernel        <span class="c-c"># → kernel/nyx-kernel.bin</span></code></pre>
+            </div>
+            <div class="code">
+              <div class="code-bar"><span>PowerShell · Windows</span></div>
+<pre><code>.\build.ps1           <span class="c-c"># WSL cross-compile → kernel + bootable ISO</span></code></pre>
+            </div>
+          </div>
+        </div>
+
+        <div class="step reveal">
+          <span class="step-n">2</span>
+          <div>
+            <h3>Run in QEMU</h3>
+            <div class="code">
+              <div class="code-bar"><span>bash</span></div>
+<pre><code><span class="c-c"># GUI desktop + networking + disk</span>
+qemu-system-x86_64 -cdrom NyxOS.iso -m 256M -no-reboot \
+  -hda ext2-test.img -nic user,model=rtl8139 -display sdl</code></pre>
+            </div>
+            <p class="muted">Serve HTTP from the guest by forwarding a host port: add <span class="mono">hostfwd=tcp::8080-:80</span> to the NIC, run <span class="mono">tcpserve 80</span>, then <span class="mono">curl localhost:8080</span>.</p>
+          </div>
+        </div>
+
+        <div class="step reveal">
+          <span class="step-n">3</span>
+          <div>
+            <h3>Log in</h3>
+            <p>The boot animation leads to a framebuffer login screen. The default account is <span class="mono">nyx</span> / <span class="mono">nyx</span> (PBKDF2-HMAC-SHA256). On success, the NyxOS Desktop launches; with no disk, it falls back to a text shell.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-head reveal" style="margin-top:3.5rem">
+        <h2>Command reference</h2>
+        <p class="lead">The built-in shell — also available in the Terminal window.</p>
+      </div>
+      <div class="cmd-table reveal">
+        <table>
+          <thead><tr><th>Category</th><th>Commands</th></tr></thead>
+          <tbody>
+            <tr><td>System</td><td><span class="mono">help clear nyxfetch uname date version reboot history env export</span></td></tr>
+            <tr><td>Files</td><td><span class="mono">ls cd pwd cat touch mkdir rm cp mv head tail grep sort wc find tree write which diff hexdump</span></td></tr>
+            <tr><td>Processes</td><td><span class="mono">ps mem exec spawn jobs wait kill nice renice usertest</span></td></tr>
+            <tr><td>Network</td><td><span class="mono">ifconfig dhcp ping setip httpget tcptest tcpdrop tcploop tcpserve</span></td></tr>
+            <tr><td>Filesystem</td><td><span class="mono">mount</span> · EXT2 auto-mounts at <span class="mono">/mnt</span></td></tr>
+            <tr><td>Graphics &amp; sound</td><td><span class="mono">gui desktop mode fonttest beep play sb16play</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ============ NETWORKING ============ -->
+    <section id="networking" class="section">
+      <div class="section-head reveal">
+        <span class="kicker">Networking</span>
+        <h2>A real TCP/IP stack</h2>
+        <p class="lead">From the NIC driver up to an HTTP server — every layer written and debugged from the wire.</p>
+      </div>
+
+      <div class="net">
+        <div class="net-stack reveal">
+          <div class="layer l7">HTTP · DNS<span>client &amp; server</span></div>
+          <div class="layer l4">TCP<span>retransmit (RTO) · listen/accept · loopback</span></div>
+          <div class="layer l4b">UDP · ICMP<span>datagrams · echo (ping) with RTT</span></div>
+          <div class="layer l3">IPv4<span>checksum · routing · loopback delivery</span></div>
+          <div class="layer l2">ARP · Ethernet<span>cache · frames</span></div>
+          <div class="layer l1">RTL8139<span>PCI NIC · TX/RX rings</span></div>
+        </div>
+        <div class="net-notes reveal">
+          <h3>Highlights</h3>
+          <ul class="ticks">
+            <li><b>DHCP client</b> — DISCOVER → OFFER → REQUEST → ACK, auto-configures IP, netmask &amp; gateway.</li>
+            <li><b><span class="mono">ping</span> with statistics</b> — real round-trip timing, per-packet sequencing, and a min/avg/max + loss summary. NyxOS also <em>answers</em> echo requests.</li>
+            <li><b>TCP retransmission</b> — each connection buffers its outstanding segment and resends it on an RTO with exponential backoff; a lost SYN or data segment recovers automatically.</li>
+            <li><b>Passive open</b> — <span class="mono">listen</span>/<span class="mono">accept</span> spawn per-client connections. <span class="mono">tcpserve</span> answers a real <span class="mono">curl</span> from the host with <span class="mono">HTTP/1.1 200 OK</span>.</li>
+            <li><b>Loopback</b> — a self-contained <span class="mono">127.0.0.1</span> path lets the whole stack be tested in-guest (<span class="mono">tcploop</span>, <span class="mono">ping 127.0.0.1</span>).</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ RELEASES ============ -->
+    <section id="releases" class="section">
+      <div class="section-head reveal">
+        <span class="kicker">Releases</span>
+        <h2>The road so far</h2>
+        <p class="lead">Selected milestones from a from-scratch kernel to a networked desktop OS.</p>
+      </div>
+      <div class="timeline">
+        <div class="tl reveal"><span class="tl-v">v1.x</span><div><h3>Foundations</h3><p>Base kernel, ramdisk VFS + shell commands, and the first real networking (RTL8139, ARP/IP/UDP/ICMP).</p></div></div>
+        <div class="tl reveal"><span class="tl-v">v2.x</span><div><h3>Multitasking, GUI &amp; disks</h3><p>Preemptive multitasking, a full TCP stack, the window compositor, PC-speaker audio, EXT2 read support, and a Sound Blaster 16 driver.</p></div></div>
+        <div class="tl reveal"><span class="tl-v">v3.x</span><div><h3>Userspace</h3><p>ELF loader, initramfs, per-process paging, ring-3 execution, syscalls, an RTC driver and a minimal libc.</p></div></div>
+        <div class="tl reveal"><span class="tl-v">v4.x</span><div><h3>64-bit &amp; hardening</h3><p>Full x86_64 long mode, higher-half kernel, user/kernel page-table isolation, and <span class="mono">NX</span> + <span class="mono">SMEP</span> with APIC init.</p></div></div>
+        <div class="tl reveal"><span class="tl-v">v5.0–5.6</span><div><h3>Apps, login &amp; ring-3</h3><p>A full GUI app suite, a boot animation + login screen, security hardening of the syscall boundary, and ring-3 userspace that actually runs.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.7.x</span><div><h3>Scheduler &amp; the network arc</h3><p>Preemptive scheduling with job control &amp; <span class="mono">nice</span>, per-process fds, drag-and-drop in the File Manager, and a networking sprint: loopback + ICMP, TCP retransmission, multi-segment receive, passive open, and an HTTP server that answers real clients. <b>Current: v5.7.20.</b></p></div></div>
+      </div>
+    </section>
+
+    <!-- ============ COMMUNITY ============ -->
+    <section id="community" class="section">
+      <div class="cta-card reveal">
+        <h2>Follow the build</h2>
+        <p>NyxOS is developed in the open, one verified increment at a time. Join the Discord for kernel-dev chat, or dive into the source and status report on GitHub.</p>
+        <div class="hero-cta">
+          <a class="btn btn-solid btn-lg" href="https://dsc.gg/nyxos" target="_blank" rel="noopener">Join the Discord</a>
+          <a class="btn btn-ghost btn-lg" href="https://github.com/kazah-png/nyx-os" target="_blank" rel="noopener">GitHub repository</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ============ FOOTER ============ -->
+  <footer class="footer">
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <span class="brand-name">Nyx<span>OS</span></span>
+        <p class="muted">A 64-bit operating system, written from scratch in C and x86_64 Assembly.</p>
+      </div>
+      <div class="foot-links">
+        <h4>Docs</h4>
+        <a href="#overview">Overview</a>
+        <a href="#manual">Manual</a>
+        <a href="#architecture">Architecture</a>
+        <a href="#networking">Networking</a>
+      </div>
+      <div class="foot-links">
+        <h4>Project</h4>
+        <a href="https://github.com/kazah-png/nyx-os" target="_blank" rel="noopener">Source</a>
+        <a href="https://github.com/kazah-png/nyx-os/issues/1" target="_blank" rel="noopener">Status report</a>
+        <a href="https://dsc.gg/nyxos" target="_blank" rel="noopener">Discord</a>
+      </div>
+    </div>
+    <div class="foot-bar">
+      <span>© NyxOS · Free software under the GNU GPL-2.0+</span>
+      <span>Built for the metal. 🌙</span>
+    </div>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>
