@@ -69,10 +69,19 @@ static int detect_aps_via_cpuid(void) {
 void smp_init(void) {
     for (int i = 0; i < MAX_CPUS; i++) {
         cpu_info[i].apic_id = 0xFF;
+        cpu_info[i].apic_id_self = 0xFFFFFFFF;
         cpu_info[i].cpu_number = i;
         cpu_info[i].started = 0;
         cpu_info[i].running = 0;
     }
+
+    // The BSP is always CPU 0 and online — record it up front so `cpus`/nyxfetch
+    // see it even on a single-core machine (where detection returns early).
+    cpu_info[0].apic_id = apic_get_id();
+    cpu_info[0].apic_id_self = apic_get_id();
+    cpu_info[0].cpu_number = 0;
+    cpu_info[0].started = 1;
+    cpu_info[0].running = 1;
 
     int ap_count = detect_aps_via_cpuid();
     if (ap_count <= 1) {
@@ -141,6 +150,14 @@ void smp_init(void) {
 
 void ap_main(uint32_t cpu_id) {
     if (cpu_id >= MAX_CPUS) return;
+
+    // Proof-of-execution: read our OWN initial APIC id via CPUID(1).EBX[31:24].
+    // CPUID is an instruction (no memory access), so it's safe here even though
+    // the AP's page tables (the plain kernel PML4) don't map the LAPIC MMIO —
+    // reading `lapic[...]` here #PF'd with no IDT set up → triple fault.
+    uint32_t ceax, cebx, cecx, cedx;
+    __asm__ volatile("cpuid" : "=a"(ceax), "=b"(cebx), "=c"(cecx), "=d"(cedx) : "a"(1));
+    cpu_info[cpu_id].apic_id_self = (cebx >> 24) & 0xFF;
 
     cpu_info[cpu_id].started = 1;
     cpu_info[cpu_id].running = 1;

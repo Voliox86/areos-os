@@ -5,7 +5,8 @@
 #define AP_STACK_SIZE 8192
 
 typedef struct {
-    uint32_t apic_id;
+    uint32_t apic_id;       // APIC id the BSP assigned/expects for this CPU
+    uint32_t apic_id_self;  // APIC id the CPU read from its OWN Local APIC (proof)
     uint32_t cpu_number;
     uint64_t stack_base;
     uint64_t stack_top;

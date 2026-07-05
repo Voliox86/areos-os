@@ -53,6 +53,7 @@ static void cmd_reboot(int argc, char** argv);
 static void cmd_ps(int argc, char** argv);
 static void cmd_mtdemo(int argc, char** argv);
 static void cmd_mem(int argc, char** argv);
+static void cmd_cpus(int argc, char** argv);
 static void cmd_crash(int argc, char** argv);
 static void cmd_hexdump(int argc, char** argv);
 static void cmd_date(int argc, char** argv);
@@ -121,6 +122,7 @@ static const command_t commands[] = {
     {"ps",        cmd_ps,        "List processes", false},
     {"mtdemo",    cmd_mtdemo,    "Preemptive multitasking self-test", false},
     {"mem",       cmd_mem,       "Show memory usage", false},
+    {"cpus",      cmd_cpus,      "List CPU cores (SMP)", false},
 
     {"crash",     cmd_crash,     "Trigger a kernel panic", false},
     {"layout",    cmd_layout,    "Change keyboard layout: layout <us|es>", false},
@@ -1251,6 +1253,19 @@ static void cmd_mem(int argc, char** argv) {
            memory_used / (1024*1024),
            (memory_total - memory_used) / (1024*1024));
     printf("Heap size: %d KB\n", KERNEL_HEAP_SIZE / 1024);
+}
+
+static void cmd_cpus(int argc, char** argv) {
+    (void)argc; (void)argv;
+    printf("SMP: %u CPU(s) online (max %u)\n", cpu_count, MAX_CPUS);
+    printf("CPU  ROLE  APIC  SELF  STATE\n");
+    for (uint32_t i = 0; i < cpu_count && i < MAX_CPUS; i++) {
+        // APIC = id the BSP assigned; SELF = id the core read from its own LAPIC.
+        printf("%-3u  %-4s  %-4u  %-4u  %s\n",
+               i, i == 0 ? "BSP" : "AP",
+               cpu_info[i].apic_id, cpu_info[i].apic_id_self,
+               cpu_info[i].running ? "online" : "offline");
+    }
 }
 
 static void cmd_crash(int argc, char** argv) {
