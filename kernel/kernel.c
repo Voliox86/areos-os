@@ -102,6 +102,7 @@ static void cmd_usertest(int argc, char** argv);
 static void cmd_tcptest(int argc, char** argv);
 static void cmd_tcpdrop(int argc, char** argv);
 static void cmd_tcploop(int argc, char** argv);
+static void cmd_tcpserve(int argc, char** argv);
 static void cmd_httpget(int argc, char** argv);
 static void cmd_setip(int argc, char** argv);
 static void cmd_mount(int argc, char** argv);
@@ -167,6 +168,7 @@ static const command_t commands[] = {
     {"tcptest",   cmd_tcptest,   "Test TCP: tcptest <ip> <port>", false},
     {"tcpdrop",   cmd_tcpdrop,   "Test: drop next N TCP TX segs (force retransmit)", false},
     {"tcploop",   cmd_tcploop,   "In-guest TCP loopback self-test: tcploop [drop]", false},
+    {"tcpserve",  cmd_tcpserve,  "Serve one TCP/HTTP connection: tcpserve [port]", false},
     {"httpget",   cmd_httpget,   "HTTP GET: httpget <url>", false},
     {"setip",     cmd_setip,     "Set static IP: setip <ip> <mask> <gw>", false},
     {"mount",     cmd_mount,     "Mount EXT2: mount [drive] [part_lba]", false},
@@ -1115,6 +1117,61 @@ static void cmd_tcploop(int argc, char** argv) {
 
     printf("TCP loopback self-test: %s\n", (ok1 && ok2) ? "PASS" : "FAIL");
     tcp_close(cli);
+    tcp_close(child);
+    tcp_close(srv);
+}
+
+static void cmd_tcpserve(int argc, char** argv) {
+    uint16_t port = (argc >= 2) ? (uint16_t)atoi(argv[1]) : 80;
+    int srv = tcp_listen(port);
+    if (srv < 0) { printf("listen() failed (no free conn slot)\n"); return; }
+    printf("Listening on 0.0.0.0:%d (waiting up to 20s for a client)...\n", port);
+
+    // Wait for an inbound connection. Loopback delivery, NIC RX and tcp_tick all
+    // run inside kernel_poll_net(), so this serves both 127.0.0.1 and the NIC.
+    int child = -1;
+    uint32_t deadline = get_ticks() + 20000;
+    while ((int32_t)(get_ticks() - deadline) < 0) {
+        kernel_poll_net();
+        child = tcp_accept(srv);
+        if (child >= 0) break;
+    }
+    if (child < 0) { printf("No connection received (timeout).\n"); tcp_close(srv); return; }
+    printf("Accepted a connection (child=%d). Reading request...\n", child);
+
+    // Read the request. Respond as soon as the HTTP header block is complete
+    // (\r\n\r\n), or the client half-closes (its FIN -> CLOSE_WAIT), or it goes
+    // quiet — a client that FINs right after its request must still get a reply.
+    uint8_t buf[1024]; int total = 0;
+    uint32_t last = get_ticks();
+    for (;;) {
+        kernel_poll_net();
+        int n = tcp_recv(child, buf + total, sizeof(buf) - 1 - total);
+        if (n > 0) { total += n; last = get_ticks(); }
+        buf[total] = '\0';
+        if (total > 0 && strstr((char*)buf, "\r\n\r\n")) break;
+        if (total > 0 && tcp_state(child) == TCP_STATE_CLOSE_WAIT) break;
+        if (total > 0 && (int32_t)(get_ticks() - (last + 800)) >= 0) break;
+        if (total >= (int)sizeof(buf) - 1) break;
+        if ((int32_t)(get_ticks() - (last + 4000)) >= 0) break;
+    }
+    printf("--- request (%d bytes) ---\n%s\n--- end ---\n", total, buf);
+
+    // Reply with a small HTTP/1.1 response (body is exactly 21 bytes).
+    const char* resp =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/plain\r\n"
+        "Content-Length: 21\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+        "Hello from NyxOS TCP!";
+    tcp_send(child, (const uint8_t*)resp, strlen(resp));
+
+    // Let the data segment and its ACK flush before we FIN.
+    uint32_t t = get_ticks();
+    while ((int32_t)(get_ticks() - (t + 700)) < 0) kernel_poll_net();
+
+    printf("Response sent. Closing.\n");
     tcp_close(child);
     tcp_close(srv);
 }

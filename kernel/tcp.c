@@ -299,7 +299,12 @@ int tcp_accept(int listen_id) {
 int tcp_send(int conn_id, const uint8_t* data, uint32_t len) {
     if (conn_id < 0 || conn_id >= TCP_MAX_CONNS) return -1;
     tcp_conn_t* conn = &conns[conn_id];
-    if (!conn->active || conn->state != TCP_STATE_ESTABLISHED) return -1;
+    // CLOSE_WAIT is a valid send state: the peer has finished sending (its FIN
+    // arrived) but our half is still open — the classic server half-close, where
+    // a client FINs right after its request yet still awaits the response.
+    if (!conn->active ||
+        (conn->state != TCP_STATE_ESTABLISHED && conn->state != TCP_STATE_CLOSE_WAIT))
+        return -1;
     return send_segment(conn, TCP_FLAG_ACK | TCP_FLAG_PSH, data, len);
 }
 
@@ -333,6 +338,10 @@ int tcp_close(int conn_id) {
     if (conn->state == TCP_STATE_ESTABLISHED) {
         conn->state = TCP_STATE_FIN_WAIT1;
         send_segment(conn, TCP_FLAG_FIN | TCP_FLAG_ACK, NULL, 0);
+    } else if (conn->state == TCP_STATE_CLOSE_WAIT) {
+        // We already got the peer's FIN; sending ours completes the close.
+        conn->state = TCP_STATE_LAST_ACK;
+        send_segment(conn, TCP_FLAG_FIN | TCP_FLAG_ACK, NULL, 0);
     }
     if (conn->recv_buf) { kfree(conn->recv_buf); conn->recv_buf = NULL; }
     if (conn->rt_seg) { kfree(conn->rt_seg); conn->rt_seg = NULL; conn->rt_len = 0; }
@@ -341,7 +350,7 @@ int tcp_close(int conn_id) {
     return 0;
 }
 
-void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip) {
+void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t dst_ip) {
     if (len < sizeof(tcp_header_t)) return;
     tcp_header_t* hdr = (tcp_header_t*)packet;
 
@@ -358,10 +367,11 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip) {
     if (header_len > len) return;
     uint8_t* payload = packet + header_len;
     uint32_t payload_len = len - header_len;
-    uint32_t local_ip = 0;
-    for (int i = 0; i < 8; i++) {
-        if (net_interfaces[i].name[0]) { local_ip = net_interfaces[i].ip; break; }
-    }
+    // The address the peer targeted (our NIC IP, or 127.0.0.1 for loopback) is the
+    // correct local address for a reply/child — sourcing a server child from it is
+    // what makes the TCP pseudo-header checksum match on the wire (before v5.7.20
+    // this defaulted to lo, so NIC-side listen produced bad checksums).
+    uint32_t local_ip = dst_ip;
 
     tcp_conn_t* conn = find_conn_by_tuple(local_ip, src_ip, dst_port, src_port);
 
