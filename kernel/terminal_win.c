@@ -20,12 +20,21 @@ memset_asm(term->lines[idx], ' ', TERM_COLS);
     if (term->scroll_offset > 0) term->scroll_offset++;
 }
 
+// Rebuild this terminal's prompt from its own current directory. Activating the
+// shell's CWD first means the prompt shows the real absolute path (e.g. after a
+// `cd`) and each Terminal window tracks its directory independently.
+static void term_set_prompt(terminal_win_t* term) {
+    vfs_setcwd_node(term->cwd);
+    snprintf(term->prompt, sizeof(term->prompt), "nyx:%s$ ", vfs_getcwd());
+    term->prompt_len = strlen(term->prompt);
+}
+
 terminal_win_t* terminal_create_ctx(void) {
     terminal_win_t* term = (terminal_win_t*)kmalloc(sizeof(terminal_win_t));
     if (!term) return NULL;
     memset_asm(term, 0, sizeof(terminal_win_t));
-    snprintf(term->prompt, sizeof(term->prompt), "nyx:~$ ");
-    term->prompt_len = strlen(term->prompt);
+    term->cwd = vfs_root_node();          // each terminal starts at /
+    term_set_prompt(term);
     term->visible_rows = 20;
     term_add_line(term, "NyxOS Terminal v0.2.0", VGA_LIGHT_GREEN | (VGA_BLACK << 4));
     term_add_line(term, "Type 'help' for available commands.", VGA_LIGHT_CYAN | (VGA_BLACK << 4));
@@ -205,10 +214,13 @@ void terminal_win_key(window_t* win, int key) {
             capture_term = term;
             term->capturing = 1;
             term->output_len = 0;
+            vfs_setcwd_node(term->cwd);       // run in THIS shell's directory
             set_putchar_hook(terminal_capture_putchar);
             execute_command(term->input);
             set_putchar_hook(NULL);
             term->capturing = 0;
+            term->cwd = vfs_getcwd_node();     // a `cd` may have moved us
+            term_set_prompt(term);             // reflect the new path in the prompt
             if (term->output_len > 0) {
                 term->output_buf[term->output_len] = '\0';
                 term_add_line(term, term->output_buf, VGA_LIGHT_GREY | (VGA_BLACK << 4));

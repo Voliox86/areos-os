@@ -6,10 +6,10 @@
   <strong>Custom x86_64 kernel · C and Assembly · General-purpose OS</strong>
   <br/><br/>
   <!-- Badges -->
-  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.7.20">
-    <img src="https://img.shields.io/badge/release-v5.7.20-00ff9d?style=flat" />
+  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.7.21">
+    <img src="https://img.shields.io/badge/release-v5.7.21-00ff9d?style=flat" />
   </a>
-  <img src="https://img.shields.io/badge/status-v5.7.20-00ff9d?style=flat" />
+  <img src="https://img.shields.io/badge/status-v5.7.21-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/TCP-yes-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/GUI-window%20compositor-00ff9d?style=flat" />
   <a href="https://github.com/kazah-png/nyx-os/issues/1">
@@ -49,7 +49,7 @@ ______          \'/
     N Y X O S
     G U I   S U I T E
   -------------------------------------
-  Kernel:     NyxOS 5.7.20
+  Kernel:     NyxOS 5.7.21
   Arch:       x86_64 (long mode)
   Memory:     256 MB total, 240 MB free
   Heap:       16384 KB
@@ -157,7 +157,7 @@ nyx:root$ ls /
 bin/   dev/   etc/   home/  mnt/   root/  tmp/   usr/   var/
 
 nyx:root$ uname
-NyxOS 5.7.20 (Scheduler) x86_64
+NyxOS 5.7.21 (Scheduler) x86_64
 
 nyx:root$ mem
 Physical memory: 256 MB total, 252 MB free

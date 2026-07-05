@@ -17,8 +17,9 @@ typedef struct {
     char input[TERM_INPUT_MAX];
     int input_len;
     int cursor_pos;
-    char prompt[32];
+    char prompt[64];
     int prompt_len;
+    void* cwd;              // this shell's current directory (opaque vfs node)
     char output_buf[TERM_OUTPUT_MAX];
     int output_len;
     int capturing;

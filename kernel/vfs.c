@@ -513,8 +513,28 @@ mount_entry_t* vfs_find_mount(const char* path) {
 // ==================== New helper functions ====================
 
 const char* vfs_getcwd(void) {
-    return current_dir ? current_dir->name : "/";
+    // Build the full absolute path by walking parent pointers up to the root.
+    static char path[256];
+    vfs_node_t* d = current_dir;
+    if (!d || d == &nodes[0]) return "/";
+    const char* parts[32];
+    int n = 0;
+    while (d && d != &nodes[0] && n < 32) { parts[n++] = d->name; d = d->parent; }
+    int pos = 0;
+    for (int i = n - 1; i >= 0 && pos < 250; i--) {
+        path[pos++] = '/';
+        for (int j = 0; parts[i][j] && pos < 255; j++) path[pos++] = parts[i][j];
+    }
+    path[pos] = '\0';
+    return path;
 }
+
+// Per-shell CWD: the current directory is no longer a single global — each
+// Terminal window owns its own directory node and swaps it in around command
+// execution (via these accessors), so `cd` in one shell doesn't move another.
+void* vfs_getcwd_node(void)  { return current_dir; }
+void  vfs_setcwd_node(void* n) { if (n) current_dir = (vfs_node_t*)n; }
+void* vfs_root_node(void)    { return &nodes[0]; }
 
 int vfs_chdir(const char* path) {
     mount_entry_t* me = vfs_find_mount(path);

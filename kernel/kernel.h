@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.7.20"
+#define KERNEL_VERSION "5.7.21"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -702,6 +702,9 @@ int vfs_mount(const char* mount_point, int fs_type, void* fs_data);
 mount_entry_t* vfs_find_mount(const char* path);
 const char* vfs_getcwd(void);
 int vfs_chdir(const char* path);
+void* vfs_getcwd_node(void);      // opaque current-directory node (per-shell CWD)
+void  vfs_setcwd_node(void* n);
+void* vfs_root_node(void);
 void vfs_list_dir(const char* path);
 void vfs_cat_file(const char* path);
 int vfs_touch(const char* path);
