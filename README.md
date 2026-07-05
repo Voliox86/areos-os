@@ -9,8 +9,7 @@
   <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.7.19">
     <img src="https://img.shields.io/badge/release-v5.7.19-00ff9d?style=flat" />
   </a>
-  <a href="...">
-    <img src="https://img.shields.io/badge/status-v5.7.19-00ff9d?style=flat" />
+  <img src="https://img.shields.io/badge/status-v5.7.19-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/TCP-yes-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/GUI-window%20compositor-00ff9d?style=flat" />
   <a href="https://github.com/kazah-png/nyx-os/issues/1">
@@ -47,7 +46,7 @@ ______          \'/
     N Y X O S
     G U I   S U I T E
   -------------------------------------
-  Kernel:     NyxOS 5.1.0
+  Kernel:     NyxOS 5.7.19
   Arch:       x86_64 (long mode)
   Memory:     256 MB total, 240 MB free
   Heap:       16384 KB
@@ -155,7 +154,7 @@ nyx:root$ ls /
 bin/   dev/   etc/   home/  mnt/   root/  tmp/   usr/   var/
 
 nyx:root$ uname
-NyxOS 2.0.0 (Clean Slate) i686
+NyxOS 5.7.19 (Scheduler) x86_64
 
 nyx:root$ mem
 Physical memory: 256 MB total, 252 MB free
@@ -447,22 +446,22 @@ See the full **[NyxOS Status Report](https://github.com/kazah-png/nyx-os/issues/
 - ✅ Minimal C library for userspace (printf, malloc, free, snprintf, string ops)
 - ✅ Real-time clock (RTC) driver with wall-clock time display
 - ✅ Desktop polish (wallpaper, right-click context menu, Settings window, File Manager toolbar)
+- ✅ Preemptive weighted round-robin scheduler (`nice`/`renice`, idle CPU yield)
+- ✅ Shell job control: `exec` (foreground), `spawn` (background), `kill`, `jobs`, `wait`
+- ✅ Per-process file descriptors (isolated, auto-closed on exit)
+- ✅ Full TCP stack: retransmission (RTO), passive open (`listen`/`accept`), loopback
+- ✅ DNS resolution & HTTP client
+- ✅ Loopback networking & ICMP echo replies (`ping` with RTT/loss stats)
+- ✅ File Manager: copy/paste, drag-and-drop into folders
+- ✅ Ring 3 userspace execution with validated syscall args (no kernel handle leaks)
 
 ### Known issues
 - ⚠️ **Login stability:** login screen works but may have edge cases with very fast typing or buffer overflow.
-- ⚠️ **Preemptive scheduling disabled:** `irq_scheduler_tick()` currently keeps the running context (no context switch on the timer IRQ); multitasking is cooperative via background-task callbacks. The process table, PIDs, and `switch_context` exist but aren't driven by the timer. As a result only one `exec`'d user process runs at a time.
-- ⚠️ **exec cleanup:** an `exec`'d process's `process_t`/page directory/stack are not freed on exit (small per-run leak); `vfs_read` does not track a file offset.
-
-### What works (userspace, v5.5.0)
-`exec <elf>` loads an ELF64 binary, runs it in ring 3, services `syscall`/`iretq` system calls (write, print, open, read, close, getpid, sbrk, fsize, exit, exec), and returns to the shell when the program exits. Verified end-to-end with `init.elf` (printf/getpid/malloc/snprintf/exit). Syscall arguments are validated and userspace never sees raw kernel handles.
 
 ### What's being built
-- 🔄 Login screen: mouse click support for field switching
-- 🔄 File Manager: copy/paste, drag-and-drop files
-- 🔄 Network: DNS resolver, HTTP client library
 - 🔄 SMP (multi-core) bringup via APIC IPI
 - 🔄 Page fault advanced features (COW, demand paging)
-- 🔄 EXT2 write improvements (write via mount)
+- 🔄 NIC-side TCP listen (inbound connections from network)
 
 ---
 

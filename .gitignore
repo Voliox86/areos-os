@@ -49,6 +49,18 @@ kernel/genfont.py
 # === Batch files ===
 *.bat
 
+# === Test / debug artifacts ===
+qemu_serial.txt
+screen.png
+screen.ppm
+
+# === Dev-only scripts (not for distribution) ===
+kernel/build.sh
+kernel/fix_kernel.sh
+
+# === One-off utilities ===
+tools/ppm2png.py
+
 # === Issue/PR templates ===
 issue_body.md
 
