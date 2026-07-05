@@ -42,10 +42,20 @@ static tcp_conn_t* find_conn_by_tuple(uint32_t src_ip, uint32_t dst_ip,
     (void)src_ip;
     for (int i = 0; i < TCP_MAX_CONNS; i++) {
         if (!conns[i].active) continue;
+        if (conns[i].state == TCP_STATE_LISTEN) continue;   // listeners match by port only
         if (conns[i].dst_ip == dst_ip && conns[i].src_port == src_port
             && conns[i].dst_port == dst_port)
             return &conns[i];
     }
+    return NULL;
+}
+
+// A passive-open socket waiting for connections on `port` (dst unbound).
+static tcp_conn_t* find_listener(uint16_t port) {
+    for (int i = 0; i < TCP_MAX_CONNS; i++)
+        if (conns[i].active && conns[i].state == TCP_STATE_LISTEN
+            && conns[i].src_port == port)
+            return &conns[i];
     return NULL;
 }
 
@@ -201,20 +211,28 @@ int tcp_connect(uint32_t dst_ip, uint16_t dst_port, uint16_t src_port) {
     int slot = find_slot();
     if (slot < 0) return -1;
 
-    // Find a real interface (skip loopback) — conn->src_ip feeds both the IP
-    // header and the TCP pseudo-header checksum, so it must be the NIC we send on.
-    int iface_idx = -1;
-    for (int i = 0; i < 8; i++) {
-        if (net_interfaces[i].name[0] && strcmp(net_interfaces[i].name, "lo") != 0) {
-            iface_idx = i; break;
+    // conn->src_ip feeds both the IP header and the TCP pseudo-header checksum, so
+    // it must match what actually goes on the wire. A loopback destination sources
+    // from lo (127.0.0.1) and needs no NIC; anything else uses the first real NIC.
+    uint32_t src_ip;
+    if ((dst_ip & 0xFF) == 0x7F) {
+        src_ip = 0x0100007F;
+    } else {
+        int iface_idx = -1;
+        for (int i = 0; i < 8; i++) {
+            if (net_interfaces[i].name[0] && strcmp(net_interfaces[i].name, "lo") != 0) {
+                iface_idx = i; break;
+            }
         }
+        if (iface_idx < 0) return -1;
+        src_ip = net_interfaces[iface_idx].ip;
     }
-    if (iface_idx < 0) return -1;
 
     tcp_conn_t* conn = &conns[slot];
     conn->active = 1;
     conn->state = TCP_STATE_SYN_SENT;
-    conn->src_ip = net_interfaces[iface_idx].ip;
+    conn->accepted = 0;
+    conn->src_ip = src_ip;
     conn->dst_ip = dst_ip;
     conn->src_port = src_port;
     conn->dst_port = dst_port;
@@ -233,6 +251,49 @@ int tcp_connect(uint32_t dst_ip, uint16_t dst_port, uint16_t src_port) {
     // Send SYN
     send_segment(conn, TCP_FLAG_SYN, NULL, 0);
     return slot;
+}
+
+// Passive open: reserve a slot that accepts inbound connections on `port`. It
+// stays in LISTEN; each inbound SYN spawns a separate child connection that
+// tcp_accept() hands out. dst_port==0 marks the slot as "unbound remote".
+int tcp_listen(uint16_t port) {
+    int slot = find_slot();
+    if (slot < 0) return -1;
+    tcp_conn_t* conn = &conns[slot];
+    conn->active = 1;
+    conn->state = TCP_STATE_LISTEN;
+    conn->accepted = 0;
+    conn->src_ip = 0;
+    conn->dst_ip = 0;
+    conn->src_port = port;
+    conn->dst_port = 0;
+    conn->seq = 0;
+    conn->ack = 0;
+    conn->recv_buf = NULL;
+    conn->recv_len = 0;
+    conn->recv_cap = 0;
+    conn->rt_seg = NULL;
+    conn->rt_len = 0;
+    conn->rt_retries = 0;
+    return slot;
+}
+
+// Return the id of a child of `listen_id` that has completed its handshake and
+// hasn't been accepted yet, else -1. Children share the listener's local port.
+int tcp_accept(int listen_id) {
+    if (listen_id < 0 || listen_id >= TCP_MAX_CONNS) return -1;
+    tcp_conn_t* l = &conns[listen_id];
+    if (!l->active || l->state != TCP_STATE_LISTEN) return -1;
+    for (int i = 0; i < TCP_MAX_CONNS; i++) {
+        if (i == listen_id) continue;
+        tcp_conn_t* c = &conns[i];
+        if (c->active && !c->accepted && c->src_port == l->src_port
+            && (c->state == TCP_STATE_ESTABLISHED || c->state == TCP_STATE_CLOSE_WAIT)) {
+            c->accepted = 1;
+            return i;
+        }
+    }
+    return -1;
 }
 
 int tcp_send(int conn_id, const uint8_t* data, uint32_t len) {
@@ -305,6 +366,34 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip) {
     tcp_conn_t* conn = find_conn_by_tuple(local_ip, src_ip, dst_port, src_port);
 
     if (!conn) {
+        // Never answer an RST with an RST — over loopback that would ping-pong
+        // forever (each RST re-enters with no matching conn).
+        if (flags & TCP_FLAG_RST) return;
+
+        // Passive open: a pure SYN to a listening port spawns a child connection
+        // (the listener itself stays in LISTEN for further clients).
+        if ((flags & TCP_FLAG_SYN) && !(flags & TCP_FLAG_ACK)) {
+            tcp_conn_t* l = find_listener(dst_port);
+            int slot = l ? find_slot() : -1;
+            if (l && slot >= 0) {
+                tcp_conn_t* ch = &conns[slot];
+                ch->active = 1;
+                ch->state = TCP_STATE_SYN_RCVD;
+                ch->accepted = 0;
+                ch->src_ip = local_ip;
+                ch->dst_ip = src_ip;
+                ch->src_port = dst_port;    // our listen port
+                ch->dst_port = src_port;    // the client's port
+                ch->seq = next_isn; next_isn += 1000;
+                ch->ack = seq + 1;          // acknowledge the client's SYN
+                ch->recv_buf = NULL; ch->recv_len = 0; ch->recv_cap = 0;
+                ch->rt_seg = NULL; ch->rt_len = 0; ch->rt_retries = 0;
+                ch->sent_unacked = 0;
+                send_segment(ch, TCP_FLAG_SYN | TCP_FLAG_ACK, NULL, 0);
+                return;
+            }
+        }
+
         // No matching connection: send RST
         tcp_conn_t temp;
         temp.src_ip = local_ip;
@@ -338,6 +427,12 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip) {
         kfree(conn->rt_seg);
         conn->rt_seg = NULL;
         conn->rt_len = 0;
+    }
+
+    // Passive-open handshake completes when the client's ACK of our SYN-ACK
+    // arrives (it may also carry the first data byte, handled just below).
+    if ((flags & TCP_FLAG_ACK) && conn->state == TCP_STATE_SYN_RCVD) {
+        conn->state = TCP_STATE_ESTABLISHED;
     }
 
     // Update ack from received segment

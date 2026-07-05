@@ -25,6 +25,7 @@
 typedef struct {
     int active;
     int state;
+    int accepted;            // passive side: 1 once tcp_accept() has handed it out
     uint32_t src_ip;
     uint32_t dst_ip;
     uint16_t src_port;
@@ -53,6 +54,8 @@ typedef struct {
 
 int tcp_init(void);
 int tcp_connect(uint32_t dst_ip, uint16_t dst_port, uint16_t src_port);
+int tcp_listen(uint16_t port);       // passive open: accept inbound connections on port
+int tcp_accept(int listen_id);       // -> conn_id of a newly ESTABLISHED child, else -1
 int tcp_send(int conn_id, const uint8_t* data, uint32_t len);
 int tcp_recv(int conn_id, uint8_t* buf, uint32_t max_len);
 int tcp_state(int conn_id);

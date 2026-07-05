@@ -101,6 +101,7 @@ static void cmd_renice(int argc, char** argv);
 static void cmd_usertest(int argc, char** argv);
 static void cmd_tcptest(int argc, char** argv);
 static void cmd_tcpdrop(int argc, char** argv);
+static void cmd_tcploop(int argc, char** argv);
 static void cmd_httpget(int argc, char** argv);
 static void cmd_setip(int argc, char** argv);
 static void cmd_mount(int argc, char** argv);
@@ -165,6 +166,7 @@ static const command_t commands[] = {
     {"usertest",  cmd_usertest,  "Spawn preemptive ring-3 test processes", false},
     {"tcptest",   cmd_tcptest,   "Test TCP: tcptest <ip> <port>", false},
     {"tcpdrop",   cmd_tcpdrop,   "Test: drop next N TCP TX segs (force retransmit)", false},
+    {"tcploop",   cmd_tcploop,   "In-guest TCP loopback self-test: tcploop [drop]", false},
     {"httpget",   cmd_httpget,   "HTTP GET: httpget <url>", false},
     {"setip",     cmd_setip,     "Set static IP: setip <ip> <mask> <gw>", false},
     {"mount",     cmd_mount,     "Mount EXT2: mount [drive] [part_lba]", false},
@@ -1044,6 +1046,77 @@ static void cmd_tcpdrop(int argc, char** argv) {
     tcp_debug_drop(n);
     printf("TCP: will silently drop the next %d outbound segment(s).\n", n);
     printf("Run e.g. 'httpget example.com' — the RTO timer must retransmit to recover.\n");
+}
+
+static void cmd_tcploop(int argc, char** argv) {
+    int drop = (argc >= 2) ? atoi(argv[1]) : 0;
+    uint16_t port = 7777;
+    uint32_t lo = 0x0100007F;   // 127.0.0.1 (network order)
+
+    printf("TCP loopback self-test on 127.0.0.1:%d%s\n", port,
+           drop ? " (a data segment will be dropped)" : "");
+
+    int srv = tcp_listen(port);
+    if (srv < 0) { printf("listen() failed\n"); return; }
+    int cli = tcp_connect(lo, port, 50000);
+    if (cli < 0) { printf("connect() failed\n"); tcp_close(srv); return; }
+
+    // Drive the 3-way handshake. Loopback delivery and tcp_tick() both run inside
+    // kernel_poll_net(), so this needs no NIC and never touches the wire.
+    int child = -1;
+    uint32_t deadline = get_ticks() + 3000;
+    while ((int32_t)(get_ticks() - deadline) < 0) {
+        kernel_poll_net();
+        if (child < 0) child = tcp_accept(srv);
+        if (child >= 0 && tcp_state(cli) == TCP_STATE_ESTABLISHED) break;
+    }
+    if (child < 0 || tcp_state(cli) != TCP_STATE_ESTABLISHED) {
+        printf("FAIL: handshake did not complete (cli state=%d, child=%d)\n",
+               tcp_state(cli), child);
+        tcp_close(cli); tcp_close(srv); return;
+    }
+    printf("Handshake OK: client conn %d <-> server child %d ESTABLISHED\n", cli, child);
+
+    // Force a retransmit on the next data segment if asked — the RTO timer must
+    // recover it entirely in-guest.
+    if (drop) tcp_debug_drop(1);
+
+    // Client -> server.
+    const char* msg = "Hello over 127.0.0.1 from the client!";
+    int mlen = (int)strlen(msg);
+    tcp_send(cli, (const uint8_t*)msg, mlen);
+    uint8_t rx[256]; int got = 0;
+    deadline = get_ticks() + 3000;
+    while ((int32_t)(get_ticks() - deadline) < 0) {
+        kernel_poll_net();
+        int n = tcp_recv(child, rx + got, sizeof(rx) - 1 - got);
+        if (n > 0) got += n;
+        if (got >= mlen) break;
+    }
+    rx[got < 0 ? 0 : got] = '\0';
+    int ok1 = (got == mlen) && strcmp((char*)rx, msg) == 0;
+    printf("  server recv %d bytes: \"%s\" [%s]\n", got, rx, ok1 ? "OK" : "MISMATCH");
+
+    // Server -> client (echo a reply).
+    const char* reply = "ACK: got it, hello back from the server.";
+    int rlen = (int)strlen(reply);
+    tcp_send(child, (const uint8_t*)reply, rlen);
+    uint8_t rx2[256]; int got2 = 0;
+    deadline = get_ticks() + 3000;
+    while ((int32_t)(get_ticks() - deadline) < 0) {
+        kernel_poll_net();
+        int n = tcp_recv(cli, rx2 + got2, sizeof(rx2) - 1 - got2);
+        if (n > 0) got2 += n;
+        if (got2 >= rlen) break;
+    }
+    rx2[got2 < 0 ? 0 : got2] = '\0';
+    int ok2 = (got2 == rlen) && strcmp((char*)rx2, reply) == 0;
+    printf("  client recv %d bytes: \"%s\" [%s]\n", got2, rx2, ok2 ? "OK" : "MISMATCH");
+
+    printf("TCP loopback self-test: %s\n", (ok1 && ok2) ? "PASS" : "FAIL");
+    tcp_close(cli);
+    tcp_close(child);
+    tcp_close(srv);
 }
 
 static void cmd_httpget(int argc, char** argv) {
