@@ -98,4 +98,4 @@ lists the highest-priority work along with context and constraints.
 
 ## Questions
 
-Open a discussion or reach out. No question is too small.
+Open a discussion, ping `uselessalter` on Discord, or email nyxos@inbox.lv. No question is too small.
