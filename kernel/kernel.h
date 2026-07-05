@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.7.22"
+#define KERNEL_VERSION "5.7.23"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -543,6 +543,14 @@ uint64_t* alloc_page_directory(void);
 uint64_t* get_kernel_page_directory(void);
 void switch_page_directory(uint64_t* pd);
 void map_page_dir(uint64_t* pd, void* phys, void* virt, uint64_t flags);
+
+// Demand paging + copy-on-write (serviced from the #PF handler).
+int vm_handle_fault(uint64_t cr2, uint64_t err);
+int vm_map_demand(uint64_t virt);            // mark virt as allocate-on-first-touch
+int vm_map_cow(uint64_t virt, uint64_t phys); // map virt -> phys read-only, copy on write
+void vm_unmap(uint64_t virt);
+uint64_t vm_stat_demand(void);
+uint64_t vm_stat_cow(void);
 
 void init_heap(void);
 void* heap_alloc(size_t size);

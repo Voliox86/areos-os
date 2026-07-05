@@ -54,6 +54,7 @@ static void cmd_ps(int argc, char** argv);
 static void cmd_mtdemo(int argc, char** argv);
 static void cmd_mem(int argc, char** argv);
 static void cmd_cpus(int argc, char** argv);
+static void cmd_cowtest(int argc, char** argv);
 static void cmd_crash(int argc, char** argv);
 static void cmd_hexdump(int argc, char** argv);
 static void cmd_date(int argc, char** argv);
@@ -123,6 +124,7 @@ static const command_t commands[] = {
     {"mtdemo",    cmd_mtdemo,    "Preemptive multitasking self-test", false},
     {"mem",       cmd_mem,       "Show memory usage", false},
     {"cpus",      cmd_cpus,      "List CPU cores (SMP)", false},
+    {"cowtest",   cmd_cowtest,   "Test demand paging + copy-on-write", false},
 
     {"crash",     cmd_crash,     "Trigger a kernel panic", false},
     {"layout",    cmd_layout,    "Change keyboard layout: layout <us|es>", false},
@@ -1266,6 +1268,48 @@ static void cmd_cpus(int argc, char** argv) {
                cpu_info[i].apic_id, cpu_info[i].apic_id_self,
                cpu_info[i].running ? "online" : "offline");
     }
+}
+
+static void cmd_cowtest(int argc, char** argv) {
+    (void)argc; (void)argv;
+    // Two pages in an otherwise-unused PML4 slot (0xFFFFA000_00000000).
+    volatile uint64_t* DV = (volatile uint64_t*)0xFFFFA00000000000ULL;
+    volatile uint64_t* CV = (volatile uint64_t*)0xFFFFA00000001000ULL;
+    uint64_t d0 = vm_stat_demand(), c0 = vm_stat_cow();
+    int ok = 1;
+
+    printf("=== Demand paging ===\n");
+    if (vm_map_demand((uint64_t)DV) < 0) { printf("vm_map_demand failed\n"); return; }
+    uint64_t first = DV[0];                 // first touch -> #PF allocates a zeroed page
+    printf("  first read (fault-allocated): 0x%lx  [%s]\n", first, first == 0 ? "OK zeroed" : "BAD");
+    DV[0] = 0xCAFEBABE;
+    printf("  after write:                  0x%lx  [%s]\n", DV[0], DV[0] == 0xCAFEBABE ? "OK" : "BAD");
+    printf("  demand faults taken: %lu\n", vm_stat_demand() - d0);
+    ok &= (first == 0) && (DV[0] == 0xCAFEBABE);
+
+    printf("=== Copy-on-write ===\n");
+    void* shared = alloc_page();
+    if (!shared) { printf("no free page\n"); vm_unmap((uint64_t)DV); return; }
+    volatile uint64_t* SH = (volatile uint64_t*)(uint64_t)shared;   // identity-mapped
+    SH[0] = 0xAAAAAAAA;
+    vm_map_cow((uint64_t)CV, (uint64_t)shared);
+    printf("  read (shared, no fault):      0x%lx  [%s]\n", CV[0], CV[0] == 0xAAAAAAAA ? "OK" : "BAD");
+    CV[0] = 0xBBBBBBBB;                      // write -> #PF makes a private copy
+    printf("  after write:                  0x%lx  [%s]\n", CV[0], CV[0] == 0xBBBBBBBB ? "OK" : "BAD");
+    printf("  original page still:          0x%lx  [%s]\n", SH[0], SH[0] == 0xAAAAAAAA ? "OK unchanged" : "BAD shared!");
+    printf("  cow faults taken: %lu\n", vm_stat_cow() - c0);
+    ok &= (CV[0] == 0xBBBBBBBB) && (SH[0] == 0xAAAAAAAA);
+
+    printf("VM (demand + COW) test: %s\n", ok ? "PASS" : "FAIL");
+
+    // Free the fault-allocated pages (demand page + COW copy) and the shared page.
+    void* dphys = get_phys_addr((void*)DV);
+    void* cphys = get_phys_addr((void*)CV);
+    vm_unmap((uint64_t)DV);
+    vm_unmap((uint64_t)CV);
+    if (dphys) free_page((void*)((uint64_t)dphys & ~0xFFFULL));
+    if (cphys) free_page((void*)((uint64_t)cphys & ~0xFFFULL));
+    free_page(shared);
 }
 
 static void cmd_crash(int argc, char** argv) {

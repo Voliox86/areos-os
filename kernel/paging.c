@@ -186,6 +186,102 @@ void free_page_directory(uint64_t* pml4) {
 }
 
 // Identity map using 2MB huge pages for speed
+// ============================================================
+// Demand paging + copy-on-write, serviced from the #PF handler.
+// PTEs carry two OS-available marker bits (ignored by the CPU):
+//   PTE_DEMAND — page not present; allocate a zeroed page on first touch.
+//   PTE_COW    — page present but read-only; copy it privately on write.
+// Backing pages come from alloc_page() (low physical, so identity-accessible).
+// ============================================================
+#define PTE_DEMAND     (1ULL << 9)
+#define PTE_COW        (1ULL << 10)
+#define PTE_ADDR_MASK  0x000FFFFFFFFFF000ULL   // physical address bits [51:12]
+
+static uint64_t vm_demand_faults = 0;
+static uint64_t vm_cow_faults = 0;
+
+// Walk `pml4` to the leaf PTE for `virt`, creating intermediate tables when
+// `create`. Returns a pointer to the PT entry, or NULL. Page tables are reached
+// through their identity mapping (they live in the low, identity-mapped 64 MB).
+static uint64_t* pte_ptr(uint64_t* pml4, uint64_t virt, int create) {
+    int idx[4] = { (int)((virt >> 39) & 0x1FF), (int)((virt >> 30) & 0x1FF),
+                   (int)((virt >> 21) & 0x1FF), (int)((virt >> 12) & 0x1FF) };
+    uint64_t* tbl = pml4;
+    for (int lvl = 0; lvl < 3; lvl++) {
+        uint64_t e = tbl[idx[lvl]];
+        if (e & PAGE_HUGE) return NULL;         // don't touch huge mappings
+        if (!(e & PAGE_PRESENT)) {
+            if (!create) return NULL;
+            uint64_t* nt = (uint64_t*)alloc_page();
+            if (!nt) return NULL;
+            memset_asm(nt, 0, PAGE_SIZE);
+            tbl[idx[lvl]] = (uint64_t)nt | PAGE_PRESENT | PAGE_WRITABLE;
+            tbl = nt;
+        } else {
+            tbl = (uint64_t*)(e & ~0xFFFULL);
+        }
+    }
+    return &tbl[idx[3]];
+}
+
+// Called from the #PF handler. Returns 1 if the fault was a demand/COW page it
+// resolved (retry the instruction), 0 for a genuine fault (let it panic).
+int vm_handle_fault(uint64_t cr2, uint64_t err) {
+    if (!current_pml4) return 0;
+    uint64_t* pte = pte_ptr(current_pml4, cr2, 0);
+    if (!pte) return 0;
+    uint64_t e = *pte;
+
+    // Demand paging: a not-present fault (err bit0 == 0) on a DEMAND-marked page.
+    if (!(err & 0x1) && (e & PTE_DEMAND)) {
+        void* page = alloc_page();
+        if (!page) return 0;
+        memset_asm((void*)(uint64_t)page, 0, PAGE_SIZE);
+        *pte = ((uint64_t)page & PTE_ADDR_MASK) | PAGE_PRESENT | PAGE_WRITABLE
+             | (e & PAGE_USER) | (e & PAGE_NX);
+        invlpg((void*)cr2);
+        vm_demand_faults++;
+        return 1;
+    }
+
+    // Copy-on-write: a write (err bit1) protection fault (err bit0 == 1) on a
+    // present, COW-marked page — give the writer a private, writable copy.
+    if ((err & 0x1) && (err & 0x2) && (e & PAGE_PRESENT) && (e & PTE_COW)) {
+        void* newp = alloc_page();
+        if (!newp) return 0;
+        uint64_t old = e & PTE_ADDR_MASK;
+        memcpy((void*)(uint64_t)newp, (void*)old, PAGE_SIZE);
+        *pte = ((uint64_t)newp & PTE_ADDR_MASK) | PAGE_PRESENT | PAGE_WRITABLE
+             | (e & PAGE_USER) | (e & PAGE_NX);
+        invlpg((void*)cr2);
+        vm_cow_faults++;
+        return 1;
+    }
+    return 0;
+}
+
+// --- setup helpers (used by the `cowtest` self-test) ---
+int vm_map_demand(uint64_t virt) {
+    uint64_t* pte = pte_ptr(current_pml4, virt, 1);
+    if (!pte) return -1;
+    *pte = PTE_DEMAND;                 // not present, allocate on first touch
+    invlpg((void*)virt);
+    return 0;
+}
+int vm_map_cow(uint64_t virt, uint64_t phys) {
+    uint64_t* pte = pte_ptr(current_pml4, virt, 1);
+    if (!pte) return -1;
+    *pte = (phys & PTE_ADDR_MASK) | PAGE_PRESENT | PTE_COW;  // present, read-only
+    invlpg((void*)virt);
+    return 0;
+}
+void vm_unmap(uint64_t virt) {
+    uint64_t* pte = pte_ptr(current_pml4, virt, 0);
+    if (pte) { *pte = 0; invlpg((void*)virt); }
+}
+uint64_t vm_stat_demand(void) { return vm_demand_faults; }
+uint64_t vm_stat_cow(void) { return vm_cow_faults; }
+
 void init_paging(void) {
     printf("[PAGING] Allocating PML4 table...\n");
     kernel_pml4 = (uint64_t*)alloc_page();
@@ -224,6 +320,11 @@ void init_paging(void) {
     uint64_t efer = read_msr(MSR_EFER);
     write_msr(MSR_EFER, efer | EFER_NXE);
     printf("[PAGING] NXE enabled.\n");
+
+    // Enable CR0.WP: without it, ring-0 code may write to read-only pages without
+    // faulting — copy-on-write needs those supervisor writes to trap.
+    write_cr0(read_cr0() | (1ULL << 16));
+    printf("[PAGING] CR0.WP enabled.\n");
 
     // SMEP disabled for -cpu qemu64 compatibility
     // uint64_t cr4_save = read_cr4();

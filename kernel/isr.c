@@ -27,7 +27,14 @@ static const char* exception_names[32] = {
     "Reserved", "Reserved", "Security Exception", "Reserved"
 };
 
+extern int vm_handle_fault(uint64_t cr2, uint64_t err);
+
 void isr_handler(uint64_t int_no, uint64_t rip, uint64_t error, uint64_t cs) {
+    // Page fault: give demand-paging / copy-on-write a chance to resolve it
+    // (allocate the page / make a private copy) and retry the instruction.
+    if (int_no == 14 && vm_handle_fault(read_cr2(), error))
+        return;
+
     if (int_no < 32) {
         printf("\n[PANIC] Exception: %s (#%lu)\n", exception_names[int_no], int_no);
         printf("[PANIC] RIP=0x%lx  CS=0x%lx (ring %lu)  error=0x%lx\n",
