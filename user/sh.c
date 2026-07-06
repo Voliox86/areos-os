@@ -6,8 +6,10 @@
  * each stage runs as a fork+execve'd child with its stdin/stdout wired to the
  * neighbouring pipes, and the shell waitpid()s them all.
  *
- * Modes: `sh -c "line"` runs one line; with no arguments it runs a built-in
- * demo script (interactive stdin needs kernel keyboard routing — future work). */
+ * Modes: `sh -c "line"` runs one line; with no arguments it is INTERACTIVE —
+ * read(0, …) is a blocking, echoing line read from the keyboard (kernel
+ * canonical mode, v5.8.8), so you type commands at a live `sh$ ` prompt.
+ * Builtins: `exit` leaves the shell, `demo` runs the canned script. */
 
 #define MAX_STAGES 4
 #define MAX_ARGS   8
@@ -96,6 +98,25 @@ static void run_line(char* line) {
     }
 }
 
+/* The canned demo — one plain command, one two-stage pipeline, and one
+ * argv+status check. Every line exercises fork/execve/waitpid; the pipeline
+ * adds pipe+dup2. Run via the `demo` builtin. */
+static void run_demo(void) {
+    static const char* script[] = {
+        "echo hello from the NyxOS userspace shell",
+        "echo pipelines are working on nyxos | upper",
+        "args one two three",
+    };
+    for (unsigned i = 0; i < sizeof(script) / sizeof(script[0]); i++) {
+        char buf[128];
+        strncpy(buf, script[i], sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = '\0';
+        printf("sh$ %s\n", script[i]);
+        run_line(buf);
+    }
+    printf("sh: demo done.\n");
+}
+
 int main(int argc, char** argv) {
     /* sh -c "one command line" */
     if (argc >= 3 && strcmp(argv[1], "-c") == 0) {
@@ -106,22 +127,25 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    /* Script mode: a canned demo — one plain command, one two-stage pipeline,
-     * and one argv+status check. Every line exercises fork/execve/waitpid, the
-     * pipeline adds pipe+dup2. */
-    static const char* script[] = {
-        "echo hello from the NyxOS userspace shell",
-        "echo pipelines are working on nyxos | upper",
-        "args one two three",
-    };
-    printf("NyxOS sh v0.1 — fork+execve+waitpid+pipe+dup2, all in ring 3\n");
-    for (unsigned i = 0; i < sizeof(script) / sizeof(script[0]); i++) {
-        char buf[128];
-        strncpy(buf, script[i], sizeof(buf) - 1);
-        buf[sizeof(buf) - 1] = '\0';
-        printf("sh$ %s\n", script[i]);
-        run_line(buf);
+    /* Interactive REPL: read(0) blocks in the kernel's canonical line
+     * discipline (echo + backspace handled there), so this is a live shell. */
+    printf("NyxOS sh v0.2 — interactive; try 'demo', 'echo hi | upper', 'exit'\n");
+    for (;;) {
+        write(1, "sh$ ", 4);
+        char line[128];
+        long n = read(0, line, sizeof(line) - 1);
+        if (n <= 0) {                    /* no stdin (EOF/error) — leave */
+            printf("sh: no stdin, bye\n");
+            break;
+        }
+        if (line[n - 1] == '\n') n--;    /* strip the newline */
+        line[n] = '\0';
+        char* t = trim(line);
+        if (!*t) continue;
+        if (strcmp(t, "exit") == 0) break;
+        if (strcmp(t, "demo") == 0) { run_demo(); continue; }
+        run_line(t);
     }
-    printf("sh: script done.\n");
+    printf("sh: bye\n");
     return 0;
 }

@@ -108,6 +108,53 @@ static void ufd_release(int ufd) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  stdin: keyboard -> fd 0 (canonical line discipline)               */
+/* ------------------------------------------------------------------ */
+/* A read() on an EMPTY fd 0 slot reads the keyboard: it drains the IRQ-fed
+ * ASCII ring via getchar_poll(), echoing each key (putchar mirrors to the
+ * terminal capture hook and the serial console) and handling backspace, and
+ * returns when Enter arrives (the line includes the '\n'). This is safe from
+ * contention because the compositor — the ring's usual consumer — is parked in
+ * kwait() while a foreground process runs.
+ *
+ * Blocking while the ring is empty uses the v5.8.2 mid-syscall discipline: the
+ * caller stays PROC_RUN and sleeps one timeslice per `sti;hlt` (the timer keeps
+ * scheduling it — no wakeup hook in the keyboard IRQ needed yet), with
+ * `blocked_in_kernel` set so the scheduler resumes it on the KERNEL CR3, and
+ * the shared user_cr3/user_rsp globals saved/restored around the loop. */
+static int stdin_read_line(char* kbuf, int max) {
+    extern uint64_t user_cr3, user_rsp;
+    process_t* self = get_cur_proc();
+    uint64_t saved_cr3 = user_cr3, saved_ursp = user_rsp;
+    int len = 0;
+    for (;;) {
+        char c = getchar_poll();
+        if (!c) {
+            if (!self) break;                    /* no process context: don't block */
+            self->blocked_in_kernel = 1;         /* resume us on the kernel CR3 */
+            __asm__ volatile("sti; hlt");        /* yield until the next tick/IRQ */
+            __asm__ volatile("cli");
+            self->blocked_in_kernel = 0;
+            continue;
+        }
+        if (c == '\r') c = '\n';
+        if (c == '\b' || c == 0x7F) {            /* rub out the last echoed char */
+            if (len > 0) {
+                len--;
+                putchar('\b'); putchar(' '); putchar('\b');
+            }
+            continue;
+        }
+        putchar(c);                              /* echo */
+        if (len < max) kbuf[len++] = c;
+        if (c == '\n') break;                    /* canonical: return on Enter */
+    }
+    user_cr3 = saved_cr3;
+    user_rsp = saved_ursp;
+    return len;
+}
+
+/* ------------------------------------------------------------------ */
 /*  User memory access                                                */
 /* ------------------------------------------------------------------ */
 /* The handler runs on the kernel CR3, where user pages are NOT mapped. To touch
@@ -264,11 +311,24 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
             return ufd;
         }
         case SYS_READ: {
-            int internal;
-            if (ufd_lookup((int)a1, &internal) != 0) return -1;
             int count = (int)a3;
             if (count < 0 || !user_ptr_ok(a2, (uint64_t)count)) return -1;
             if (count > 4096) count = 4096;
+            int internal;
+            if (ufd_lookup((int)a1, &internal) != 0) {
+                /* An EMPTY fd 0 slot is stdin: a blocking, echoing line read from
+                 * the keyboard. (A dup2'd fd 0 is in the table and routes below.) */
+                if ((int)a1 == 0) {
+                    if (count == 0) return 0;
+                    char* lbuf = (char*)kmalloc(count);
+                    if (!lbuf) return -1;
+                    int n = stdin_read_line(lbuf, count);
+                    if (n > 0 && copy_to_user(a2, lbuf, n) != 0) n = -1;
+                    kfree(lbuf);
+                    return n;
+                }
+                return -1;
+            }
             if (internal & UFD_PIPE_FLAG) {                 /* pipe read — blocks if empty */
                 if (UFD_PIPE_IS_WRITE(internal)) return -1;  /* the write end isn't readable */
                 char* pbuf = (char*)kmalloc(count);

@@ -6,10 +6,10 @@
   <strong>Custom x86_64 kernel · C and Assembly · General-purpose OS</strong>
   <br/><br/>
   <!-- Badges -->
-  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.8.7">
-    <img src="https://img.shields.io/badge/release-v5.8.7-00ff9d?style=flat" />
+  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.8.8">
+    <img src="https://img.shields.io/badge/release-v5.8.8-00ff9d?style=flat" />
   </a>
-  <img src="https://img.shields.io/badge/status-v5.8.7-00ff9d?style=flat" />
+  <img src="https://img.shields.io/badge/status-v5.8.8-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/TCP-yes-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/GUI-window%20compositor-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/%F0%9F%8C%99%20NyxC-runtime-8b5cf6?style=flat" />
@@ -53,7 +53,7 @@ ______          \'/
     N Y X O S
     G U I   S U I T E
   -------------------------------------
-  Kernel:     NyxOS 5.8.7
+  Kernel:     NyxOS 5.8.8
   Arch:       x86_64 (long mode)
   Memory:     256 MB total, 240 MB free
   Heap:       16384 KB
@@ -161,7 +161,7 @@ nyx:root$ ls /
 bin/   dev/   etc/   home/  mnt/   root/  tmp/   usr/   var/
 
 nyx:root$ uname
-NyxOS 5.8.7 (Scheduler) x86_64
+NyxOS 5.8.8 (Scheduler) x86_64
 
 nyx:root$ mem
 Physical memory: 256 MB total, 252 MB free
@@ -475,7 +475,7 @@ See the full **[NyxOS Status Report](https://github.com/kazah-png/nyx-os/issues/
 - ✅ `execve()` (`SYS_EXECVE`): replaces the caller's process image in place (same pid/fds) — completes `fork`→`exec`→`wait` (verified: child `fork`s then `execve`s `/hello.elf`, which runs + `exit(42)`, parent `waitpid`s the 42)
 - ✅ `dup2()` (`SYS_DUP2`): fd redirection onto stdin/stdout — the pipeline primitive (verified: child `dup2`s a pipe onto fd 1, its `write(1, …)` lands in the pipe and the parent reads `"stdout was redirected!"`)
 - ✅ `execve()` argv passing: SysV entry stack (`[argc][argv…][NULL]`, crt0 reads `[rsp]`) — programs receive real command-line arguments (verified: `execve("/args.elf", {"args","uno","dos","tres"})` prints all 4 and exits with argc=4)
-- ✅ **Userspace shell with pipelines** (`/sh.elf` + `/echo.elf` + `/upper.elf`): a ring-3 shell wiring `a | b` with fork+execve+waitpid+pipe+dup2 — zero kernel changes (verified: `echo pipelines are working on nyxos | upper` → `PIPELINES ARE WORKING ON NYXOS`) — next: interactive stdin (keyboard→fd0), lazy `sbrk` heap
+- ✅ **Interactive userspace shell** (`/sh.elf` + `/echo.elf` + `/upper.elf`): a live ring-3 REPL — `read(0)` reads the keyboard (canonical line discipline: echo + backspace), wiring `a | b` with fork+execve+waitpid+pipe+dup2 (verified live: typed `echo hola nyx` → `hola nyx`, `echo … | upper` → `UPPERCASE`, `exit`) — next: arrow-key history / job control, lazy `sbrk` heap
 - ✅ NIC-side TCP listen (inbound connections — NyxOS serves HTTP to a host `curl` via `hostfwd`)
 - ✅ **Nyx C language runtime** (`nyxrt.h`/`nyxrt.c`): typed subset of C with string interpolation, transpiles to C, first `.nyx` program (`hello_nyx.elf`) prints "hola desde nyx c! pid=5"
 
