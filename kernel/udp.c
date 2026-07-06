@@ -38,6 +38,28 @@ typedef struct {
 static udp_listener_t udp_listeners[16];
 
 void udp_register_listener(uint16_t port, void (*handler)(uint8_t*, uint32_t, uint32_t, uint16_t)) {
+    // A NULL handler unregisters the listener(s) on `port`. dns.c relies on this
+    // to tear down its per-query listener ("unregister on timeout"). Without the
+    // deactivation below, that call fell through to the "first free slot" logic
+    // and merely consumed another slot with a NULL handler, so every DNS lookup
+    // leaked ~2 of the 16 slots and name resolution silently died after a handful.
+    if (!handler) {
+        for (int i = 0; i < 16; i++) {
+            if (udp_listeners[i].active && udp_listeners[i].port == port) {
+                udp_listeners[i].active = 0;
+                udp_listeners[i].handler = 0;
+            }
+        }
+        return;
+    }
+    // Reuse an existing slot for the same port so a re-registration (e.g. DHCP
+    // renewing on DHCP_CLIENT_PORT) updates in place instead of leaking a slot.
+    for (int i = 0; i < 16; i++) {
+        if (udp_listeners[i].active && udp_listeners[i].port == port) {
+            udp_listeners[i].handler = handler;
+            return;
+        }
+    }
     for (int i = 0; i < 16; i++) {
         if (!udp_listeners[i].active) {
             udp_listeners[i].port = port;
