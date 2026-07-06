@@ -3,6 +3,9 @@
 ## Goal
 Evolve NyxOS into a functional x86_64 kernel with filesystem, networking, shell, process multitasking, GUI, multimedia, and audio.
 
+## Commit rule
+Every commit must keep these in sync: GitHub Wiki (`nyx-os.wiki.git`), website (`docs/`), README.md, and any version/status references in AGENTS.md. Always check what changed and update accordingly before committing.
+
 ## Build & Test
 - Cross-compiler: host GCC with `-m64` (or `x86_64-elf-gcc` for cross)
 - Build (PowerShell): `.\build.ps1` → `kernel/nyx-kernel.bin`
