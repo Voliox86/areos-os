@@ -1,0 +1,14 @@
+// hello.nyx — primer programa en Nyx C para NyxOS.
+// Compila con: nyxc hello.nyx -o hello.c  (transpila a C, ver hello_nyx.c)
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+    fn getpid() -> i64                             = 6
+}
+
+fn main() -> i64 {
+    pid := getpid();
+    msg := "hola desde nyx c! pid={pid}\n";
+    write(1, msg.ptr as *u8, msg.len as isize);
+    0
+}

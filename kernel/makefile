@@ -44,7 +44,10 @@ nyx-kernel.bin: $(OBJS)
 
 # User-space programs (x86_64 native)
 USER_DIR = ../user
-USER_ELFS = $(USER_DIR)/hello.elf $(USER_DIR)/init.elf $(USER_DIR)/spin.elf $(USER_DIR)/fdleak.elf
+USER_ELFS = $(USER_DIR)/hello.elf $(USER_DIR)/init.elf $(USER_DIR)/spin.elf $(USER_DIR)/fdleak.elf $(USER_DIR)/hello_nyx.elf
+
+# Flags for Nyx C output (GCC: statement-exprs, __auto_type). -mno-red-zone is mandatory.
+NYXCFLAGS = -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR)
 
 $(USER_DIR)/hello.elf: $(USER_DIR)/hello.asm
 	nasm -f elf64 $< -o $(USER_DIR)/hello.o
@@ -63,6 +66,18 @@ $(USER_DIR)/init.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.o $(USER_DIR)/init.o
 
 $(USER_DIR)/crt0.o: $(USER_DIR)/crt0.asm
 	nasm -f elf64 $< -o $@
+
+# Nyx C "hello": crt0 + runtime + transpiled output. Reuses the existing crt0
+# (it calls main / exit). hello_nyx.c is nyxc's C output from hello.nyx.
+$(USER_DIR)/hello_nyx.elf: $(USER_DIR)/crt0.o $(USER_DIR)/nyxrt.o $(USER_DIR)/hello_nyx.o
+	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ \
+	    $(USER_DIR)/crt0.o $(USER_DIR)/nyxrt.o $(USER_DIR)/hello_nyx.o
+
+$(USER_DIR)/nyxrt.o: $(USER_DIR)/nyxrt.c $(USER_DIR)/nyxrt.h
+	$(CC) $(NYXCFLAGS) -c $< -o $@
+
+$(USER_DIR)/hello_nyx.o: $(USER_DIR)/hello_nyx.c $(USER_DIR)/nyxrt.h
+	$(CC) $(NYXCFLAGS) -c $< -o $@
 
 $(USER_DIR)/libc.o: $(USER_DIR)/libc.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
 	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
