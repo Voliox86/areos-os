@@ -34,6 +34,17 @@ int elf_load_image(const uint8_t* data, uint32_t size, uint64_t** out_pd,
     uint64_t stack_virt = 0x00007FFFFFFFE000ULL;
     map_page_dir(pd, stack_phys, (void*)stack_virt, 0x7 | PAGE_NX);
 
+    // Empty SysV entry frame at the stack top: [argc=0][argv NULL][envp NULL][pad].
+    // crt0 reads argc/argv from [rsp] on EVERY launch, so a plain spawn needs a
+    // valid (empty) frame too; execve() overwrites this with the real argv. The
+    // 32-byte size keeps the entry RSP 16-byte aligned. Written through the
+    // identity-mapped physical page (the new pd isn't the active CR3 here).
+    uint64_t* stk = (uint64_t*)((uint8_t*)stack_phys + 4096 - 32);
+    stk[0] = 0;                  // argc = 0
+    stk[1] = 0;                  // argv[0] = NULL (terminator)
+    stk[2] = 0;                  // envp terminator
+    stk[3] = 0;                  // padding (16-byte alignment)
+
     uint64_t entry = hdr->e_entry;
     elf64_phdr_t* phdr = (elf64_phdr_t*)(data + hdr->e_phoff);
 
@@ -87,7 +98,7 @@ int elf_load_image(const uint8_t* data, uint32_t size, uint64_t** out_pd,
 
     *out_pd = pd;
     *out_entry = entry;
-    *out_stack_top = stack_virt + 4096;
+    *out_stack_top = stack_virt + 4096 - 32;   // entry RSP points at the argc frame
     *out_brk = (max_addr + 0xFFF) & ~0xFFFULL;
     return 0;
 }

@@ -153,7 +153,10 @@ static int copy_from_user(void* dst, uint64_t usrc, uint64_t len) {
     return 0;
 }
 
-static int copy_to_user(uint64_t udst, const void* src, uint64_t len) {
+/* Exported (kernel.h): do_execve builds the new program's argv frame with this —
+ * it points user_cr3 at the NEW page directory first, so the writes land in the
+ * fresh address space's stack page via the identity map. */
+int copy_to_user(uint64_t udst, const void* src, uint64_t len) {
     const uint8_t* s = (const uint8_t*)src;
     for (uint64_t i = 0; i < len; i++) {
         uint64_t p = user_v2p(udst + i);
@@ -381,12 +384,28 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
         }
         case SYS_EXECVE: {
             // execve(path, argv, envp): replace the caller's image with the ELF at
-            // `path`. argv/envp (a2/a3) are accepted but not yet threaded onto the
-            // new stack (crt0 hardcodes argc=0). On success the syscall returns into
-            // the new program; on failure the caller is intact and gets -1.
+            // `path`, passing argv onto the new program's entry stack (SysV layout,
+            // read by crt0). argv is a NULL-terminated user array of user string
+            // pointers — copied into kernel buffers HERE, while the old address
+            // space still exists (do_execve destroys it before building the new
+            // stack). Limits: 8 args of 63 chars. envp (a3) still ignored. On
+            // success the syscall returns into the new program; on failure -1.
             if (!user_str_ok(a1)) return -1;
             char path[128];
             if (copy_str_from_user(path, a1, sizeof(path)) != 0) return -1;
+            static char kargv_store[8][64];    /* safe: syscalls serialized, no block */
+            char* kargv[8];
+            int argc = 0;
+            if (a2) {
+                for (; argc < 8; argc++) {
+                    uint64_t uptr = 0;
+                    if (copy_from_user(&uptr, a2 + (uint64_t)argc * 8, 8) != 0) return -1;
+                    if (!uptr) break;                    /* NULL terminator */
+                    if (!user_str_ok(uptr)) return -1;
+                    if (copy_str_from_user(kargv_store[argc], uptr, 64) != 0) return -1;
+                    kargv[argc] = kargv_store[argc];
+                }
+            }
             int fd = vfs_open(path, 0, 0);
             if (fd < 0) return -1;
             uint32_t sz = vfs_fsize(fd);
@@ -396,7 +415,7 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
             if (!copy) { vfs_close(fd); return -1; }
             memcpy_asm(copy, fdata, sz);
             vfs_close(fd);
-            int r = do_execve(copy, sz);   // success -> rewrites the frame, returns into new image
+            int r = do_execve(copy, sz, kargv, argc);   // success -> returns into new image
             kfree(copy);
             return (uint64_t)(int64_t)r;
         }

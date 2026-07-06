@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.5"
+#define KERNEL_VERSION "5.8.6"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -581,7 +581,9 @@ process_t* create_process(const char* name, void* entry, uint64_t flags);
 process_t* create_user_process(const char* name, void* entry, void* user_stack, uint64_t* page_dir);
 int do_fork(void);   // SYS_FORK: COW-clone the caller; returns child pid to parent, 0 in child
 int do_waitpid(int pid, int* out_code); // SYS_WAITPID: reap a child; -1 none, -2 running, >0 pid
-int do_execve(const uint8_t* data, uint32_t size); // SYS_EXECVE: replace caller's image; -1 on failure
+int do_execve(const uint8_t* data, uint32_t size,
+              char* const* kargv, int argc); // SYS_EXECVE: replace caller's image; -1 on failure
+int copy_to_user(uint64_t udst, const void* src, uint64_t len); // via user_cr3 page walk (syscall.c)
 void free_page_directory(uint64_t* pml4);           // free a user address space (COW-refcount aware)
 int elf_load_image(const uint8_t* data, uint32_t size, uint64_t** out_pd,
                    uint64_t* out_entry, uint64_t* out_stack_top, uint64_t* out_brk);

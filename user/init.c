@@ -162,6 +162,25 @@ int main(void) {
         printf("  pipe() failed\n");
     }
 
+    /* execve() argv passing: the child exec's /args.elf with a 4-element argv.
+     * The kernel copies the strings onto the new program's entry stack (SysV
+     * layout, read by crt0), args.elf prints them and exits with argc — so the
+     * waitpid status independently confirms all 4 arguments arrived. */
+    printf("Testing execve() argv passing...\n");
+    long apid = fork();
+    if (apid == 0) {
+        char* av[] = { "args", "uno", "dos", "tres", 0 };
+        execve("/args.elf", av, 0);
+        printf("  execve(/args.elf) failed\n");
+        exit(1);
+    } else if (apid > 0) {
+        int st = -1;
+        waitpid((int)apid, &st);
+        printf("  [parent] args.elf exited with argc=%d (expected 4)\n", st);
+    } else {
+        printf("  fork() failed\n");
+    }
+
     printf("Init complete, exiting.\n");
     return 0;
 }

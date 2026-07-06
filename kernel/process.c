@@ -125,7 +125,10 @@ process_t* create_user_process(const char* name, void* entry, void* user_stack, 
         if (!stack_page) { kfree(p); return NULL; }
         uint64_t stack_virt = 0x00007FFFFFFFE000ULL;
         map_page_dir(page_dir, stack_page, (void*)stack_virt, 0x7 | PAGE_NX);
-        user_stack = (void*)(stack_virt + 4096);
+        // Empty SysV entry frame (crt0 reads argc/argv from [rsp] on every launch).
+        uint64_t* stk = (uint64_t*)((uint8_t*)stack_page + 4096 - 32);
+        stk[0] = 0; stk[1] = 0; stk[2] = 0; stk[3] = 0;   // argc=0, NULLs, pad
+        user_stack = (void*)(stack_virt + 4096 - 32);
     }
 
     if (init_user_task_stack(p, entry, user_stack) < 0) {
@@ -243,15 +246,18 @@ int do_fork(void) {
 
 // SYS_EXECVE core: replace the calling process's image with the ELF in [data,size).
 // Loads the program into a fresh address space and swaps it in for the current
-// process — same pid, same fds — then rewrites this syscall's saved user frame so
-// the syscall "returns" into the new program's entry with a fresh stack and zeroed
-// registers; the caller's old code never runs again. Returns -1 on failure (the
-// caller is left intact and gets -1 back from execve); on success it "returns" into
-// the new image. Runs inside the syscall (interrupts masked, kernel CR3).
-int do_execve(const uint8_t* data, uint32_t size) {
+// process — same pid, same fds — then builds a SysV entry stack from kargv
+// ([argc][argv pointers][NULL][envp NULL] above the strings) and rewrites this
+// syscall's saved user frame so the syscall "returns" into the new program's entry.
+// kargv[0..argc-1] are KERNEL-side strings (already copied out of the old address
+// space by the SYS_EXECVE case — the old image is gone by the time we build).
+// Returns -1 on failure before the commit point (caller left intact); on success it
+// "returns" into the new image. Runs inside the syscall (interrupts masked).
+int do_execve(const uint8_t* data, uint32_t size, char* const* kargv, int argc) {
     extern uint64_t syscall_frame_ptr, user_rsp, user_cr3;
     process_t* self = get_current_process();
     if (!self || !self->page_directory) return -1;
+    if (argc < 0) argc = 0;
 
     uint64_t* pd; uint64_t entry, stack_top, brk;
     if (elf_load_image(data, size, &pd, &entry, &stack_top, &brk) != 0) return -1;
@@ -264,15 +270,42 @@ int do_execve(const uint8_t* data, uint32_t size) {
     self->program_break = brk;
     if (old_pd) free_page_directory(old_pd);
 
+    // Build the argv frame on the NEW stack. copy_to_user translates through
+    // user_cr3, so point it at the new pd first; the writes land in the fresh
+    // stack page via the identity map. Strings go at the very top (overwriting
+    // elf_load_image's empty frame), the qword frame below them:
+    //   [sp] = argc, [sp+8..] = argv[0..argc-1], NULL, envp NULL.
+    user_cr3 = (uint64_t)pd;
+    uint64_t sp = (stack_top + 0xFFF) & ~0xFFFULL;      // raw top of the stack page
+    uint64_t uargv[9];                                   // user VAs of the strings (max 8)
+    if (argc > 8) argc = 8;
+    for (int i = argc - 1; i >= 0; i--) {
+        uint64_t len = strlen(kargv[i]) + 1;
+        sp -= len;
+        copy_to_user(sp, kargv[i], len);
+        uargv[i] = sp;
+    }
+    uargv[argc] = 0;                                     // argv terminator
+    sp &= ~0xFULL;                                       // align, then the qword frame:
+    int qwords = argc + 3;                               // argc + argv[] + NULL + envp NULL
+    if (qwords & 1) qwords++;                            // keep entry RSP 16-byte aligned
+    sp -= (uint64_t)qwords * 8;
+    uint64_t argc64 = (uint64_t)argc, zero = 0;
+    copy_to_user(sp, &argc64, 8);
+    copy_to_user(sp + 8, uargv, ((uint64_t)argc + 1) * 8);
+    copy_to_user(sp + 8 + ((uint64_t)argc + 1) * 8, &zero, 8);   // empty envp
+
     // Rewrite the saved syscall frame: [0..14]=GPRs (r15..rax), [15]=RFLAGS, [16]=RIP.
-    // Zero the GPRs, install the new entry + a clean RFLAGS; user_rsp/user_cr3 (read
-    // by the asm return path) point at the new stack and address space.
+    // Zero the GPRs (rdi/rsi = argc/argv as a courtesy for register-based entry
+    // code; crt0 reads them from the stack), install the new entry + clean RFLAGS;
+    // user_rsp/user_cr3 (read by the asm return path) point at the new stack/space.
     uint64_t* frame = (uint64_t*)syscall_frame_ptr;
     for (int i = 0; i < 15; i++) frame[i] = 0;
+    frame[9]  = argc64;           // rdi = argc
+    frame[10] = sp + 8;           // rsi = argv
     frame[15] = 0x202;            // RFLAGS: IF + reserved bit 1
     frame[16] = entry;            // new RIP
-    user_rsp  = stack_top;        // new ring-3 stack
-    user_cr3  = (uint64_t)pd;     // syscall return switches CR3 to the new image
+    user_rsp  = sp;               // new ring-3 stack, pointing at the argc frame
     return 0;
 }
 
