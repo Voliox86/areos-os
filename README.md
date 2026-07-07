@@ -1,5 +1,4 @@
 <div align="center">
-  <img src="./banner.png" alt="NyxOS Banner" width="100%" />
   <img src="https://capsule-render.vercel.app/api?type=waving&color=0:0a0a0a,50:1a1a1a,100:2d2d2d&height=140&section=header&text=NyxOS&fontSize=52&fontColor=00ff9d&animation=fadeIn&fontAlignY=55" />
 </div>
 
