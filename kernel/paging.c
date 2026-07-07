@@ -261,6 +261,30 @@ int vm_handle_fault(uint64_t cr2, uint64_t err) {
         return 1;
     }
 
+    // Anonymous mmap: a USER not-present fault inside one of the process's mmap
+    // regions gets a fresh zeroed page with the region's prot. Like the heap block,
+    // this precedes the pte_ptr walk below (a new mmap page has no PTE yet). We set
+    // the PTE directly rather than via map_page_dir (which forces WRITABLE) so a
+    // PROT_READ / non-exec mapping is honored: writable only if PROT_WRITE, NX
+    // unless PROT_EXEC. pte_ptr(create=1) builds the intermediate tables (USER).
+    if ((err & 0x4) && !(err & 0x1) && p && p->page_directory) {
+        vma_t* v = vma_find(p, cr2);
+        if (v) {
+            uint64_t* mpte = pte_ptr(pml4, cr2, 1);
+            if (!mpte) return 0;
+            void* page = alloc_page();
+            if (!page) return 0;
+            memset_asm((void*)(uint64_t)page, 0, PAGE_SIZE);
+            uint64_t f = PAGE_PRESENT | PAGE_USER;
+            if (v->prot & PROT_WRITE) f |= PAGE_WRITABLE;
+            if (!(v->prot & PROT_EXEC)) f |= PAGE_NX;
+            *mpte = ((uint64_t)page & PTE_ADDR_MASK) | f;
+            invlpg((void*)cr2);
+            vm_demand_faults++;
+            return 1;
+        }
+    }
+
     uint64_t* pte = pte_ptr(pml4, cr2, 0);
     if (!pte) return 0;
     uint64_t e = *pte;
@@ -299,6 +323,22 @@ int vm_handle_fault(uint64_t cr2, uint64_t err) {
         return 1;
     }
     return 0;
+}
+
+// munmap helper: unmap and free every present page in [start, end) of `pml4`
+// (both page-aligned). free_page is refcount-aware, so a page still shared COW with
+// a forked relative just drops a reference here. pte_ptr(create=0) never allocates,
+// so ranges with no backing (never-faulted mmap pages) are skipped cheaply.
+void vm_free_range(uint64_t* pml4, uint64_t start, uint64_t end) {
+    if (!pml4) return;
+    for (uint64_t va = start; va < end; va += PAGE_SIZE) {
+        uint64_t* pte = pte_ptr(pml4, va, 0);
+        if (pte && (*pte & PAGE_PRESENT)) {
+            free_page((void*)(*pte & PTE_ADDR_MASK));
+            *pte = 0;
+            invlpg((void*)va);
+        }
+    }
 }
 
 // fork(): build a new address space that shares the caller's user pages

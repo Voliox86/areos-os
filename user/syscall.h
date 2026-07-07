@@ -20,6 +20,17 @@
 #define SYS_KILL     16
 #define SYS_SIGNAL   17
 #define SYS_SIGRETURN 18
+#define SYS_MMAP     19
+#define SYS_MUNMAP   20
+
+/* mmap prot/flags (anonymous mappings — see kernel/mmap.c). */
+#define PROT_NONE   0
+#define PROT_READ   1
+#define PROT_WRITE  2
+#define PROT_EXEC   4
+#define MAP_PRIVATE     0x02
+#define MAP_ANONYMOUS   0x20
+#define MAP_FAILED  ((void*)-1)
 
 #define WNOHANG     1   /* waitpid option: don't block if no child is ready */
 
@@ -185,6 +196,16 @@ static inline sighandler_t signal(int sig, sighandler_t handler) {
 /* raise(sig): send `sig` to the calling process. */
 static inline long raise(int sig) {
     return syscall2(SYS_KILL, (int)getpid(), sig);
+}
+
+/* mmap(addr, length, prot, flags, fd, offset): map anonymous demand-zero memory
+ * (fd/offset ignored). Returns the base address, or MAP_FAILED. Pages fault in on
+ * first touch. munmap(addr, length) releases a mapping. */
+static inline void* mmap(void* addr, unsigned long length, int prot, int flags, int fd, long offset) {
+    return (void*)syscall6(SYS_MMAP, (long)addr, (long)length, prot, flags, fd, offset);
+}
+static inline long munmap(void* addr, unsigned long length) {
+    return syscall2(SYS_MUNMAP, (long)addr, (long)length);
 }
 
 /* Create a pipe: fds[0] is the read end, fds[1] the write end. Returns 0, or -1.

@@ -564,6 +564,13 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
             uint64_t* f = (uint64_t*)syscall_frame_ptr;
             return f ? f[14] : 0;
         }
+        case SYS_MMAP:
+            // mmap(addr, length, prot, flags, fd, offset): anonymous demand-zero
+            // memory. fd/offset (a5/a6) are ignored. Returns the base VA, or
+            // MAP_FAILED ((uint64_t)-1). Pages fault in on first touch.
+            return do_mmap(a1, a2, (int)a3, (int)a4);
+        case SYS_MUNMAP:
+            return (uint64_t)(int64_t)do_munmap(a1, a2);
         default:
             printf("[SYSCALL] Unknown syscall %lu\n", no);
             return -1;

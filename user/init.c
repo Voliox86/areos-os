@@ -304,6 +304,29 @@ int main(void) {
                spid, st, 128 + SIGTERM);
     }
 
+    /* mmap: anonymous demand-zero memory. Map 3 pages; read them first (they
+     * fault in as zero), then write a pattern across all of them and read it back
+     * (each page materialised on first touch), then munmap to release the region. */
+    printf("Testing mmap (anonymous demand-zero pages)...\n");
+    unsigned long msize = 12288;                 /* 3 pages */
+    char* m = (char*)mmap(0, msize, PROT_READ | PROT_WRITE,
+                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (m == MAP_FAILED) {
+        printf("  mmap failed\n");
+    } else {
+        int zero = 1;
+        for (unsigned long i = 0; i < msize; i += 1024)   /* touch each page: reads 0 */
+            if (m[i] != 0) { zero = 0; break; }
+        for (unsigned long i = 0; i < msize; i++) m[i] = (char)((i * 7) & 0x7F);
+        int ok = 1;
+        for (unsigned long i = 0; i < msize; i++)
+            if (m[i] != (char)((i * 7) & 0x7F)) { ok = 0; break; }
+        printf("  mmap(%lu) -> %p, demand-zero=%s, r/w across 3 pages %s\n",
+               msize, m, zero ? "yes" : "NO", ok ? "intact" : "CORRUPT");
+        munmap(m, msize);
+        printf("  munmap released the region\n");
+    }
+
     printf("Init complete, exiting.\n");
     return 0;
 }

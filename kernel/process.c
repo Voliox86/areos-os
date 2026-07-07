@@ -220,6 +220,11 @@ int do_fork(void) {
     for (int i = 0; i < NSIG; i++) child->sig_handlers[i] = parent->sig_handlers[i];
     child->sig_mask = parent->sig_mask;
     child->sig_trampoline = parent->sig_trampoline;
+    // Inherit mmap regions: clone_page_directory_cow shares the already-faulted
+    // mmap pages COW, and copying the VMAs lets the child demand-fault any pages
+    // the parent hadn't touched yet.
+    for (int i = 0; i < PROC_MAX_VMAS; i++) child->mmap_vmas[i] = parent->mmap_vmas[i];
+    child->mmap_next = parent->mmap_next;
     // Inherit the parent's PIPE fds (with a refcount bump) so the classic
     // pipe();fork() pattern works. VFS fds are deliberately NOT inherited — their
     // handles aren't reference-counted, so sharing would risk a double close; the
@@ -279,6 +284,10 @@ int do_execve(const uint8_t* data, uint32_t size, char* const* kargv, int argc) 
     // caught signals revert to SIG_DFL (POSIX). Clear pending/in-flight state too.
     for (int i = 0; i < NSIG; i++) self->sig_handlers[i] = SIG_DFL;
     self->sig_pending = 0; self->sig_active = 0; self->sig_mask = 0; self->sig_trampoline = 0;
+    // Drop mmap regions: their pages are freed with old_pd, and the fresh image
+    // starts with an empty mmap space.
+    for (int i = 0; i < PROC_MAX_VMAS; i++) self->mmap_vmas[i].used = 0;
+    self->mmap_next = 0;
     if (old_pd) free_page_directory(old_pd);
 
     // Build the argv frame on the NEW stack. copy_to_user translates through

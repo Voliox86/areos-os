@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.11"
+#define KERNEL_VERSION "5.8.12"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -92,6 +92,8 @@ typedef __builtin_va_list va_list;
 #define SYS_KILL     16
 #define SYS_SIGNAL   17
 #define SYS_SIGRETURN 18
+#define SYS_MMAP     19
+#define SYS_MUNMAP   20
 
 /* waitpid() options (a3). WNOHANG makes SYS_WAITPID return 0 immediately instead
  * of blocking when a matching child exists but has not exited yet — the shell
@@ -126,6 +128,28 @@ typedef __builtin_va_list va_list;
 
 /* read()/etc. return this (negated) when a signal interrupts a blocking wait. */
 #define EINTR       4
+
+/* ------------------------------------------------------------------ */
+/*  mmap (v5.8.12) — anonymous, demand-zero memory mappings           */
+/* ------------------------------------------------------------------ */
+#define PROT_NONE   0
+#define PROT_READ   1
+#define PROT_WRITE  2
+#define PROT_EXEC   4
+#define MAP_PRIVATE     0x02
+#define MAP_ANONYMOUS   0x20
+/* Mappings live in [MMAP_BASE, MMAP_MAX): above the 4 GiB heap cap and well below
+ * the 128 TiB user stack (0x7FFFFFFFE000), so they never collide with either. */
+#define MMAP_BASE  0x100000000ULL
+#define MMAP_MAX   0x0000700000000000ULL
+#define PROC_MAX_VMAS 16
+
+typedef struct {
+    uint64_t start;      // page-aligned base VA (inclusive)
+    uint64_t end;        // page-aligned end VA (exclusive)
+    uint32_t prot;       // PROT_* bits (honored per-page by vm_handle_fault)
+    uint8_t  used;       // 1 = slot in use
+} vma_t;
 
 // Pipe fds are stored in the per-process fd table (ufd_handle) with this flag set,
 // so SYS_READ/WRITE/CLOSE route to the pipe layer instead of the VFS. The low bits
@@ -225,6 +249,10 @@ typedef struct process {
     // Ring-3 context saved when a handler is entered, restored by SYS_SIGRETURN:
     // [0..14]=GPRs r15..rax (frame order), [15]=RFLAGS, [16]=RIP, [17]=user RSP.
     uint64_t sig_saved[18];
+    // Anonymous mmap regions (v5.8.12). A fault inside a vma gets a fresh zeroed
+    // page with the vma's prot (vm_handle_fault); mmap_next bumps up per mapping.
+    vma_t    mmap_vmas[PROC_MAX_VMAS];
+    uint64_t mmap_next;
     struct process* next;
     struct process* parent;
     struct process* children;
@@ -641,6 +669,10 @@ void do_sigreturn(void);                             // SYS_SIGRETURN: restore p
 void signal_raise(process_t* p, int sig);            // post a signal to a process (+ wake if blocked)
 int  signal_pending(process_t* p);                   // 1 if a deliverable (unblocked) signal waits
 void signal_send_foreground(int sig);                // keyboard Ctrl-C -> foreground process
+// Anonymous mmap (mmap.c). Pages within a returned region demand-fault to zero.
+uint64_t do_mmap(uint64_t addr, uint64_t length, int prot, int flags); // SYS_MMAP; MAP_FAILED = (uint64_t)-1
+int      do_munmap(uint64_t addr, uint64_t length);  // SYS_MUNMAP
+vma_t*   vma_find(process_t* p, uint64_t addr);      // vm_handle_fault lookup
 int do_execve(const uint8_t* data, uint32_t size,
               char* const* kargv, int argc); // SYS_EXECVE: replace caller's image; -1 on failure
 int copy_to_user(uint64_t udst, const void* src, uint64_t len); // via user_cr3 page walk (syscall.c)
