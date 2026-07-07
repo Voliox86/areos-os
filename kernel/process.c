@@ -212,6 +212,7 @@ int do_fork(void) {
     child->state = PROC_RUN;
     child->page_directory = child_pml4;
     child->program_break = parent->program_break;   // heap inherited (COW-shared)
+    child->heap_start    = parent->heap_start;       // ...same lazy-sbrk window
     strncpy(child->comm, parent->comm, 31);
     child->comm[31] = '\0';
     // Inherit the parent's PIPE fds (with a refcount bump) so the classic
@@ -268,6 +269,7 @@ int do_execve(const uint8_t* data, uint32_t size, char* const* kargv, int argc) 
     uint64_t* old_pd = (uint64_t*)self->page_directory;
     self->page_directory = pd;
     self->program_break = brk;
+    self->heap_start = brk;      // fresh image -> fresh lazy heap window
     if (old_pd) free_page_directory(old_pd);
 
     // Build the argv frame on the NEW stack. copy_to_user translates through

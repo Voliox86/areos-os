@@ -367,17 +367,18 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
             int64_t inc = (int64_t)a1;
             uint64_t old_brk = cur->program_break;
             if (inc == 0) return old_brk;
-            if (inc < 0) return -1;
-            uint64_t new_brk = old_brk + inc;
-            uint64_t start_page = (old_brk + 0xFFF) & ~0xFFFULL;
-            uint64_t end_page = (new_brk + 0xFFF) & ~0xFFFULL;
-            if (end_page > 0x100000000ULL) return -1;
-            uint64_t* pml4 = (uint64_t*)cur->page_directory;
-            for (uint64_t page = start_page; page < end_page; page += 4096) {
-                void* phys = alloc_page();
-                if (!phys) return -1;
-                map_page_dir(pml4, phys, (void*)page, 0x7 | PAGE_NX);
+            // Lazy heap: just move the break — no eager alloc/map. Pages inside the
+            // resulting [heap_start, program_break) window fault in on first touch
+            // (vm_handle_fault), so a big malloc that's only partly written costs
+            // only the pages actually used.
+            if (inc < 0) {                              // shrink, clamped at heap_start
+                uint64_t dec = (uint64_t)(-inc);
+                cur->program_break = (dec > old_brk - cur->heap_start)
+                                         ? cur->heap_start : old_brk - dec;
+                return old_brk;
             }
+            uint64_t new_brk = old_brk + (uint64_t)inc;
+            if (new_brk > 0x100000000ULL) return -1;    // keep the heap below 4 GiB
             cur->program_break = new_brk;
             return old_brk;
         }

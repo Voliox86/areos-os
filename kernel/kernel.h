@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.8"
+#define KERNEL_VERSION "5.8.9"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -157,7 +157,10 @@ typedef struct process {
     uint32_t cpu_time;
     uint32_t start_time;
     void* files[MAX_FILES];
-    uint64_t program_break;
+    uint64_t program_break;  // top of the heap (moved by SYS_SBRK)
+    uint64_t heap_start;     // initial break; the lazy-sbrk fault-in window is
+                             // [heap_start, program_break) — a not-present user
+                             // fault there gets a fresh zeroed page on first touch
     uint32_t sched_managed;  // 1 = round-robined by the preemptive scheduler (spawn_user_path);
                              // blocking-exec and unstarted procs leave this 0 so they're skipped
     uint32_t waiting_for;    // pid this proc is blocked in kwait() on (0 = not waiting)

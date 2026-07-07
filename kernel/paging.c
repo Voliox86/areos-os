@@ -244,6 +244,23 @@ int vm_handle_fault(uint64_t cr2, uint64_t err) {
     uint64_t* pml4 = ((err & 0x4) && p && p->page_directory)
                      ? (uint64_t*)p->page_directory : current_pml4;
     if (!pml4) return 0;
+
+    // Lazy sbrk: a USER not-present fault (err bit2 set, bit0 clear) whose address
+    // lies in the process's heap window [heap_start, program_break) — SYS_SBRK just
+    // moved the break without allocating, so materialise a fresh zeroed page now.
+    // This runs BEFORE the pte_ptr walk below because a brand-new heap page has no
+    // page-table entry (nor intermediate tables) yet; map_page_dir creates them.
+    if ((err & 0x4) && !(err & 0x1) && p && p->page_directory &&
+        cr2 >= p->heap_start && cr2 < p->program_break) {
+        void* page = alloc_page();
+        if (!page) return 0;
+        memset_asm((void*)(uint64_t)page, 0, PAGE_SIZE);
+        map_page_dir(pml4, page, (void*)(cr2 & ~0xFFFULL), 0x7 | PAGE_NX);  // P|W|U, NX
+        invlpg((void*)cr2);
+        vm_demand_faults++;
+        return 1;
+    }
+
     uint64_t* pte = pte_ptr(pml4, cr2, 0);
     if (!pte) return 0;
     uint64_t e = *pte;

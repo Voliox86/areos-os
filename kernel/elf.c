@@ -110,6 +110,7 @@ int elf_load(const uint8_t* data, uint32_t size, process_t** out_proc) {
     process_t* proc = create_user_process("elf", (void*)entry, (void*)stack_top, pd);
     if (!proc) { free_page_directory(pd); return -1; }
     proc->program_break = brk;
+    proc->heap_start = brk;      // heap grows lazily from here (see vm_handle_fault)
 
     *out_proc = proc;
     return 0;

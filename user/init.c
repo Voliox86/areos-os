@@ -181,6 +181,25 @@ int main(void) {
         printf("  fork() failed\n");
     }
 
+    /* Lazy sbrk: a multi-page malloc. SYS_SBRK only moved the break; the pages
+     * materialise as we write across the buffer (demand-faulted in vm_handle_fault),
+     * so a big allocation costs only the pages actually touched. */
+    printf("Testing lazy sbrk (demand-paged heap)...\n");
+    long brk_before = sbrk(0);
+    int hsize = 8000;                              /* spans ~3 heap pages */
+    char* big = (char*)malloc(hsize);
+    if (big) {
+        for (int i = 0; i < hsize; i++) big[i] = (char)(i & 0x7F);   /* touch every page */
+        int ok = 1;
+        for (int i = 0; i < hsize; i++) if (big[i] != (char)(i & 0x7F)) { ok = 0; break; }
+        long brk_after = sbrk(0);
+        printf("  malloc(%d): break 0x%lx -> 0x%lx (+%ld bytes lazily), data %s\n",
+               hsize, brk_before, brk_after, brk_after - brk_before, ok ? "intact" : "CORRUPT");
+        free(big);
+    } else {
+        printf("  malloc failed\n");
+    }
+
     printf("Init complete, exiting.\n");
     return 0;
 }
