@@ -6,10 +6,10 @@
   <strong>Custom x86_64 kernel · C and Assembly · General-purpose OS</strong>
   <br/><br/>
   <!-- Badges -->
-  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.8.16">
-    <img src="https://img.shields.io/badge/release-v5.8.16-00ff9d?style=flat" />
+  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.8.17">
+    <img src="https://img.shields.io/badge/release-v5.8.17-00ff9d?style=flat" />
   </a>
-  <img src="https://img.shields.io/badge/status-v5.8.16-00ff9d?style=flat" />
+  <img src="https://img.shields.io/badge/status-v5.8.17-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/TCP-yes-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/GUI-window%20compositor-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/%F0%9F%8C%99%20NyxC-runtime-8b5cf6?style=flat" />
@@ -53,7 +53,7 @@ ______          \'/
     N Y X O S
     G U I   S U I T E
   -------------------------------------
-  Kernel:     NyxOS 5.8.16
+  Kernel:     NyxOS 5.8.17
   Arch:       x86_64 (long mode)
   Memory:     256 MB total, 240 MB free
   Heap:       16384 KB
@@ -183,7 +183,7 @@ nyx:root$ ls /
 bin/   dev/   etc/   home/  mnt/   root/  tmp/   usr/   var/
 
 nyx:root$ uname
-NyxOS 5.8.16 (Scheduler) x86_64
+NyxOS 5.8.17 (Scheduler) x86_64
 
 nyx:root$ mem
 Physical memory: 256 MB total, 252 MB free
@@ -505,7 +505,8 @@ See the full **[NyxOS Status Report](https://github.com/kazah-png/nyx-os/issues/
 - ✅ **Shell I/O redirection** (`>` `>>` `<`) + coreutils `grep`/`head`/`tail`: the userspace shell (`/sh.elf`) parses redirections and `dup2`s an `open`'d file onto stdin/stdout; `dup2` now moves VFS handles (pipes still refcount-duplicate), backed by `O_TRUNC`/`O_APPEND` for `>`/`>>` (verified: `echo … > f`, `>> f`, `ls / | grep elf`, `cat f | head -n 1`, `cat f | wc` → `2 6 37`)
 - ✅ **Per-process working directory** + shell `cd`/`pwd`/`export`/`$VAR`: each process has a cwd (`chdir`/`getcwd`), and relative paths in `open`/`getdents` resolve against it (with `.`/`..` normalization); inherited across `fork`, kept across `execve`. The shell adds in-process `cd`/`pwd`/`export` builtins and `$VAR`/`$?` expansion (verified: `cd /home/user` then `cat welcome.txt` opens the relative path, `export NAME=NyxOS` + `echo $NAME` → `NyxOS`)
 - ✅ **Userland file tools** (`mkdir`/`rm`/`touch`/`sort`/`find` as ring-3 programs): new `mkdir`/`unlink` syscalls (cwd-relative), `sort` reorders lines from stdin or files, `find` walks directory trees recursively over `getdents` with an optional name filter — plus a real VFS fix (unlink/rename of nested directories resolved the wrong parent) found by wiring them (verified: `mkdir /tmp/proj`, `touch`, `find /tmp` lists the tree, `ls /tmp/proj | sort` → `a.txt b.txt`, `rm` both)
-- ✅ **Shell line editing + history** (raw tty): `ttymode(TTY_RAW)` gives byte-at-a-time, no-echo stdin with arrows as ANSI escapes; the shell's `readline()` renders its own line — **↑/↓ walks a 16-entry history**, **←/→/Home/End move the cursor**, insert/delete anywhere in the line. Fixed a driver bug found live: the keyboard's E0-prefix check ran after the press-bit mask, so extended keys never worked anywhere (verified: ↑↑+Enter reruns `echo first`; `echo abcd` + ←← + backspace runs `echo acd`) — next: file-backed mmap, `mprotect`, tab completion
+- ✅ **Shell line editing + history** (raw tty): `ttymode(TTY_RAW)` gives byte-at-a-time, no-echo stdin with arrows as ANSI escapes; the shell's `readline()` renders its own line — **↑/↓ walks a 16-entry history**, **←/→/Home/End move the cursor**, insert/delete anywhere in the line. Fixed a driver bug found live: the keyboard's E0-prefix check ran after the press-bit mask, so extended keys never worked anywhere (verified: ↑↑+Enter reruns `echo first`; `echo abcd` + ←← + backspace runs `echo acd`)
+- ✅ **Shell Tab completion** (pure userspace, over `getdents`): completes command names (builtins + `/`'s `.elf`s, pipeline-aware after `\|`) and filesystem paths; a unique match fills in with a trailing space or `/`, several extend to the longest common prefix or list the candidates (verified: `ec`+Tab → `echo`; `t`+Tab → `tail  touch`; `ls /ho`+Tab → `ls /home/`) — next: file-backed mmap, `mprotect`, `/dev` special files
 - ✅ NIC-side TCP listen (inbound connections — NyxOS serves HTTP to a host `curl` via `hostfwd`)
 - ✅ **Nyx C language runtime** (`nyxrt.h`/`nyxrt.c`): typed subset of C with string interpolation, transpiles to C, first `.nyx` program (`hello_nyx.elf`) prints "hola desde nyx c! pid=5"
 

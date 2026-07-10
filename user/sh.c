@@ -319,6 +319,116 @@ static void redraw(const char* prompt, const char* buf, int len, int pos, int dr
     for (int i = end; i > pos; i--) write(1, "\b", 1);    /* park cursor at pos */
 }
 
+/* ---- tab completion (pure userspace, over getdents) ------------------------ */
+static nyx_dirent_t cmp_ents[64];      /* .bss: getdents can't fault lazy pages   */
+static char    cmp_cand[48][64];       /* candidate names                         */
+static unsigned char cmp_isdir[48];
+
+static int str_prefix(const char* s, const char* pfx) {
+    while (*pfx) if (*s++ != *pfx++) return 0;
+    return 1;
+}
+
+/* Insert `s` into buf at *ppos, shifting the tail right; caps at buf[128]. */
+static void insert_at(char* buf, int* plen, int* ppos, const char* s) {
+    int len = *plen, pos = *ppos, sl = (int)strlen(s);
+    if (len + sl > 126) sl = 126 - len;
+    if (sl <= 0) return;
+    for (int j = len - 1; j >= pos; j--) buf[j + sl] = buf[j];
+    for (int j = 0; j < sl; j++) buf[pos + j] = s[j];
+    *plen = len + sl; *ppos = pos + sl;
+}
+
+/* Complete the token ending at the cursor. Command position (line start, or right
+ * after '|') completes shell builtins + /*.elf names; otherwise a filesystem path
+ * via getdents on the token's directory. A single match is inserted (+ ' ' or '/');
+ * several share their longest common prefix, or are listed. Returns 1 if it printed
+ * a candidate list (so the caller redraws on a fresh line), else 0. */
+static int do_complete(char* buf, int* plen, int* ppos) {
+    int pos = *ppos, ts = pos;
+    while (ts > 0 && buf[ts - 1] != ' ') ts--;
+    int k = ts - 1;                              /* command position? */
+    while (k >= 0 && buf[k] == ' ') k--;
+    int is_cmd = (k < 0) || buf[k] == '|';
+
+    char token[128]; int tlen = pos - ts;
+    if (tlen > 127) tlen = 127;
+    for (int i = 0; i < tlen; i++) token[i] = buf[ts + i];
+    token[tlen] = '\0';
+
+    const char* base = token;
+    int nc = 0;
+
+    if (is_cmd) {
+        static const char* bi[] = { "cd", "pwd", "export", "exit", "demo" };
+        for (int i = 0; i < 5 && nc < 48; i++)
+            if (str_prefix(bi[i], token)) {
+                strncpy(cmp_cand[nc], bi[i], 63); cmp_cand[nc][63] = 0; cmp_isdir[nc] = 0; nc++;
+            }
+        long n = getdents("/", cmp_ents, 64);
+        for (long i = 0; i < n && nc < 48; i++) {
+            char* nm = cmp_ents[i].name;
+            int l = (int)strlen(nm);
+            if (l > 4 && strcmp(nm + l - 4, ".elf") == 0) {
+                char bare[64]; int bl = l - 4; if (bl > 63) bl = 63;
+                for (int j = 0; j < bl; j++) bare[j] = nm[j];
+                bare[bl] = 0;
+                if (str_prefix(bare, token)) {
+                    strncpy(cmp_cand[nc], bare, 63); cmp_cand[nc][63] = 0; cmp_isdir[nc] = 0; nc++;
+                }
+            }
+        }
+    } else {
+        char dir[128]; int sl = -1;
+        for (int i = 0; i < tlen; i++) if (token[i] == '/') sl = i;
+        if (sl < 0) { strcpy(dir, "."); base = token; }
+        else {
+            int dl = (sl == 0) ? 1 : sl;         /* "/x" -> dir "/" */
+            for (int i = 0; i < dl; i++) dir[i] = token[i];
+            dir[dl] = 0; base = token + sl + 1;
+        }
+        long n = getdents(dir, cmp_ents, 64);
+        for (long i = 0; i < n && nc < 48; i++)
+            if (str_prefix(cmp_ents[i].name, base)) {
+                strncpy(cmp_cand[nc], cmp_ents[i].name, 63); cmp_cand[nc][63] = 0;
+                cmp_isdir[nc] = (cmp_ents[i].type == 1);
+                nc++;
+            }
+    }
+
+    int blen = (int)strlen(base);
+    if (nc == 0) return 0;
+    if (nc == 1) {                               /* unique: complete + suffix */
+        char ins[80]; int il = 0;
+        for (const char* r = cmp_cand[0] + blen; *r && il < 70; ) ins[il++] = *r++;
+        ins[il++] = cmp_isdir[0] ? '/' : ' ';
+        ins[il] = 0;
+        insert_at(buf, plen, ppos, ins);
+        return 0;
+    }
+    int lcp = (int)strlen(cmp_cand[0]);          /* longest common prefix */
+    for (int i = 1; i < nc; i++) {
+        int j = 0;
+        while (j < lcp && cmp_cand[i][j] == cmp_cand[0][j]) j++;
+        lcp = j;
+    }
+    if (lcp > blen) {                            /* extend to the shared prefix */
+        char ins[80]; int il = 0;
+        for (int j = blen; j < lcp && il < 70; j++) ins[il++] = cmp_cand[0][j];
+        ins[il] = 0;
+        insert_at(buf, plen, ppos, ins);
+        return 0;
+    }
+    write(1, "\n", 1);                           /* ambiguous: list candidates */
+    for (int i = 0; i < nc; i++) {
+        write(1, cmp_cand[i], strlen(cmp_cand[i]));
+        if (cmp_isdir[i]) write(1, "/", 1);
+        write(1, "  ", 2);
+    }
+    write(1, "\n", 1);
+    return 1;
+}
+
 /* Read one edited line into out (NUL-terminated, no '\n'). Returns its length,
  * or -1 if the read was interrupted (Ctrl-C). Restores canonical mode on exit. */
 static int readline(const char* prompt, char* out, int outsz) {
@@ -392,6 +502,11 @@ static int readline(const char* prompt, char* out, int outsz) {
                 }
                 continue;
             }
+            if (c == '\t') {                 /* tab completion */
+                do_complete(buf, &len, &pos);
+                redraw(prompt, buf, len, pos, len); drawn = len;
+                continue;
+            }
             if (c >= 0x20 && c < 0x7F && len < (int)sizeof(buf) - 1) {  /* insert */
                 for (int j = len; j > pos; j--) buf[j] = buf[j - 1];
                 buf[pos] = c;
@@ -415,7 +530,7 @@ int main(int argc, char** argv) {
     /* Interactive REPL: read(0) blocks in the kernel's canonical line
      * discipline (echo + backspace handled there), so this is a live shell. */
     signal(SIGINT, on_sigint);           /* Ctrl-C -> fresh prompt instead of dying */
-    printf("NyxOS sh v0.6 — line editing + history (arrows), 'demo', 'cd', '$N', 'a | b > f', '&', 'exit'\n");
+    printf("NyxOS sh v0.7 — arrows (history/edit) + Tab completion, 'demo', 'cd', '$N', 'a|b>f', '&', 'exit'\n");
     for (;;) {
         reap_bg();                       /* report finished background jobs */
         char line[128];
