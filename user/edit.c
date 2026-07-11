@@ -99,8 +99,9 @@ static void render(void) {
             s_putc('~');
         }
     }
-    /* status bar */
+    /* status bar — black on light-grey (SGR 30;47); ESC[K paints the whole row */
     s_goto(TEXTROWS + 1, 1);
+    s_str("\x1b[30;47m\x1b[K");
     s_str(" ");
     s_str(fname);
     s_str(dirty ? " *" : "  ");
@@ -108,6 +109,7 @@ static void render(void) {
     s_str("  Col "); s_int(cx + 1);
     s_str("   ^O Save  ^X Exit");
     if (msg[0]) { s_str("   "); s_str(msg); }
+    s_str("\x1b[0m");                               /* reset color */
     /* park the cursor at the editing point (screen-relative, 1-based) */
     s_goto(cy - top + 1, cx + 1);
     write(1, scr, sp);

@@ -30,9 +30,15 @@ typedef struct {
     // at (out_row,out_col). Reset when the command finishes.
     int screen_mode;
     int out_row, out_col;
+    // ANSI SGR color state (v5.8.26). cur_color is the VGA attribute byte applied
+    // to newly written cells (fg = low nibble, bg = high nibble); out_color mirrors
+    // output_buf so a scrollback line keeps per-char color (e.g. `ls --color`).
+    uint8_t cur_color;
+    uint8_t out_color[TERM_OUTPUT_MAX];
 } terminal_win_t;
 
 #define TERM_SCREEN_ROWS 45    // rows cleared/addressable in screen mode (>= any window)
+#define TERM_DEFAULT_COLOR (VGA_LIGHT_GREY | (VGA_BLACK << 4))   // light-grey on black
 
 terminal_win_t* terminal_create_ctx(void);
 void terminal_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch);

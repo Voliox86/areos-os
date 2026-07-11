@@ -22,8 +22,16 @@ int main(int argc, char** argv) {
     if (n < 0) { printf("ls: cannot access '%s'\n", path); free(ents); return 1; }
 
     for (long i = 0; i < n; i++) {
-        if (ents[i].type == 1) printf("%s/\n", ents[i].name);   /* directory */
-        else                   printf("%s\n",  ents[i].name);
+        const char* nm = ents[i].name;
+        if (ents[i].type == 1) {                     /* directory -> bright blue */
+            printf("\x1b[1;34m%s/\x1b[0m\n", nm);
+        } else {
+            /* executables (.elf) -> bright green, everything else default */
+            int L = 0; while (nm[L]) L++;
+            int is_elf = (L >= 4 && nm[L-4] == '.' && nm[L-3] == 'e' && nm[L-2] == 'l' && nm[L-1] == 'f');
+            if (is_elf) printf("\x1b[1;32m%s\x1b[0m\n", nm);
+            else        printf("%s\n", nm);
+        }
     }
     free(ents);
     return 0;

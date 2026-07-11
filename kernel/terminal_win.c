@@ -20,6 +20,70 @@ memset_asm(term->lines[idx], ' ', TERM_COLS);
     if (term->scroll_offset > 0) term->scroll_offset++;
 }
 
+// A VGA color index (0-15) -> RGB, for both foreground and background cells.
+static uint32_t vga_to_rgb(uint8_t idx) {
+    switch (idx & 0x0F) {
+        case 0:  return fb_rgb(0,0,0);
+        case 1:  return fb_rgb(0,0,170);
+        case 2:  return fb_rgb(0,170,0);
+        case 3:  return fb_rgb(0,170,170);
+        case 4:  return fb_rgb(170,0,0);
+        case 5:  return fb_rgb(170,0,170);
+        case 6:  return fb_rgb(170,85,0);
+        case 7:  return fb_rgb(170,170,170);
+        case 8:  return fb_rgb(85,85,85);
+        case 9:  return fb_rgb(85,85,255);
+        case 10: return fb_rgb(85,255,85);
+        case 11: return fb_rgb(85,255,255);
+        case 12: return fb_rgb(255,85,85);
+        case 13: return fb_rgb(255,85,255);
+        case 14: return fb_rgb(255,255,85);
+        default: return fb_rgb(255,255,255);
+    }
+}
+
+// ANSI SGR color -> VGA attribute nibble. Index by (ansi_code - 30):
+//   blk  red  grn  yel  blu  mag  cyn  wht
+static const uint8_t ansi2vga[8] = { 0, 4, 2, 6, 1, 5, 3, 7 };
+
+// Apply the collected SGR params to the terminal's current color (fg = low nibble,
+// bg = high nibble). 0 resets, 1 = bold (bright fg), 7 = reverse (swap fg/bg),
+// 30-37/90-97 set fg, 40-47/100-107 set bg.
+static void term_apply_sgr(terminal_win_t* t, const int* p, int n) {
+    if (n <= 0) { t->cur_color = TERM_DEFAULT_COLOR; return; }
+    for (int i = 0; i < n; i++) {
+        int v = p[i];
+        if (v == 0)                    t->cur_color = TERM_DEFAULT_COLOR;
+        else if (v == 1)               t->cur_color |= 0x08;                                   // bold -> bright fg
+        else if (v == 7)               t->cur_color = (uint8_t)(((t->cur_color & 0x0F) << 4) | ((t->cur_color >> 4) & 0x0F));
+        else if (v >= 30 && v <= 37)   t->cur_color = (uint8_t)((t->cur_color & 0xF0) |  ansi2vga[v - 30]);
+        else if (v >= 90 && v <= 97)   t->cur_color = (uint8_t)((t->cur_color & 0xF0) | (ansi2vga[v - 90] | 0x08));
+        else if (v >= 40 && v <= 47)   t->cur_color = (uint8_t)((t->cur_color & 0x0F) | (ansi2vga[v - 40] << 4));
+        else if (v >= 100 && v <= 107) t->cur_color = (uint8_t)((t->cur_color & 0x0F) | ((ansi2vga[v - 100] | 0x08) << 4));
+    }
+}
+
+// Append a scrollback line carrying per-char colors (from the capture buffers),
+// so a colorized command (e.g. `ls --color`) keeps its colors in history.
+static void term_add_line_c(terminal_win_t* term, const char* text, const uint8_t* colorbuf, int len) {
+    if (term->line_count >= TERM_LINES) {
+        for (int i = 1; i < TERM_LINES; i++) {
+            memcpy(term->lines[i-1], term->lines[i], TERM_COLS);
+            memcpy(term->colors[i-1], term->colors[i], TERM_COLS);
+        }
+        term->line_count = TERM_LINES - 1;
+    }
+    int idx = term->line_count;
+    memset_asm(term->lines[idx], ' ', TERM_COLS);
+    memset_asm(term->colors[idx], TERM_DEFAULT_COLOR, TERM_COLS);
+    for (int i = 0; i < TERM_COLS - 1 && i < len; i++) {
+        term->lines[idx][i] = text[i];
+        term->colors[idx][i] = colorbuf[i];
+    }
+    term->line_count++;
+    if (term->scroll_offset > 0) term->scroll_offset++;
+}
+
 // Rebuild this terminal's prompt from its own current directory. Activating the
 // shell's CWD first means the prompt shows the real absolute path (e.g. after a
 // `cd`) and each Terminal window tracks its directory independently.
@@ -71,7 +135,7 @@ static void term_screen_clear(terminal_win_t* t) {
 // Reset back to scrollback mode (called when a command finishes).
 void terminal_capture_reset(terminal_win_t* t) {
     esc_state = 0;
-    if (t && t->screen_mode) { t->screen_mode = 0; t->line_count = 0; }
+    if (t) { t->cur_color = TERM_DEFAULT_COLOR; if (t->screen_mode) { t->screen_mode = 0; t->line_count = 0; } }
 }
 
 int terminal_capture_putchar(int c) {
@@ -98,7 +162,12 @@ int terminal_capture_putchar(int c) {
             term_screen_clear(t);
         } else if (c == 'K') {                    // clear to end of line
             if (t->screen_mode && t->out_row >= 0 && t->out_row < TERM_SCREEN_ROWS)
-                for (int x = t->out_col; x >= 0 && x < TERM_COLS; x++) t->lines[t->out_row][x] = ' ';
+                for (int x = t->out_col; x >= 0 && x < TERM_COLS; x++) {
+                    t->lines[t->out_row][x] = ' ';
+                    t->colors[t->out_row][x] = t->cur_color;
+                }
+        } else if (c == 'm') {                    // SGR: set color (fg/bg)
+            term_apply_sgr(t, esc_p, (esc_np + 1 > 2) ? 2 : esc_np + 1);
         }
         esc_state = 0;                            // any other final is swallowed
         return c;
@@ -114,7 +183,7 @@ int terminal_capture_putchar(int c) {
             if (t->out_row >= TERM_SCREEN_ROWS) t->out_row = TERM_SCREEN_ROWS - 1;
             if (t->out_col >= 0 && t->out_col < TERM_COLS) {
                 t->lines[t->out_row][t->out_col] = (char)c;
-                t->colors[t->out_row][t->out_col] = VGA_LIGHT_GREY | (VGA_BLACK << 4);
+                t->colors[t->out_row][t->out_col] = t->cur_color;
                 t->out_col++;
             }
         }
@@ -125,7 +194,7 @@ int terminal_capture_putchar(int c) {
     if (c == '\n') {
         t->output_buf[t->output_len] = '\0';
         if (t->output_len > 0)
-            term_add_line(t, t->output_buf, VGA_LIGHT_GREY | (VGA_BLACK << 4));
+            term_add_line_c(t, t->output_buf, t->out_color, t->output_len);
         t->output_len = 0;
     } else if (c == '\b' || c == 0x7F) {
         // Destructive backspace on the pending line — makes the kernel echo's
@@ -134,6 +203,7 @@ int terminal_capture_putchar(int c) {
     } else if (c == '\r') {
         t->output_len = 0;                        // carriage return: rebuild the line
     } else if (c >= 0x20 && t->output_len < TERM_OUTPUT_MAX - 1) {
+        t->out_color[t->output_len] = t->cur_color;   // per-char color (ls --color)
         t->output_buf[t->output_len++] = c;
     }
     return c;
@@ -166,32 +236,13 @@ void terminal_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) 
             char ch_char = term->lines[li][c];
             if (!ch_char) ch_char = ' ';
             uint8_t col = term->colors[li][c];
-            uint8_t fg_col = col & 0x0F;
-            uint32_t fg;
-            switch (fg_col) {
-                case 0: fg = fb_rgb(0,0,0); break;
-                case 1: fg = fb_rgb(0,0,170); break;
-                case 2: fg = fb_rgb(0,170,0); break;
-                case 3: fg = fb_rgb(0,170,170); break;
-                case 4: fg = fb_rgb(170,0,0); break;
-                case 5: fg = fb_rgb(170,0,170); break;
-                case 6: fg = fb_rgb(170,85,0); break;
-                case 7: fg = fb_rgb(170,170,170); break;
-                case 8: fg = fb_rgb(85,85,85); break;
-                case 9: fg = fb_rgb(85,85,255); break;
-                case 10: fg = fb_rgb(85,255,85); break;
-                case 11: fg = fb_rgb(85,255,255); break;
-                case 12: fg = fb_rgb(255,85,85); break;
-                case 13: fg = fb_rgb(255,85,255); break;
-                case 14: fg = fb_rgb(255,255,85); break;
-                case 15: fg = fb_rgb(255,255,255); break;
-                default: fg = fb_rgb(200,200,200); break;
-            }
+            uint32_t fg = vga_to_rgb(col & 0x0F);
+            uint32_t bg = vga_to_rgb((col >> 4) & 0x0F);   // background from the high nibble
             // Block cursor in screen mode: invert the cell at (out_row,out_col).
             if (term->screen_mode && li == term->out_row && c == term->out_col)
-                font_draw_char(cx + c * char_w, y, ch_char, fb_rgb(0,0,0), fb_rgb(200,200,200));
+                font_draw_char(cx + c * char_w, y, ch_char, bg, fg);
             else
-                font_draw_char(cx + c * char_w, y, ch_char, fg, fb_rgb(0,0,0));
+                font_draw_char(cx + c * char_w, y, ch_char, fg, bg);
         }
     }
 
@@ -303,19 +354,21 @@ void terminal_win_key(window_t* win, int key) {
             capture_term = term;
             term->capturing = 1;
             term->output_len = 0;
+            term->cur_color = TERM_DEFAULT_COLOR;   // fresh color state per command
             vfs_setcwd_node(term->cwd);       // run in THIS shell's directory
             set_putchar_hook(terminal_capture_putchar);
             execute_command(term->input);
             set_putchar_hook(NULL);
             term->capturing = 0;
+            int was_screen = term->screen_mode;
+            if (term->output_len > 0 && !was_screen) {   // flush a trailing (unterminated) line
+                term->output_buf[term->output_len] = '\0';
+                term_add_line_c(term, term->output_buf, term->out_color, term->output_len);
+                term->output_len = 0;
+            }
             terminal_capture_reset(term);      // leave TUI screen mode -> clean scrollback
             term->cwd = vfs_getcwd_node();     // a `cd` may have moved us
             term_set_prompt(term);             // reflect the new path in the prompt
-            if (term->output_len > 0) {
-                term->output_buf[term->output_len] = '\0';
-                term_add_line(term, term->output_buf, VGA_LIGHT_GREY | (VGA_BLACK << 4));
-                term->output_len = 0;
-            }
             capture_term = NULL;
         }
 
