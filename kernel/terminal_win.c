@@ -44,8 +44,33 @@ terminal_win_t* terminal_create_ctx(void) {
 
 static terminal_win_t* capture_term = NULL;
 
+// Minimal ANSI/CSI escape state so TUI programs (top) can clear the screen. Not a
+// full cell-addressable terminal — we only recognize a couple of sequences and
+// swallow the rest so they don't render as literal "[2J" garbage. 0 = normal,
+// 1 = just saw ESC, 2 = inside a CSI (collecting params until the final letter).
+static int esc_state = 0;
+
 int terminal_capture_putchar(int c) {
     if (!capture_term || !capture_term->capturing) return c;
+    // Escape-sequence handling takes precedence over the normal char path.
+    if (esc_state == 1) {                       // saw ESC: a CSI starts with '['
+        esc_state = (c == '[') ? 2 : 0;
+        return c;
+    }
+    if (esc_state == 2) {                        // inside CSI: params ... final byte
+        if (c >= '@' && c <= '~') {              // final byte ends the sequence
+            if (c == 'J') {                      // ESC[..J -> clear the screen
+                capture_term->line_count = 0;
+                capture_term->scroll_offset = 0;
+                capture_term->output_len = 0;
+            } else if (c == 'H' || c == 'f') {   // cursor home -> restart pending line
+                capture_term->output_len = 0;
+            }
+            esc_state = 0;                        // (params/other finals just swallowed)
+        }
+        return c;
+    }
+    if (c == 0x1B) { esc_state = 1; return c; }   // ESC begins a sequence
     if (c == '\n') {
         capture_term->output_buf[capture_term->output_len] = '\0';
         if (capture_term->output_len > 0)

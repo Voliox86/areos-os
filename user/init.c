@@ -515,6 +515,12 @@ int main(void) {
         printf("  %s: open failed\n", spath);
     }
 
+    /* Timed key read (SYS_READKEY, the primitive behind `top`): with no key
+     * pressed it must block ~the timeout and return 0. */
+    printf("Testing readkey timeout (no key -> 0)...\n");
+    long rk = readkey(150);
+    printf("  readkey(150ms) -> %ld (expect 0)\n", rk);
+
     printf("Init complete, exiting.\n");
     return 0;
 }

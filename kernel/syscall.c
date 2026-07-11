@@ -205,6 +205,34 @@ static int stdin_read_raw(char* kbuf, int max) {
     return len;
 }
 
+/* Timed single-key read (SYS_READKEY). Block up to `timeout_ms` for one key and
+ * return it (an ASCII byte, or an extended keycode >= 0x80 for arrows etc.), 0 on
+ * timeout, or -EINTR if a signal arrives. This is the primitive behind `top`'s
+ * refresh-or-quit loop: a foreground TUI can wait a fixed interval for input and
+ * fall through to redraw when nothing was pressed. Independent of tty_raw — it
+ * reads keys directly via getkey_poll, no echo, no line discipline. */
+static int stdin_readkey(uint32_t timeout_ms) {
+    extern volatile uint32_t tick_count;         /* 1000 Hz -> milliseconds */
+    extern uint64_t user_cr3, user_rsp;
+    process_t* self = get_cur_proc();
+    uint64_t saved_cr3 = user_cr3, saved_ursp = user_rsp;
+    uint32_t deadline = tick_count + timeout_ms;  /* wrap-safe via signed compare */
+    int result = 0;
+    for (;;) {
+        int k = getkey_poll();
+        if (k) { result = k; break; }
+        if (self && signal_pending(self)) { result = -EINTR; break; }
+        if ((int32_t)(tick_count - deadline) >= 0) break;   /* timed out -> 0 */
+        if (self) self->blocked_in_kernel = 1;
+        __asm__ volatile("sti; hlt");
+        __asm__ volatile("cli");
+        if (self) self->blocked_in_kernel = 0;
+    }
+    user_cr3 = saved_cr3;
+    user_rsp = saved_ursp;
+    return result;
+}
+
 /* ------------------------------------------------------------------ */
 /*  User memory access                                                */
 /* ------------------------------------------------------------------ */
@@ -786,6 +814,11 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             }
             return count;
         }
+        case SYS_READKEY:
+            // readkey(timeout_ms): block up to timeout_ms for one key; return it,
+            // 0 on timeout, or -EINTR on a signal. The timed-input primitive `top`
+            // uses to auto-refresh while staying responsive to 'q'.
+            return (uint64_t)(int64_t)stdin_readkey((uint32_t)a1);
         default:
             printf("[SYSCALL] Unknown syscall %lu\n", no);
             return -1;

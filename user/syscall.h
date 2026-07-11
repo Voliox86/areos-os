@@ -29,6 +29,7 @@
 #define SYS_TTYMODE  25
 #define SYS_MPROTECT 26
 #define SYS_GETPROCS 27
+#define SYS_READKEY  28
 
 #define TTY_CANON   0   /* kernel line discipline: echoed, backspace-edited lines */
 #define TTY_RAW     1   /* byte-at-a-time, no echo, arrows as ESC [ A/B/C/D */
@@ -275,6 +276,15 @@ static inline long ttymode(int mode) {
  * memset first) so the kernel's copy never hits an unfaulted lazy-heap page. */
 static inline long getprocs(nyx_procinfo_t* buf, int max) {
     return syscall2(SYS_GETPROCS, (long)buf, max);
+}
+
+/* readkey(timeout_ms): block up to timeout_ms for a single keypress. Returns the
+ * key (an ASCII byte, or an extended keycode >= 0x80 for arrows), 0 if the timeout
+ * elapsed with no key, or a negative value if interrupted. The timed-input
+ * primitive for TUI refresh loops (e.g. `top`): wait a fixed interval for a
+ * command, redraw when nothing was pressed. No echo, independent of ttymode. */
+static inline long readkey(long timeout_ms) {
+    return syscall1(SYS_READKEY, timeout_ms);
 }
 
 /* Create a pipe: fds[0] is the read end, fds[1] the write end. Returns 0, or -1.
