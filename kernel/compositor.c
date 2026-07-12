@@ -28,6 +28,7 @@ static int start_menu_open = 0;
 static int ctx_menu_open = 0;
 static int ctx_menu_x = 0, ctx_menu_y = 0;
 static int mouse_x = 0, mouse_y = 0;
+static int mouse_z = 0;          // previous wheel total (see mouse_get_z); delta = new - this
 static uint8_t mouse_btns = 0;
 
 #define CURSOR_W 12
@@ -1060,6 +1061,7 @@ void compositor_run(void) {
         // when it's running, or idles (hlt) to the tick otherwise.
         if (kbd_head == kbd_tail && mouse_get_buttons() == 0 &&
             mouse_get_x() == mouse_x && mouse_get_y() == mouse_y &&
+            mouse_get_z() == mouse_z &&
             !drag_id && !resize_id && drag_icon_idx < 0 &&
             !ctx_menu_open && !start_menu_open) {
             sleep(5);
@@ -1092,6 +1094,22 @@ void compositor_run(void) {
             }
             if (fwin && fwin->on_mousemove)
                 fwin->on_mousemove(fwin, mx, my, btns);
+        }
+
+        // Dispatch mouse-wheel notches to the focused window as synthetic scroll keys
+        // (the terminal turns them into scrollback movement). One key per notch.
+        int wz = mouse_get_z();
+        if (wz != mouse_z) {
+            int notches = wz - mouse_z;
+            int steps = notches < 0 ? -notches : notches;
+            if (steps > 8) steps = 8;                    // clamp a fast flick
+            window_t* fwin = find_window(focused_id);
+            if (fwin && fwin->on_key) {
+                int keycode = (notches > 0) ? KEY_WHEEL_UP : KEY_WHEEL_DOWN;
+                for (int s = 0; s < steps; s++) fwin->on_key(fwin, keycode);
+                redraw = 1;
+            }
+            mouse_z = wz;
         }
 
         if (drag_id && !(btns & 1)) {

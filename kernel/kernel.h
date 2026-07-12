@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.33"
+#define KERNEL_VERSION "5.8.34"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -225,6 +225,10 @@ typedef struct {
 #define KEY_PGDN    0x87
 #define KEY_INSERT  0x88
 #define KEY_DEL     0x89
+// Synthetic keycodes the compositor injects from mouse-wheel notches, delivered to
+// the focused window's on_key like any other key (scrollback nav in the terminal).
+#define KEY_WHEEL_UP   0x8A
+#define KEY_WHEEL_DOWN 0x8B
 
 // CR4 flags
 #define CR4_PAE     (1 << 5)
@@ -941,6 +945,7 @@ void mouse_irq_handler(void* unused);
 int mouse_get_x(void);
 int mouse_get_y(void);
 int mouse_get_buttons(void);
+int mouse_get_z(void);          // accumulated wheel notches (IntelliMouse); +up / -down
 void mouse_set_pos(int x, int y);
 
 void font_draw_char(uint32_t x, uint32_t y, unsigned char c, uint32_t fg, uint32_t bg);

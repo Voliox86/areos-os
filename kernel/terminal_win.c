@@ -265,12 +265,58 @@ void terminal_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) 
             font_draw_char(cx + c * char_w, y, full_line[c], fg, bg);
         }
     }
+
+    // Scrollbar on the right edge when there's more history than fits (skip in TUI
+    // screen mode). Thumb height ~ visible/total; its position tracks how far up the
+    // view is scrolled, and it turns purple while scrolled off the live tail.
+    if (!term->screen_mode && term->line_count > rows) {
+        int total = term->line_count;
+        int bx = cx + cw - 3;
+        fb_fill_rect(bx, cy, 3, ch, fb_rgb(35, 35, 45));            // track
+        int th = (int)((uint64_t)ch * rows / total);
+        if (th < 10) th = 10;
+        if (th > (int)ch) th = ch;
+        int max_start = total - rows;
+        if (max_start < 1) max_start = 1;
+        int start = start_line < 0 ? 0 : (start_line > max_start ? max_start : start_line);
+        int ty = cy + (int)((uint64_t)(ch - th) * start / max_start);
+        uint32_t thumb = term->scroll_offset > 0 ? fb_rgb(150, 130, 220)   // scrolled: purple
+                                                 : fb_rgb(90, 90, 110);     // at the tail: dim
+        fb_fill_rect(bx, ty, 3, th, thumb);
+    }
+}
+
+// Scroll the scrollback VIEW by `delta` lines (positive = toward older output). No-op
+// in TUI screen mode. Clamped so you can't scroll below the live tail (offset 0) or
+// past the oldest kept line.
+static void term_scroll(terminal_win_t* t, int delta) {
+    if (t->screen_mode) return;
+    int max_off = t->line_count - t->visible_rows;
+    if (max_off < 0) max_off = 0;
+    t->scroll_offset += delta;
+    if (t->scroll_offset < 0) t->scroll_offset = 0;
+    if (t->scroll_offset > max_off) t->scroll_offset = max_off;
 }
 
 void terminal_win_key(window_t* win, int key) {
-    char c = (char)(key < 0x80 ? key : 0);
     terminal_win_t* term = (terminal_win_t*)win->reserved;
     if (!term) return;
+
+    // Scrollback navigation — moves the VIEW only (not the input line) and never snaps
+    // back to the tail. A page is one screenful minus a row of overlap; a wheel notch
+    // is a few lines. PgUp/PgDn come from the keyboard, WHEEL_* from the compositor.
+    int page = term->visible_rows > 3 ? term->visible_rows - 2 : 1;
+    switch (key) {
+        case KEY_PGUP:       term_scroll(term,  page); return;
+        case KEY_PGDN:       term_scroll(term, -page); return;
+        case KEY_WHEEL_UP:   term_scroll(term,  3);    return;
+        case KEY_WHEEL_DOWN: term_scroll(term, -3);    return;
+    }
+
+    // Any other key snaps back to the live tail — typing/Enter always jumps to bottom.
+    term->scroll_offset = 0;
+
+    char c = (char)(key < 0x80 ? key : 0);
 
     // Extended keycodes (arrows, etc.)
     if (key >= 0x80) {
