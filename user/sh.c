@@ -7,7 +7,8 @@
  * as a fork+execve'd child with its stdin/stdout wired to the neighbouring pipes, and
  * the shell waitpid()s them all. '&&'/'||' gate the next pipeline on the last one's $?.
  * `$(command)` (command substitution) runs `command` in a forked subshell and splices
- * its captured stdout into the line before it is parsed.
+ * its captured stdout into the line before it is parsed. Words may be single- ('...',
+ * fully literal) or double-quoted ("...", but $VAR / $? / $(...) still expand).
  *
  * Modes: `sh -c "line"` runs one line; with no arguments it is INTERACTIVE —
  * read(0, …) is a blocking, echoing line read from the keyboard (kernel
@@ -36,6 +37,107 @@ static int split_args(char* s, char** av, int max) {
     }
     av[n] = 0;
     return n;
+}
+
+/* ---- quoting: '...' and "..." ---------------------------------------------- */
+/* Shells must let a quoted argument contain characters that are otherwise special
+ * to the parser — spaces (which would word-split), the operators ; & | < > and the
+ * glob/expansion chars * ? ~ $ ( ). Rather than teach every splitter about quotes,
+ * preprocess_quotes() strips the quote marks and rewrites each protected character
+ * to a control-byte PLACEHOLDER that none of the splitters/expanders look for; the
+ * real byte is restored (q_unprotect) only when the final argv / redirect filename
+ * is built. Single quotes protect everything (fully literal); double quotes leave
+ * $ ( ) alone so $VAR / $? / $(...) still expand inside them. */
+#define Q_SP 0x01
+#define Q_TAB 0x11
+#define Q_SEMI 0x02
+#define Q_AMP 0x03
+#define Q_PIPE 0x04
+#define Q_LT 0x05
+#define Q_GT 0x06
+#define Q_STAR 0x07
+#define Q_QUES 0x0B
+#define Q_TILDE 0x0C
+#define Q_DOLLAR 0x0E
+#define Q_LP 0x0F
+#define Q_RP 0x10
+
+/* Map a special char to its placeholder. `single`=1 also protects $ ( ) so nothing
+ * expands inside single quotes; in double quotes those pass through untouched. */
+static char q_protect(char c, int single) {
+    switch (c) {
+        case ' ':  return Q_SP;
+        case '\t': return Q_TAB;
+        case ';':  return Q_SEMI;
+        case '&':  return Q_AMP;
+        case '|':  return Q_PIPE;
+        case '<':  return Q_LT;
+        case '>':  return Q_GT;
+        case '*':  return Q_STAR;
+        case '?':  return Q_QUES;
+        case '~':  return Q_TILDE;
+    }
+    if (single) switch (c) {
+        case '$': return Q_DOLLAR;
+        case '(': return Q_LP;
+        case ')': return Q_RP;
+    }
+    return c;
+}
+
+/* Restore placeholder bytes back to their real characters, in place. Called on the
+ * argv words and redirect filenames just before they are used (exec / open / cd). */
+static void q_unprotect(char* s) {
+    for (; *s; s++) switch ((unsigned char)*s) {
+        case Q_SP:     *s = ' ';  break;
+        case Q_TAB:    *s = '\t'; break;
+        case Q_SEMI:   *s = ';';  break;
+        case Q_AMP:    *s = '&';  break;
+        case Q_PIPE:   *s = '|';  break;
+        case Q_LT:     *s = '<';  break;
+        case Q_GT:     *s = '>';  break;
+        case Q_STAR:   *s = '*';  break;
+        case Q_QUES:   *s = '?';  break;
+        case Q_TILDE:  *s = '~';  break;
+        case Q_DOLLAR: *s = '$';  break;
+        case Q_LP:     *s = '(';  break;
+        case Q_RP:     *s = ')';  break;
+    }
+}
+
+/* Strip quotes from `in` -> `out`, protecting quoted specials with placeholders.
+ * A `$(...)` substitution (outside single quotes) is copied VERBATIM — the command
+ * inside keeps its real spaces/quotes, and the subshell re-parses them when it runs
+ * (so `"$(echo hi)"` runs `echo hi`, not one mangled word). */
+static void preprocess_quotes(const char* in, char* out, int outsz) {
+    int o = 0, state = 0;            /* 0 = normal, 1 = single '', 2 = double "" */
+    for (int i = 0; in[i] && o < outsz - 1; ) {
+        char c = in[i];
+        if (state != 1 && c == '$' && in[i + 1] == '(') {   /* copy $(...) verbatim */
+            int depth = 0;
+            while (in[i] && o < outsz - 1) {
+                char d = in[i];
+                if (d == '(') depth++;
+                else if (d == ')') depth--;
+                out[o++] = d; i++;
+                if (depth == 0 && d == ')') break;
+            }
+            continue;
+        }
+        if (state == 0) {
+            if (c == '\'') state = 1;
+            else if (c == '"') state = 2;
+            else out[o++] = c;
+        } else if (state == 1) {                            /* single: fully literal */
+            if (c == '\'') state = 0;
+            else out[o++] = q_protect(c, 1);
+        } else {                                            /* double: keep $ ( ) live */
+            if (c == '"') state = 0;
+            else out[o++] = q_protect(c, 0);
+        }
+        i++;
+    }
+    out[o] = '\0';
 }
 
 /* Pull I/O redirections out of an argv (in place): the tokens `<`, `>`, `>>`
@@ -182,6 +284,7 @@ static void expand_vars(const char* in, char* out, int outsz) {
 /* Builtins that must run IN the shell process (they change its cwd/env — a forked
  * child couldn't). cd/pwd use the chdir/getcwd syscalls; export updates the env. */
 static void builtin_cd(char* arg) {
+    if (arg) q_unprotect(arg);                   /* a quoted dir may hold protected bytes */
     const char* dir = (arg && *arg) ? arg : "/home/user";
     if (chdir(dir) != 0) { printf("cd: %s: no such directory\n", dir); last_status = 1; }
 }
@@ -190,6 +293,7 @@ static void builtin_pwd(void) {
     if (getcwd(buf, sizeof(buf)) >= 0) { write(1, buf, strlen(buf)); write(1, "\n", 1); }
 }
 static void builtin_export(char* rest) {
+    q_unprotect(rest);                           /* export NAME="value with spaces" */
     char* eq = strchr(rest, '=');
     if (!eq) { printf("usage: export NAME=value\n"); return; }
     *eq = '\0';
@@ -440,6 +544,11 @@ static void run_line(char* line) {
             parse_redir(av, &ac, &infile, &outfile, &append);
             if (ac == 0) exit(0);
             char** rav = expand_globs(av, &ac);   /* wildcard (* ?) expansion */
+            /* Restore any quote-protected bytes now that all splitting/globbing is
+             * done, so exec and open() see the real spaces / specials. */
+            for (int qi = 0; qi < ac; qi++) q_unprotect(rav[qi]);
+            if (infile)  q_unprotect(infile);
+            if (outfile) q_unprotect(outfile);
             /* File redirections override the pipe wiring for the affected fd. */
             if (infile) {
                 long fd = open(infile, O_RDONLY, 0);
@@ -600,8 +709,10 @@ static void expand_cmdsubst(const char* in, char* out, int outsz) {
  * `last_status` untouched — exactly bash's behaviour for `a && b || c` chains.
  * Returns 1 if an `exit` builtin ran (the REPL should stop), else 0. */
 static int run_command_list(char* line) {
-    char subst[512];                             /* expand $(...) on the whole line first */
-    expand_cmdsubst(line, subst, sizeof(subst));
+    char quoted[512];                            /* strip quotes, protect quoted specials */
+    preprocess_quotes(line, quoted, sizeof(quoted));
+    char subst[512];                             /* then expand $(...) on the whole line */
+    expand_cmdsubst(quoted, subst, sizeof(subst));
     char* seg[MAX_LIST];
     int   op[MAX_LIST];
     int   n = split_list(subst, seg, op, MAX_LIST);
@@ -652,6 +763,9 @@ static void run_demo(void) {
         "false; echo exit status was $?",  /* $? sees the previous segment */
         "echo working dir is $(pwd)",      /* command substitution $(...) */
         "echo nested: $(echo $(echo deep))",
+        "echo \"double quoted: a; b | c\"",   /* quoting: specials stay literal */
+        "echo 'single quoted: $HOME stays literal'",
+        "echo \"double quoted expands: $NAME\"",   /* $VAR expands inside "" */
         "echo running in the background | upper &",
     };
     for (unsigned i = 0; i < sizeof(script) / sizeof(script[0]); i++) {
@@ -911,7 +1025,7 @@ int main(int argc, char** argv) {
      * discipline (echo + backspace handled there), so this is a live shell. */
     signal(SIGINT, on_sigint);           /* Ctrl-C -> fresh prompt instead of dying */
     signal(SIGTSTP, SIG_IGN);            /* Ctrl-Z at the prompt is a no-op (only jobs stop) */
-    printf("NyxOS sh v0.11 — history/edit, Tab, globs (*?), ~, $(cmd), jobs/fg/bg, '|', '&', '&&', '||', ';', 'exit'\n");
+    printf("NyxOS sh v0.12 — history/edit, Tab, globs (*?), ~, $(cmd), quotes, jobs/fg/bg, '|', '&', '&&', '||', ';', 'exit'\n");
     for (;;) {
         reap_jobs();                     /* report finished background jobs */
         char line[128];
