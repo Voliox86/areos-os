@@ -15,7 +15,7 @@ int main(void) {
     printf("PID: %ld\n", getpid());
     printf("Welcome to NyxOS userspace!\n");
     printf("Testing printf formats: int=%d hex=%x str=\"%s\" char='%c' ptr=%p\n",
-           42, 0xdead, "hello", 'X', (unsigned long)0x12345678);
+           42, 0xdead, "hello", 'X', (void*)0x12345678);
 
     char *buf = (char*)malloc(64);
     if (buf) {
