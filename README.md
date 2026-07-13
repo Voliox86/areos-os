@@ -85,6 +85,11 @@ The project implements core kernel primitives, a custom network stack (RTL8139 N
   <p><em>Ring-3 process model — fork · pipe · execve · dup2 · lazy sbrk · coreutils · signals · mmap (real serial output)</em></p>
 </div>
 
+<div align="center">
+  <img src="media/kpanic.png" alt="NyxOS kernel panic stop screen" width="72%"/>
+  <p><em>Graphical kernel panic — the NyxOS-purple stop screen (":(" face + reason + register/fault context), rendered straight to the LFB when a CPU exception or kernel_panic() fires</em></p>
+</div>
+
 ---
 
 ## Tech stack
