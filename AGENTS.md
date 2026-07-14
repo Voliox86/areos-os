@@ -183,12 +183,9 @@ kernel/
   fileman_win.c/h — File Manager window (VFS browsing, directory navigation, file preview)
   speaker.c/h     — PC speaker driver (PIT channel 2, beep, melody)
   sb16.c/h        — Sound Blaster 16 DSP driver (DMA, IRQ, mixer, PCM playback)
-  doom_nyxos.c    — DOOM generic NyxOS port
-  doom_nyxos_sound.c — DOOM sound module (DMX lump loading, channel mixing stubs)
   editor_win.c/h  — Text Editor window (file open/save, cursor nav, scroll, click)
   imageview_win.c/h — Image Viewer window (test pattern, zoom/pan)
   soundtest_win.c/h — Sound Test window (PC Speaker + SB16 buttons)
-  vga_graphics.c  — VGA mode 13h (DOOM)
   gdt.c/idt.c/isr.c/irq.c — x86 descriptor tables
 ```
 
@@ -215,7 +212,7 @@ kernel/
 | hexdump       | Dump memory |
 | crash         | Trigger kernel panic |
 | reboot        | Reboot via 0x64/0xFE |
-| doom          | Run DOOM game (requires doom1.wad) |
+| doom          | Run DOOM game (requires doom1.wad, legacy) |
 | mode          | Set VBE video mode |
 | gui           | GUI paint demo with mouse |
 | fonttest      | Test bitmap font rendering |

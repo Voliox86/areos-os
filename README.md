@@ -362,21 +362,16 @@ nyx-os/
 │   ├── elf.c / elf.h     # ELF32 loader for userspace binaries
 │   ├── initramfs.c / initramfs.h  # Initramfs cpio parser
 │   ├── initramfs_data.h  # Generated embedded initramfs archive
-│   ├── vga_graphics.c    # VGA mode 13h (DOOM)
-│   ├── doom_nyxos.c / doom_nyxos_sound.c  # DOOM generic port
-│   └── doom_src/         # DOOM engine source
 ├── user/
 │   ├── crt0.asm          # CRT0 for userspace ELF binaries
 │   ├── syscall.h         # Syscall inline wrappers
 │   ├── libc.h / libc.c   # Minimal C library (printf, malloc, string, stdio, stdlib)
 │   ├── init.c            # Init program (first userspace process)
-│   ├── hello.asm         # Test ELF binary
+│   ├── sh.c              # Userspace shell (pipelines, redirection, job control)
+│   ├── *.c               # Coreutils (echo, cat, ls, wc, grep, cp, mv, ps, top, edit, …)
 │   └── makefile          # User-space build rules (included by kernel/Makefile)
 ├── tools/
-│   ├── build.sh          # ISO builder (grub-mkrescue)
 │   ├── mkinitramfs.py    # Initramfs cpio generation script
-│   ├── qemu_launch.ps1   # Windows QEMU launcher
-│   └── qemu_launch.sh    # Linux QEMU launcher
 ├── build.ps1             # Windows build script
 ├── run.ps1               # Windows QEMU launcher (gui/serial/net)
 ├── AGENTS.md             # Agent context for AI-assisted development
