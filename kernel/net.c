@@ -48,11 +48,12 @@ void kernel_poll_net(void) {
     extern void eth_poll(int iface_idx);
     extern void ip_loopback_poll(void);
     extern void tcp_tick(void);
-    // NOTE: not re-entrancy-guarded. Two processes busy-polling the net at once
-    // (a forked server accept()ing while its client connect()s) is unsupported —
-    // it hits the latent IRQ-load register/CR3 Heisenbug (see AGENTS.md), and a
-    // cli/sti guard here only made that fire deterministically. Socket programs
-    // therefore stay single-process (one blocking call polls at a time).
+    // Not re-entrancy-guarded: socket programs stay SINGLE-PROCESS. The mid-syscall
+    // resume-CR3 crash that used to kill a busy-polling syscall is fixed (see
+    // irq_scheduler_tick), but two processes busy-polling concurrently (a forked
+    // server + client) still garble each other's loopback/TCP state — a separate
+    // data-correctness issue, future work. A cli/sti guard here doesn't fix that
+    // and only adds overhead, so it's intentionally absent.
     ip_loopback_poll();   // deliver any self-addressed (loopback) packets
     for (int i = 0; i < 8; i++) {
         if (net_interfaces[i].name[0] && strcmp(net_interfaces[i].name, "lo") != 0) {

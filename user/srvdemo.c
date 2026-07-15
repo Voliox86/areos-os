@@ -10,9 +10,9 @@
  *   accept()                           -> hand out the established server side
  *   client write -> server read -> server write(echo) -> client read
  *
- * Kept to one process on purpose: a fork()ed client + parent server would have
- * BOTH sides busy-polling the network at once, which trips a known latent
- * IRQ-load register-corruption Heisenbug (see AGENTS.md / memory). A single
+ * Kept to one process: a fork()ed client + parent server both busy-polling the
+ * network at once still garble each other's loopback/TCP state (a known open
+ * issue, separate from the mid-syscall resume-CR3 crash that IS fixed). A single
  * process polls one call at a time, so the server path is exercised cleanly. */
 
 int main(void) {

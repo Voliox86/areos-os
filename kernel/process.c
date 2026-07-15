@@ -522,13 +522,17 @@ static void sched_target(process_t* p) {
     extern uint64_t kernel_rsp;                     // syscall-entry stack (isr_stubs.asm)
     next_rsp = (uint64_t)p->stack;
     if (p->page_directory) {
-        // A process parked mid-syscall (blocked_in_kernel) resumes in ring 0, whose
+        // A process interrupted in ring 0 (mid-syscall) resumes there, whose
         // -mcmodel=large code lives at low link addresses only mapped in the kernel
         // CR3 — so resume it there, not on its user CR3 (its own kernel stack, a
         // higher-half alias, is mapped in both). It switches back to user CR3 itself
-        // when the syscall returns.
-        next_cr3 = p->blocked_in_kernel ? (uint64_t)kernel_pml4_phys
-                                        : (uint64_t)p->page_directory;
+        // when the syscall returns. We read the ring from p's saved irq_common frame
+        // (CS at offset 144 == index 18) rather than blocked_in_kernel, so a proc
+        // preempted while busy-polling in a syscall (never a blocked_in_kernel yield)
+        // is also handled — same rule as the resume-cur path in irq_scheduler_tick.
+        uint64_t p_cs = p->stack ? ((volatile uint64_t*)p->stack)[18] : 0x08;
+        next_cr3 = ((p_cs & 3) == 3) ? (uint64_t)p->page_directory
+                                     : (uint64_t)kernel_pml4_phys;
         // Per-process syscall stack: point BOTH the TSS RSP0 (ring3→ring0 faults)
         // and kernel_rsp (the `syscall` instruction's stack) at this process's own
         // kernel stack. That makes a syscall re-entrant across a context switch — a
@@ -561,9 +565,17 @@ void irq_scheduler_tick(void) {
     process_t* cur = (current_idx >= 0 && current_idx < process_count)
                          ? process_table[current_idx] : NULL;
     next_rsp = saved_rsp;
-    next_cr3 = (cur && cur->page_directory && !cur->blocked_in_kernel)
+    // Resume CR3 depends on WHERE cur was interrupted, read from its just-saved
+    // irq_common frame (CS is at frame offset 144 == index 18). Ring 3 = userspace,
+    // resume on its own CR3; ring 0 = it was in a syscall — even one merely
+    // busy-polling (which never sets blocked_in_kernel) — whose low -mcmodel=large
+    // code is only mapped in the kernel CR3, so resume there. THIS is the IRQ-load
+    // Heisenbug fix: a userspace program busy-polling the network inside a syscall
+    // used to resume on its user CR3 and #PF on the unmapped low kernel .text.
+    uint64_t cur_cs = saved_rsp ? ((volatile uint64_t*)saved_rsp)[18] : 0x08;
+    next_cr3 = (cur && cur->page_directory && (cur_cs & 3) == 3)
                    ? (uint64_t)cur->page_directory
-                   : (uint64_t)kernel_pml4_phys;   // mid-syscall procs resume on kernel CR3
+                   : (uint64_t)kernel_pml4_phys;   // ring-0 (mid-syscall) -> kernel CR3
 
     // Dormant, in a heap/critical section, or nothing else to schedule.
     if (!sched_enabled || preempt_count > 0 || process_count == 0) return;
