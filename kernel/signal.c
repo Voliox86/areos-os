@@ -203,6 +203,55 @@ void signal_dispatch(uint64_t* frame) {
     p->sig_mask   |= (1u << sig);            /* block this signal inside its handler */
 }
 
+/* Deliver a SYNCHRONOUS CPU-exception signal (SIGSEGV/SIGFPE/SIGILL from the #PF/#DE/
+ * #UD/... fault handler) to the current process's handler, if it installed one — the
+ * same divert-into-handler-via-trampoline mechanism as signal_dispatch, but operating
+ * on the isr_common EXCEPTION frame rather than the syscall frame. `f` is the exception
+ * frame base (isr_stubs.asm passes RSP): f[0..14] = GPRs r15..rax, f[17] = RIP, f[19] =
+ * RFLAGS, f[20] = the user RSP the CPU pushed on the ring3->ring0 transition.
+ *
+ * Returns 1 if it diverted the process into its handler (isr_handler then just returns;
+ * isr_common iretq's into the handler). Returns 0 for the DEFAULT action — no handler
+ * (SIG_DFL), SIG_IGN (ignoring a synchronous fault would just re-fault forever), a fault
+ * taken inside a running handler (can't nest), or an unwritable user stack — the caller
+ * then terminates the process as before. The saved context is the FAULTING instruction,
+ * so a handler that returns normally re-executes it (and re-faults): real handlers exit()
+ * or longjmp() out. */
+int signal_deliver_fault(uint64_t* f, int sig) {
+    extern uint64_t user_cr3;
+    process_t* p = get_current_process();
+    if (!p || !p->page_directory) return 0;
+    if (sig <= 0 || sig >= NSIG || uncatchable(sig)) return 0;
+
+    uint64_t disp = p->sig_handlers[sig];
+    if (disp == SIG_DFL || disp == SIG_IGN) return 0;   /* default action -> terminate */
+    if (p->sig_active) return 0;                         /* fault inside a handler -> terminate */
+
+    /* Save the interrupted ring-3 context for SYS_SIGRETURN (sig_saved layout: GPRs
+     * r15..rax, then RFLAGS, RIP, user RSP — same as signal_dispatch). */
+    for (int i = 0; i < 15; i++) p->sig_saved[i] = f[i];
+    p->sig_saved[15] = f[19];                           /* RFLAGS */
+    p->sig_saved[16] = f[17];                           /* RIP (faulting instruction) */
+    p->sig_saved[17] = f[20];                           /* user RSP */
+
+    /* Build the handler's ring-3 stack (128 B slack, 16-align, push trampoline so
+     * RSP%16==8 at entry). copy_to_user translates through user_cr3, which the
+     * exception path doesn't set — point it at the faulting process's pd first (its
+     * pages are identity-mapped, so the write lands correctly). */
+    uint64_t sp = f[20];
+    sp -= 128; sp &= ~15ULL; sp -= 8;
+    uint64_t tramp = p->sig_trampoline;
+    user_cr3 = (uint64_t)p->page_directory;
+    if (!tramp || copy_to_user(sp, &tramp, 8) != 0) return 0;   /* can't deliver -> terminate */
+
+    f[9]  = (uint64_t)sig;                              /* RDI = signo (SysV arg1) */
+    f[17] = disp;                                       /* RIP = handler entry */
+    f[20] = sp;                                         /* user RSP = adjusted stack */
+    p->sig_active |= (1u << sig);
+    p->sig_mask   |= (1u << sig);                       /* block this signal in its handler */
+    return 1;
+}
+
 /* SYS_SIGRETURN: the handler returned through the trampoline. Restore the context
  * saved by signal_dispatch into THIS syscall's frame + user_rsp and unblock the
  * handled signal, so the syscall return path iretq's back to where we interrupted. */

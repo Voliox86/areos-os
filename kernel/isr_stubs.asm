@@ -139,7 +139,8 @@ isr_common:
     mov rsi, [rsp + 136]     ; faulting RIP
     mov rdx, [rsp + 128]     ; error code
     mov rcx, [rsp + 144]     ; CS (ring is CS & 3)
-    call isr_handler
+    mov r8, rsp              ; 5th arg: exception frame base (GPRs..int/err/RIP/CS/RFLAGS/RSP/SS)
+    call isr_handler         ; may rewrite the frame to divert a ring-3 fault into a signal handler
     mov cr3, r15             ; restore the faulting address space before returning
     RESTORE_REGS
     add rsp, 16               ; pop error code + int number

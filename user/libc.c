@@ -24,6 +24,47 @@ int memcmp(const void* s1, const void* s2, size_t n) {
     return 0;
 }
 
+/* =========== setjmp / longjmp =========== */
+/* Naked so no prologue disturbs the RSP/RIP we capture. jmp_buf slots (8 bytes each):
+ * [0]=rbx [1]=rbp [2]=r12 [3]=r13 [4]=r14 [5]=r15 [6]=caller RSP [7]=return RIP.
+ * buf is in %rdi (SysV arg1); longjmp's val is in %rsi (arg2). */
+__attribute__((naked)) int setjmp(jmp_buf buf) {
+    (void)buf;
+    __asm__ volatile(
+        "movq %rbx,  0(%rdi)\n\t"
+        "movq %rbp,  8(%rdi)\n\t"
+        "movq %r12, 16(%rdi)\n\t"
+        "movq %r13, 24(%rdi)\n\t"
+        "movq %r14, 32(%rdi)\n\t"
+        "movq %r15, 40(%rdi)\n\t"
+        "leaq 8(%rsp), %rax\n\t"      /* caller's RSP (past our return address) */
+        "movq %rax, 48(%rdi)\n\t"
+        "movq (%rsp), %rax\n\t"       /* our return address = where setjmp resumes */
+        "movq %rax, 56(%rdi)\n\t"
+        "xorl %eax, %eax\n\t"         /* first return: 0 */
+        "ret\n\t"
+    );
+}
+
+__attribute__((naked, noreturn)) void longjmp(jmp_buf buf, int val) {
+    (void)buf; (void)val;
+    __asm__ volatile(
+        "movq  0(%rdi), %rbx\n\t"
+        "movq  8(%rdi), %rbp\n\t"
+        "movq 16(%rdi), %r12\n\t"
+        "movq 24(%rdi), %r13\n\t"
+        "movq 32(%rdi), %r14\n\t"
+        "movq 40(%rdi), %r15\n\t"
+        "movq 48(%rdi), %rsp\n\t"     /* restore caller's stack */
+        "movl %esi, %eax\n\t"         /* setjmp returns val ... */
+        "testl %eax, %eax\n\t"
+        "jnz 1f\n\t"
+        "movl $1, %eax\n\t"           /* ... but never 0 (longjmp(buf,0) -> 1) */
+        "1:\n\t"
+        "jmpq *56(%rdi)\n\t"          /* resume at the saved setjmp return point */
+    );
+}
+
 /* Simple free-list allocator */
 typedef struct heap_block {
     size_t size;

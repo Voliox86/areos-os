@@ -38,4 +38,11 @@ int abs(int x);
 extern char** environ;
 char* getenv(const char* name);
 
+/* Non-local jump (fault recovery from a signal handler). setjmp saves the caller's
+ * callee-saved regs + RSP + RIP and returns 0; longjmp restores them and makes the
+ * matching setjmp return `val` (or 1 if val==0). jmp_buf = {rbx,rbp,r12..r15,rsp,rip}. */
+typedef unsigned long jmp_buf[8];
+int  setjmp(jmp_buf buf);
+void longjmp(jmp_buf buf, int val) __attribute__((noreturn));
+
 #endif

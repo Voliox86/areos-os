@@ -40,7 +40,7 @@ static int exception_signal(uint64_t int_no) {
     }
 }
 
-void isr_handler(uint64_t int_no, uint64_t rip, uint64_t error, uint64_t cs) {
+void isr_handler(uint64_t int_no, uint64_t rip, uint64_t error, uint64_t cs, uint64_t* frame) {
     // Page fault: give demand-paging / copy-on-write a chance to resolve it
     // (allocate the page / make a private copy) and retry the instruction.
     if (int_no == 14 && vm_handle_fault(read_cr2(), error))
@@ -57,6 +57,15 @@ void isr_handler(uint64_t int_no, uint64_t rip, uint64_t error, uint64_t cs) {
         if ((cs & 3) == 3) {
             int signo = exception_signal(int_no);
             process_t* cur = get_current_process();
+
+            // Catchable faults: if the process installed a handler for this signal
+            // (signal(SIGSEGV/SIGFPE/SIGILL, ...)), divert it into the handler instead
+            // of terminating — isr_handler returns, isr_common iretq's into the handler
+            // on the process's own CR3. The handler must exit()/longjmp() out, since the
+            // saved context is the faulting instruction (returning re-executes it).
+            if (cur && signal_deliver_fault(frame, signo))
+                return;
+
             printf("\n[fault] pid %u (%s): %s (#%lu) at RIP 0x%lx err 0x%lx",
                    cur ? (unsigned)cur->pid : 0, cur ? cur->comm : "?",
                    exception_names[int_no], int_no, rip, error);

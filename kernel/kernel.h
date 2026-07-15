@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.46"
+#define KERNEL_VERSION "5.8.49"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -692,7 +692,7 @@ void idt_set_gate_ist(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags, u
 #define IST_STACK_SIZE 8192
 #define IST_DOUBLE_FAULT 1
 void init_isr(void);
-void isr_handler(uint64_t int_no, uint64_t rip, uint64_t error, uint64_t cs);
+void isr_handler(uint64_t int_no, uint64_t rip, uint64_t error, uint64_t cs, uint64_t* frame);
 void init_irq(void);
 void irq_handler(uint64_t irq_no);
 void irq_install_handler(int irq, void (*handler)(void*));
@@ -743,6 +743,7 @@ int do_waitpid(int pid, int* out_code, int options); // SYS_WAITPID: reap a chil
 // Signals (signal.c). signal_dispatch is called from syscall_entry (isr_stubs.asm)
 // on the return path, with the saved user frame; it delivers one pending signal.
 void signal_dispatch(uint64_t* frame);
+int  signal_deliver_fault(uint64_t* frame, int sig); // catchable CPU-exception signal (isr.c) -> handler; 1 if delivered
 int  do_kill(int pid, int sig);                      // SYS_KILL: post `sig` to `pid`
 long do_signal(int sig, uint64_t handler, uint64_t trampoline); // SYS_SIGNAL: install disposition
 void do_sigreturn(void);                             // SYS_SIGRETURN: restore pre-handler context
