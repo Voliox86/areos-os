@@ -859,6 +859,7 @@ int printf(const char* fmt, ...);
 int vprintf(const char* fmt, va_list args);
 void clear_screen(void);
 char* itoa(int value, char* str, int base);
+char* lltoa(long long value, char* str, int base);
 uint8_t vga_entry_color(enum vga_color fg, enum vga_color bg);
 void set_terminal_color(uint8_t color);
 uint8_t get_terminal_color(void);

@@ -19,7 +19,7 @@ static const uint8_t pos_to_btn[16] = {
 };
 
 static void update_display(calc_win_t* calc) {
-    snprintf(calc->display, sizeof(calc->display), "%ld", (long)calc->current_val);
+    snprintf(calc->display, sizeof(calc->display), "%ld", (long long)calc->current_val);
 }
 
 calc_win_t* calc_create_ctx(void) {
@@ -52,59 +52,51 @@ static void calc_do_op(calc_win_t* calc) {
 }
 
 static void calc_handle_btn(calc_win_t* calc, int btn_id) {
-    if (btn_id >= 0 && btn_id <= 9) {
-        if (calc->new_input) {
-            calc->current_val = btn_id;
-            calc->new_input = 0;
-        } else {
-            calc->current_val = calc->current_val * 10 + btn_id;
-        }
-        update_display(calc);
-        return;
+    switch (btn_id) {
+        case 0 ... 9:
+            if (calc->new_input) {
+                calc->current_val = btn_id;
+                calc->new_input = 0;
+            } else {
+                calc->current_val = calc->current_val * 10 + btn_id;
+            }
+            break;
+        case 10:
+            calc_do_op(calc);
+            calc->op = 0;
+            calc->new_input = 1;
+            break;
+        case 11:
+            calc_do_op(calc);
+            calc->op = '+';
+            calc->new_input = 1;
+            break;
+        case 12:
+            calc_do_op(calc);
+            calc->op = '-';
+            calc->new_input = 1;
+            break;
+        case 13:
+            calc_do_op(calc);
+            calc->op = '*';
+            calc->new_input = 1;
+            break;
+        case 14:
+            calc_do_op(calc);
+            calc->op = '/';
+            calc->new_input = 1;
+            break;
+        case 15:
+            calc->current_val = 0;
+            calc->mem_val = 0;
+            calc->op = 0;
+            calc->new_input = 1;
+            break;
+        default:
+            return;
     }
-    if (btn_id == 10) {
-        calc_do_op(calc);
-        calc->op = 0;
-        calc->new_input = 1;
-        update_display(calc);
-        return;
-    }
-    if (btn_id == 11) {
-        calc_do_op(calc);
-        calc->op = '+';
-        calc->new_input = 1;
-        update_display(calc);
-        return;
-    }
-    if (btn_id == 12) {
-        calc_do_op(calc);
-        calc->op = '-';
-        calc->new_input = 1;
-        update_display(calc);
-        return;
-    }
-    if (btn_id == 13) {
-        calc_do_op(calc);
-        calc->op = '*';
-        calc->new_input = 1;
-        update_display(calc);
-        return;
-    }
-    if (btn_id == 14) {
-        calc_do_op(calc);
-        calc->op = '/';
-        calc->new_input = 1;
-        update_display(calc);
-        return;
-    }
-    if (btn_id == 15) {
-        calc->current_val = 0;
-        calc->mem_val = 0;
-        calc->op = 0;
-        calc->new_input = 1;
-        update_display(calc);
-        return;
-    }
+    update_display(calc);
+    return;
 }
 
 void calc_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {

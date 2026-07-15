@@ -2327,11 +2327,12 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list args) {
                 while (*s && written < (int)size - 1) { *p++ = *s++; written++; }
                 fmt++;
             } else if (*fmt == 'd' || *fmt == 'i') {
-                long val = long_flag ? va_arg(args, long) : (long)va_arg(args, int);
+                long long val = long_flag ? va_arg(args, long long ) : (long long)va_arg(args, int);
                 char tmp[24];
                 int neg = 0;
                 if (val < 0) { neg = 1; val = -val; }
-                itoa((int)val, tmp, 10);
+                if (long_flag) { lltoa(val, tmp, 10); }
+                else { itoa((int)val, tmp, 10); }
                 if (neg) { if (written < (int)size - 1) { *p++ = '-'; written++; } }
                 char *t = tmp;
                 int tlen = 0; while (t[tlen]) tlen++;

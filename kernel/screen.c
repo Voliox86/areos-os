@@ -307,6 +307,37 @@ char* itoa(int value, char* str, int base) {
     return rc;
 }
 
+char* lltoa(long long value, char* str, int base) {
+    char* rc;
+    char* ptr;
+    char* low;
+    unsigned long long uvalue;
+    if (base < 2 || base > 36) {
+        if (str) *str = '\0';
+        return str;
+    }
+    if (!str) return "";
+    rc = ptr = str;
+    if (value < 0 && base == 10) {
+        *ptr++ = '-';
+        uvalue = (unsigned long long)(-value);
+    } else {
+        uvalue = (unsigned long long)value;
+    }
+    low = ptr;
+    do {
+        *ptr++ = "0123456789abcdefghijklmnopqrstuvwxyz"[uvalue % base];
+        uvalue /= base;
+    } while (uvalue);
+    *ptr-- = '\0';
+    while (low < ptr) {
+        char tmp = *low;
+        *low++ = *ptr;
+        *ptr-- = tmp;
+    }
+    return rc;
+}
+
 void set_terminal_color(uint8_t color) {
     terminal_color = color;
 }
