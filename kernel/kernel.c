@@ -70,6 +70,8 @@ static void cmd_mkdir(int argc, char** argv);
 static void cmd_rm(int argc, char** argv);
 static void cmd_cp(int argc, char** argv);
 static void cmd_mv(int argc, char** argv);
+static void cmd_useradd(int argc, char** argv);
+static void cmd_users(int argc, char** argv);
 static void cmd_ifconfig(int argc, char** argv);
 static void cmd_ping(int argc, char** argv);
 static void cmd_kill(int argc, char** argv);
@@ -139,6 +141,8 @@ static const command_t commands[] = {
     {"rm",        cmd_rm,        "Remove file or directory: rm <path>", false},
     {"cp",        cmd_cp,        "Copy file: cp <src> <dst>", false},
     {"mv",        cmd_mv,        "Move/rename file: mv <src> <dst>", false},
+    {"useradd",   cmd_useradd,   "Add a user account: useradd <user> <pass>", false},
+    {"users",     cmd_users,     "List user accounts", false},
     {"ifconfig",  cmd_ifconfig,  "Show network interfaces", false},
     {"dns",       cmd_dns,       "DNS resolve: dns <hostname>", false},
     {"ping",      cmd_ping,      "Ping a host: ping <ip|hostname>", false},
@@ -1498,6 +1502,18 @@ static void cmd_cp(int argc, char** argv) {
 static void cmd_mv(int argc, char** argv) {
     if (argc < 3) { printf("Usage: mv <src> <dst>\n"); return; }
     vfs_rename(argv[1], argv[2]);
+}
+
+static void cmd_useradd(int argc, char** argv) {
+    if (argc < 3) { printf("Usage: useradd <username> <password>\n"); return; }
+    // Persisted to /etc/passwd on the ext2 disk (PBKDF2-HMAC-SHA256), so the
+    // account survives a reboot; falls back to an in-memory user with no disk.
+    auth_add_user(argv[1], argv[2]);
+}
+
+static void cmd_users(int argc, char** argv) {
+    (void)argc; (void)argv;
+    auth_list_users();
 }
 
 static void cmd_ifconfig(int argc, char** argv) {

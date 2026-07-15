@@ -160,6 +160,10 @@ static int write_passwd(const char* buf, uint32_t len) {
     uint32_t cplen = len < sizeof(tmp) ? len : sizeof(tmp) - 1;
     memcpy(tmp, buf, cplen);
     xor_buf(tmp, cplen);
+    // A freshly-mkfs'd ext2 disk has only lost+found, so ensure the parent dir
+    // exists before creating the file. ext2_mkdir is a harmless no-op (returns
+    // -1) if /etc already exists, and ext2_create_file no-ops if the file does.
+    ext2_mkdir("/etc");
     ext2_create_file(AUTH_PATH);
     return ext2_write_file(AUTH_PATH, tmp, cplen);
 }
@@ -168,33 +172,42 @@ static int write_passwd(const char* buf, uint32_t len) {
 /*  Public API                                                        */
 /* ------------------------------------------------------------------ */
 int auth_setup(void) {
-    if (ext2_fs.block_size == 0 || !ext2_resolve(AUTH_PATH)) {
+    // No persistent disk at all → in-memory fallback users (do NOT persist).
+    if (ext2_fs.block_size == 0) {
         add_fallback("nyx", "nyx");
         add_fallback("root", "root");
         add_fallback("admin", "admin");
-        printf("[AUTH] EXT2 not available — %d fallback user(s) loaded (PBKDF2-HMAC-SHA256, %u iterations)\n",
+        printf("[AUTH] No EXT2 disk — %d in-memory fallback user(s) (PBKDF2-HMAC-SHA256, %u iterations)\n",
                fb_count, PBKDF2_ITERATIONS);
         return 0;
     }
 
-    if (!passwd_exists()) {
-        char salt_hex[SALT_HEX_LEN + 1];
-        gen_salt_hex("nyx", salt_hex);
-        uint8_t hash[SHA256_DIGEST_SIZE];
-        hash_password("nyx", salt_hex, PBKDF2_ITERATIONS, hash);
-        char entry[128 + SHA256_DIGEST_SIZE * 2];
-        format_entry(entry, sizeof(entry), "nyx", salt_hex, PBKDF2_ITERATIONS, hash);
-
-        if (write_passwd(entry, strlen(entry)) > 0) {
-            printf("[AUTH] Created default user 'nyx' (PBKDF2-HMAC-SHA256, %u iterations, XOR-encrypted)\n",
-                   PBKDF2_ITERATIONS);
-            return 0;
-        }
-    } else {
-        printf("[AUTH] User file found at %s\n", AUTH_PATH);
+    // Disk present with an existing user file → use it (persistent accounts).
+    if (passwd_exists()) {
+        printf("[AUTH] Persistent user file found at %s\n", AUTH_PATH);
         return 0;
     }
-    return -1;
+
+    // Disk present but no user file yet → create the default 'nyx' account and
+    // write it to disk, so this account (and any added later with `useradd`)
+    // survive reboots. This path used to be unreachable — the old guard treated
+    // "no passwd file" the same as "no disk" and fell back without persisting.
+    char salt_hex[SALT_HEX_LEN + 1];
+    gen_salt_hex("nyx", salt_hex);
+    uint8_t hash[SHA256_DIGEST_SIZE];
+    hash_password("nyx", salt_hex, PBKDF2_ITERATIONS, hash);
+    char entry[128 + SHA256_DIGEST_SIZE * 2];
+    format_entry(entry, sizeof(entry), "nyx", salt_hex, PBKDF2_ITERATIONS, hash);
+    if (write_passwd(entry, strlen(entry)) > 0) {
+        printf("[AUTH] Created default user 'nyx' at %s (persistent, PBKDF2-HMAC-SHA256, %u iterations, XOR-encrypted)\n",
+               AUTH_PATH, PBKDF2_ITERATIONS);
+        return 0;
+    }
+
+    // Disk write failed → still allow login via an in-memory fallback account.
+    add_fallback("nyx", "nyx");
+    printf("[AUTH] Could not write %s — using in-memory fallback user 'nyx'\n", AUTH_PATH);
+    return 0;
 }
 
 int auth_verify(const char* username, const char* password) {
@@ -254,6 +267,17 @@ void auth_add_user(const char* username, const char* password) {
     if (exlen < 0) exlen = 0;
     existing[exlen] = '\0';
 
+    // Reject a duplicate username (a name at the start of a line, up to its ':').
+    int ulen = strlen(username);
+    for (int i = 0; i + ulen <= exlen; i++) {
+        if ((i == 0 || existing[i - 1] == '\n') &&
+            strncmp(existing + i, username, ulen) == 0 &&
+            existing[i + ulen] == ':') {
+            printf("[AUTH] User '%s' already exists\n", username);
+            return;
+        }
+    }
+
     char salt_hex[SALT_HEX_LEN + 1];
     gen_salt_hex(username, salt_hex);
     uint8_t hash[SHA256_DIGEST_SIZE];
@@ -265,6 +289,35 @@ void auth_add_user(const char* username, const char* password) {
     char combined[4096];
     snprintf(combined, sizeof(combined), "%s%s", existing, new_entry);
     if (write_passwd(combined, strlen(combined)) > 0)
-        printf("[AUTH] Added user '%s' (PBKDF2-HMAC-SHA256, %u iterations)\n",
+        printf("[AUTH] Added user '%s' (persistent, PBKDF2-HMAC-SHA256, %u iterations)\n",
                username, PBKDF2_ITERATIONS);
+    else
+        printf("[AUTH] Failed to write %s — user '%s' not saved\n", AUTH_PATH, username);
+}
+
+// Print the account names, one per line: from the persistent /etc/passwd if a
+// disk is present, else from the in-memory fallback table.
+void auth_list_users(void) {
+    if (ext2_fs.block_size == 0 || !passwd_exists()) {
+        for (int i = 0; i < fb_count; i++) printf("%s\n", fb_users[i].username);
+        return;
+    }
+    char buf[2048];
+    int len = read_passwd(buf, sizeof(buf) - 1);
+    if (len < 0) return;
+    buf[len] = '\0';
+    int start = 0;
+    for (int i = 0; i <= len; i++) {
+        if (buf[i] == '\n' || buf[i] == '\0') {
+            if (i > start) {
+                char name[AUTH_MAX_USER];
+                int k = 0;
+                for (int j = start; j < i && buf[j] != ':' && k < AUTH_MAX_USER - 1; j++)
+                    name[k++] = buf[j];
+                name[k] = '\0';
+                if (name[0]) printf("%s\n", name);
+            }
+            start = i + 1;
+        }
+    }
 }
