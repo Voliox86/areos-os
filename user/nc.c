@@ -1,9 +1,10 @@
 #include "libc.h"
 
-/* nc — a minimal netcat over NyxOS sockets (v5.8.56). Bridges stdin/stdout to a
- * TCP or UDP socket. Half-duplex (send a stdin chunk, print one response) because
- * NyxOS has blocking sockets and no select(); that's fine for request/response
- * protocols like the built-in echo service or HTTP/1.0. Modes:
+/* nc — a minimal netcat over NyxOS sockets. Bridges stdin/stdout to a TCP or UDP
+ * socket. The TCP client/server are now FULL-DUPLEX (v5.8.61): the bridge poll()s
+ * stdin and the socket together, so it can send and receive at the same time
+ * (interactive chat, or a server pushing unprompted data) — not just request/
+ * response. Modes:
  *   nc <ip> <port>       TCP client   (e.g.  echo hi | nc 127.0.0.1 7)
  *   nc -u <ip> <port>    UDP client   (e.g.  echo hi | nc -u 127.0.0.1 7)
  *   nc -l <port>         TCP server   (accept one connection, then bridge)
@@ -18,24 +19,27 @@ static unsigned int parse_ip(const char* s) {
     return ip;                        // network order: first octet in the low byte
 }
 
-/* Each stdin chunk is sent, then one response is read and printed, until stdin
- * EOF or the peer closes. `recv_first` reads before writing (the accept()ed
- * server side, which speaks second). */
-static void bridge(int sock, int recv_first) {
+/* Full-duplex bridge: poll() stdin (fd 0) and the socket together, forwarding
+ * each direction as data arrives — so you can send and receive at the same time
+ * (a chat, or a server pushing unprompted data). Once stdin hits EOF we keep
+ * draining the socket for a short grace period, then exit (the loopback echo
+ * never closes; a real peer would, ending the socket read with 0). */
+static void bridge(int sock) {
+    struct pollfd pfd[2] = { { 0, POLLIN, 0 }, { sock, POLLIN, 0 } };
     char buf[1024];
+    int stdin_eof = 0;
     for (;;) {
-        if (recv_first) {
-            int m = read(sock, buf, sizeof(buf));
-            if (m <= 0) break;
-            write(1, buf, m);
+        int n = poll(pfd, 2, stdin_eof ? 500 : -1);
+        if (n <= 0) break;                        // timeout after stdin EOF (or error) -> done
+        if (!stdin_eof && (pfd[0].revents & POLLIN)) {
+            int r = read(0, buf, sizeof(buf));
+            if (r > 0) { if (write(sock, buf, r) != r) break; }
+            else { stdin_eof = 1; pfd[0].fd = -1; }   // stdin closed: stop watching it
         }
-        int n = read(0, buf, sizeof(buf));
-        if (n <= 0) break;                       // stdin EOF
-        if (write(sock, buf, n) != n) break;
-        if (!recv_first) {
-            int m = read(sock, buf, sizeof(buf));
-            if (m > 0) write(1, buf, m);
-            else if (m == 0) break;               // peer closed
+        if (pfd[1].revents & POLLIN) {
+            int r = read(sock, buf, sizeof(buf));
+            if (r > 0) write(1, buf, r);
+            else break;                           // peer closed
         }
     }
 }
@@ -51,7 +55,7 @@ int main(int argc, char** argv) {
         printf("nc: listening on port %d\n", port);
         int c = accept(lfd);
         if (c < 0) { printf("nc: accept failed\n"); return 1; }
-        bridge(c, 1);
+        bridge(c);
         close(c); close(lfd);
         return 0;
     }
@@ -89,7 +93,7 @@ int main(int argc, char** argv) {
         close(fd);
         return 1;
     }
-    bridge(fd, 0);
+    bridge(fd);
     close(fd);
     return 0;
 }
