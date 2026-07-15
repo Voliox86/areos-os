@@ -45,4 +45,14 @@ typedef unsigned long jmp_buf[8];
 int  setjmp(jmp_buf buf);
 void longjmp(jmp_buf buf, int val) __attribute__((noreturn));
 
+/* Signal-mask-saving non-local jump — multi-fault recovery. sigsetjmp(buf, 1)
+ * saves the caller's context AND (savesigs != 0) the current signal mask; a
+ * later siglongjmp back RESTORES that mask, unblocking the handler's signal so
+ * the SAME fault can be caught again. (A plain setjmp/longjmp out of a handler
+ * leaves the signal blocked, so the next fault would kill the process.) */
+typedef unsigned long sigjmp_buf[10];   /* [0..7] jmp_buf regs, [8] saved mask, [9] savesigs */
+void __sigsetjmp_save(sigjmp_buf buf, int savesigs);   /* helper; use sigsetjmp() */
+#define sigsetjmp(buf, savesigs) (__sigsetjmp_save((buf), (savesigs)), setjmp((unsigned long*)(buf)))
+void siglongjmp(sigjmp_buf buf, int val) __attribute__((noreturn));
+
 #endif

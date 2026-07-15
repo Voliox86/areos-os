@@ -269,6 +269,28 @@ void do_sigreturn(void) {
     p->sig_active = 0;
 }
 
+/* SYS_SIGPROCMASK: read and/or change the blocked-signal mask. sigsetjmp/
+ * siglongjmp use this to save and restore the mask across a non-local jump out
+ * of a handler: on restore, a signal being UNBLOCKED also has its sig_active bit
+ * cleared (we're abandoning that handler's stack frame), so the SAME signal can
+ * be caught again — that's what makes repeated fault recovery work. `how` is
+ * SIG_BLOCK(0) / SIG_UNBLOCK(1) / SIG_SETMASK(2); oldset_ptr (if non-zero)
+ * receives the previous mask. Returns 0, or -1. */
+long do_sigprocmask(int how, uint64_t set, uint64_t oldset_ptr) {
+    process_t* p = get_current_process();
+    if (!p) return -1;
+    uint32_t old = p->sig_mask;
+    if (oldset_ptr) { uint64_t o = old; if (copy_to_user(oldset_ptr, &o, 8) != 0) return -1; }
+    uint32_t nm = old;
+    if (how == 0)      nm = old | (uint32_t)set;      /* SIG_BLOCK   */
+    else if (how == 1) nm = old & ~(uint32_t)set;     /* SIG_UNBLOCK */
+    else if (how == 2) nm = (uint32_t)set;            /* SIG_SETMASK */
+    nm &= ~((1u << SIGKILL) | (1u << SIGSTOP));        /* never block the uncatchable ones */
+    p->sig_mask = nm;
+    p->sig_active &= nm;   /* a signal we just unblocked is no longer "in its handler" */
+    return 0;
+}
+
 /* Keyboard Ctrl-C -> post SIGINT to the foreground process. */
 void signal_send_foreground(int sig) {
     if (!g_foreground_pid) return;

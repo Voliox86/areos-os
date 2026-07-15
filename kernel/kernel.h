@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.56"
+#define KERNEL_VERSION "5.8.57"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -114,6 +114,7 @@ typedef __builtin_va_list va_list;
 #define SYS_ACCEPT   38
 #define SYS_SENDTO   39
 #define SYS_RECVFROM 40
+#define SYS_SIGPROCMASK 41
 
 /* SYS_TTYMODE modes. Canonical: read(0) returns a full line, echoed + backspace-
  * edited by the kernel. Raw: read(0) returns bytes as they arrive, NO echo, and
@@ -784,6 +785,7 @@ int  signal_deliver_fault(uint64_t* frame, int sig); // catchable CPU-exception 
 int  do_kill(int pid, int sig);                      // SYS_KILL: post `sig` to `pid`
 long do_signal(int sig, uint64_t handler, uint64_t trampoline); // SYS_SIGNAL: install disposition
 void do_sigreturn(void);                             // SYS_SIGRETURN: restore pre-handler context
+long do_sigprocmask(int how, uint64_t set, uint64_t oldset_ptr); // SYS_SIGPROCMASK: read/change block mask
 void signal_raise(process_t* p, int sig);            // post a signal to a process (+ wake if blocked)
 int  signal_pending(process_t* p);                   // 1 if a deliverable (unblocked) signal waits
 int  signal_check_stop(process_t* p);                // park on a pending stop signal; 1 if it did (restart)

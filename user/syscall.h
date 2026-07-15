@@ -42,6 +42,7 @@
 #define SYS_ACCEPT   38
 #define SYS_SENDTO   39
 #define SYS_RECVFROM 40
+#define SYS_SIGPROCMASK 41
 
 #define TTY_CANON   0   /* kernel line discipline: echoed, backspace-edited lines */
 #define TTY_RAW     1   /* byte-at-a-time, no echo, arrows as ESC [ A/B/C/D */
@@ -251,6 +252,17 @@ static inline long kill(int pid, int sig) {
 #define SIG_ERR ((sighandler_t)-1)
 static inline sighandler_t signal(int sig, sighandler_t handler) {
     return (sighandler_t)syscall3(SYS_SIGNAL, sig, (long)handler, (long)__sigreturn);
+}
+
+/* sigprocmask(how, set, oldset): read and/or change this process's blocked-signal
+ * mask (a 32-bit set, bit 1<<signo). how = SIG_BLOCK / SIG_UNBLOCK / SIG_SETMASK;
+ * oldset (may be NULL) receives the previous mask. The primitive behind
+ * sigsetjmp/siglongjmp (libc.h) restoring the mask on a non-local jump. */
+#define SIG_BLOCK    0
+#define SIG_UNBLOCK  1
+#define SIG_SETMASK  2
+static inline long sigprocmask(int how, unsigned long set, unsigned long* oldset) {
+    return syscall3(SYS_SIGPROCMASK, how, (long)set, (long)oldset);
 }
 
 /* raise(sig): send `sig` to the calling process. */

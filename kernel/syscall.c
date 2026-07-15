@@ -867,6 +867,11 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             uint64_t* f = (uint64_t*)syscall_frame_ptr;
             return f ? f[14] : 0;
         }
+        case SYS_SIGPROCMASK:
+            // sigprocmask(how, set, oldset): read/change the blocked-signal mask.
+            // The mechanism behind sigsetjmp/siglongjmp restoring the mask on a
+            // non-local jump out of a handler (so repeated faults stay catchable).
+            return (uint64_t)do_sigprocmask((int)a1, a2, a3);
         case SYS_MMAP: {
             // mmap(addr, length, prot, flags, fd, offset). Anonymous (MAP_ANONYMOUS)
             // demand-faults to zero; otherwise file-backed — resolve fd (a5) to a VFS

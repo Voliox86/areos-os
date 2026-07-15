@@ -65,6 +65,28 @@ __attribute__((naked, noreturn)) void longjmp(jmp_buf buf, int val) {
     );
 }
 
+/* =========== sigsetjmp / siglongjmp =========== */
+/* sigsetjmp is a macro (libc.h): __sigsetjmp_save stashes the signal mask, then
+ * setjmp saves the register context in the CALLER's frame (so the jump lands back
+ * at the sigsetjmp site). siglongjmp restores that mask before the register
+ * longjmp — which unblocks the handler's signal and clears its "in handler" state
+ * kernel-side — so the SAME fault can be caught again. */
+void __sigsetjmp_save(sigjmp_buf buf, int savesigs) {
+    buf[9] = (unsigned long)savesigs;
+    if (savesigs) {
+        unsigned long old = 0;
+        sigprocmask(SIG_BLOCK, 0, &old);      /* read the current mask without changing it */
+        buf[8] = old;
+    } else {
+        buf[8] = 0;
+    }
+}
+
+void siglongjmp(sigjmp_buf buf, int val) {
+    if (buf[9]) sigprocmask(SIG_SETMASK, buf[8], 0);   /* restore mask -> unblock + clear sig_active */
+    longjmp((unsigned long*)buf, val);                  /* restore regs + jump (never returns) */
+}
+
 /* Simple free-list allocator */
 typedef struct heap_block {
     size_t size;
