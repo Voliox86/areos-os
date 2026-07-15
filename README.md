@@ -6,10 +6,10 @@
   <strong>Custom x86_64 kernel · C and Assembly · General-purpose OS</strong>
   <br/><br/>
   <!-- Badges -->
-  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.8.58">
-    <img src="https://img.shields.io/badge/release-v5.8.58-00ff9d?style=flat" />
+  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.8.59">
+    <img src="https://img.shields.io/badge/release-v5.8.59-00ff9d?style=flat" />
   </a>
-  <img src="https://img.shields.io/badge/status-v5.8.58-00ff9d?style=flat" />
+  <img src="https://img.shields.io/badge/status-v5.8.59-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/TCP-yes-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/GUI-window%20compositor-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/%F0%9F%8C%99%20NyxC-runtime-8b5cf6?style=flat" />
@@ -38,7 +38,7 @@ nyx:root$ nyxfetch
     .:oo.. :o.              -----------------
   :oo:.oo.o:                OS:         NyxOS x86_64
  .#o:.   :.                 Host:       QEMU Standard PC
- #:::....:                  Kernel:     NyxOS 5.8.58 (GUI Suite)
+ #:::....:                  Kernel:     NyxOS 5.8.59 (GUI Suite)
 o#::. . o.                  Uptime:     00:00:11
 o#.o:   :o                  Resolution: 1024 x 768
 o###o   o#                  CPU:        QEMU Virtual CPU version 2.5+ (1)
@@ -59,7 +59,7 @@ o###o   o#                  CPU:        QEMU Virtual CPU version 2.5+ (1)
 The project implements core kernel primitives, a custom network stack (RTL8139 NIC + ARP/IP/UDP/ICMP/DHCP + TCP), a window compositor GUI, and a Sound Blaster 16 audio driver — all written in C and x86_64 Assembly with no external libraries.
 
 <div align="center">
-  <img src="gui.png?v=3" alt="NyxOS Desktop v5.8.58" width="700" />
+  <img src="gui.png?v=3" alt="NyxOS Desktop v5.8.59" width="700" />
   <p><em>NyxOS Desktop — app icons, purple wallpaper, windows and a taskbar</em></p>
 </div>
 
@@ -158,6 +158,7 @@ Available commands:
   history        - Show command history
   ps             - List processes
   mem            - Show memory usage
+  df             - Disk usage of the persistent /mnt (ext2)
   ifconfig       - Show network interfaces
   dhcp           - Request IP via DHCP
   ping           - Ping a host
@@ -175,7 +176,7 @@ nyx:root$ ls /
 bin/   dev/   etc/   home/  mnt/   root/  tmp/   usr/   var/
 
 nyx:root$ uname
-NyxOS 5.8.58 (GUI Suite) x86_64
+NyxOS 5.8.59 (GUI Suite) x86_64
 
 nyx:root$ mem
 Physical memory: 256 MB total, 252 MB free

@@ -109,6 +109,7 @@ static void cmd_tcpserve(int argc, char** argv);
 static void cmd_httpget(int argc, char** argv);
 static void cmd_setip(int argc, char** argv);
 static void cmd_mount(int argc, char** argv);
+static void cmd_df(int argc, char** argv);
 
 static const command_t commands[] = {
     {"help",      cmd_help,      "Show this help", false},
@@ -179,6 +180,7 @@ static const command_t commands[] = {
     {"mount",     cmd_mount,     "Mount EXT2: mount [drive] [part_lba]", false},
     {"ext2ls",    cmd_mount,     "Alias for mount", false},
     {"ext2cat",   cmd_mount,     "Alias for mount", false},
+    {"df",        cmd_df,        "Show disk usage of the mounted filesystem", false},
     {NULL, NULL, NULL, false}
 };
 
@@ -977,6 +979,27 @@ static void cmd_mount(int argc, char** argv) {
         return;
     }
     printf("EXT2 available at /mnt. Use 'ls /mnt', 'cat /mnt/...' etc.\n");
+}
+
+// df — disk usage of the mounted persistent (ext2) filesystem, from its superblock.
+static void cmd_df(int argc, char** argv) {
+    (void)argc; (void)argv;
+    if (ext2_fs.sb.magic != EXT2_SUPER_MAGIC) {
+        printf("df: no persistent filesystem mounted.\n");
+        printf("    Attach an ext2 disk (`make -C kernel disk`, then qemu ... -hda ext2-test.img).\n");
+        return;
+    }
+    uint32_t bs_kb = ext2_fs.block_size / 1024;
+    if (bs_kb == 0) bs_kb = 1;
+    uint32_t total = ext2_fs.sb.total_blocks;
+    uint32_t freeb = ext2_fs.sb.free_blocks;
+    uint32_t used  = (total >= freeb) ? total - freeb : 0;
+    uint32_t pct   = total ? (used * 100u) / total : 0;
+    printf("Filesystem   1K-blocks      Used  Available  Use%%  Mounted on\n");
+    printf("/dev/hda     %9u  %8u  %9u  %3u%%  /mnt\n",
+           total * bs_kb, used * bs_kb, freeb * bs_kb, pct);
+    printf("Inodes: %u total, %u free\n",
+           ext2_fs.sb.total_inodes, ext2_fs.sb.free_inodes);
 }
 
 static void cmd_tcptest(int argc, char** argv) {
@@ -1890,15 +1913,13 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
         printf("[EXT2] Found: %u blocks, %u inodes, block size %u\n",
                ext2_fs.sb.total_blocks, ext2_fs.sb.total_inodes, ext2_fs.block_size);
         if (vfs_mount("/mnt", FS_TYPE_EXT2, NULL) == 0) {
-            printf("[EXT2] Mounted at /mnt. Use 'ls /mnt' etc.\n");
-            const char* test_data = "Hello from NyxOS EXT2 write!\n";
-            if (ext2_write_file("/os-test.txt", test_data, strlen(test_data)) > 0) {
-                char readbuf[64];
-                if (ext2_read_file("/os-test.txt", readbuf, sizeof(readbuf)-1) > 0) {
-                    readbuf[sizeof(readbuf)-1] = '\0';
-                    printf("[EXT2] Write test OK\n");
-                }
-            }
+            // Mount cleanly — do NOT scribble a test file onto the user's persistent
+            // disk on every boot (this used to write /mnt/os-test.txt each time). The
+            // write path (create/write/mkdir/unlink, flushed to disk by the VFS) is
+            // exercised by the coreutils; files under /mnt survive reboots. `df`
+            // reports free space.
+            printf("[EXT2] Mounted /mnt (writable, persistent) - %u KB free.\n",
+                   ext2_fs.sb.free_blocks * (ext2_fs.block_size / 1024));
         }
     } else {
         printf("[EXT2] No EXT2 filesystem found.\n");

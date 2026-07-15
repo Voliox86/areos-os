@@ -386,5 +386,16 @@ trampoline.bin: trampoline.asm
 trampoline.o: trampoline.bin
 	$(LD) -r -b binary -m elf_x86_64 -o $@ $<
 
+# Persistent storage: create a fresh empty ext2 disk for /mnt. Boot NyxOS with
+# `-hda ext2-test.img` and files written under /mnt survive reboots (it auto-mounts at
+# boot). Needs mkfs.ext2 (e2fsprogs); NyxOS's ext2 driver uses classic 1024-byte
+# blocks / 128-byte inodes. `make clean` never removes it (it's your data).
+disk: ../ext2-test.img
+../ext2-test.img:
+	dd if=/dev/zero of=$@ bs=1M count=16
+	mkfs.ext2 -q -b 1024 -I 128 -O ^resize_inode,^dir_index,^ext_attr $@
+	@echo "Created $@ (16 MB ext2). Boot: qemu-system-x86_64 -cdrom NyxOS.iso -hda ext2-test.img"
+.PHONY: disk
+
 clean:
 	rm -f *.o *.bin initramfs_data.h trampoline.bin $(USER_DIR)/*.o $(USER_DIR)/*.elf $(USER_DIR)/hello.o
