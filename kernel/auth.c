@@ -78,14 +78,18 @@ static void xor_buf(char* buf, uint32_t len) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Password file entry format:  user:salt_hex:iterations:hex_hash\n  */
+/*  Password file entry format:  user:salt_hex:iterations:hex_hash:avatar\n
+ *  The trailing avatar id (0..AVATAR_COUNT-1, a profile picture chosen at
+ *  sign-up) is a 5th field appended after the hash; parse_entry stops at the
+ *  hash and ignores it, so old 4-field entries still verify unchanged.        */
 /* ------------------------------------------------------------------ */
 static void format_entry(char* buf, uint32_t bufsz,
                          const char* user, const char* salt_hex,
-                         uint32_t iterations, const uint8_t hash[SHA256_DIGEST_SIZE]) {
+                         uint32_t iterations, const uint8_t hash[SHA256_DIGEST_SIZE],
+                         uint32_t avatar) {
     char hex[SHA256_DIGEST_SIZE * 2 + 1];
     sha256_to_hex(hash, hex);
-    snprintf(buf, bufsz, "%s:%s:%u:%s\n", user, salt_hex, iterations, hex);
+    snprintf(buf, bufsz, "%s:%s:%u:%s:%u\n", user, salt_hex, iterations, hex, avatar);
 }
 
 static int parse_entry(const char* buf,
@@ -132,18 +136,20 @@ typedef struct {
     char salt_hex[SALT_HEX_LEN + 1];
     uint32_t iterations;
     uint8_t hash[SHA256_DIGEST_SIZE];
+    int avatar;
 } fallback_user_t;
 
 static fallback_user_t fb_users[MAX_FALLBACK_USERS];
 static int fb_count = 0;
 
-static void add_fallback(const char* user, const char* pass) {
+static void add_fallback(const char* user, const char* pass, int avatar) {
     if (fb_count >= MAX_FALLBACK_USERS) return;
     fallback_user_t* u = &fb_users[fb_count++];
     strncpy(u->username, user, AUTH_MAX_USER - 1);
     u->username[AUTH_MAX_USER - 1] = '\0';
     gen_random_salt(u->salt_hex);
     u->iterations = PBKDF2_ITERATIONS;
+    u->avatar = avatar;
     hash_password(pass, u->salt_hex, u->iterations, u->hash);
 }
 
@@ -161,9 +167,9 @@ static int fallback_verify(const char* user, const char* pass) {
     return 0;
 }
 
-static int fallback_add(const char* user, const char* pass) {
+static int fallback_add(const char* user, const char* pass, int avatar) {
     if (fb_count >= MAX_FALLBACK_USERS) return -1;
-    add_fallback(user, pass);
+    add_fallback(user, pass, avatar);
     return 0;
 }
 
@@ -202,9 +208,9 @@ static int write_passwd(const char* buf, uint32_t len) {
 int auth_setup(void) {
     // No persistent disk at all → in-memory fallback users (do NOT persist).
     if (ext2_fs.block_size == 0) {
-        add_fallback("nyx", "nyx");
-        add_fallback("root", "root");
-        add_fallback("admin", "admin");
+        add_fallback("nyx", "nyx", 0);
+        add_fallback("root", "root", 1);
+        add_fallback("admin", "admin", 2);
         printf("[AUTH] No EXT2 disk — %d in-memory fallback user(s) (PBKDF2-HMAC-SHA256, %u iterations)\n",
                fb_count, PBKDF2_ITERATIONS);
         return 0;
@@ -225,15 +231,15 @@ int auth_setup(void) {
     uint8_t hash[SHA256_DIGEST_SIZE];
     hash_password("nyx", salt_hex, PBKDF2_ITERATIONS, hash);
     char entry[128 + SHA256_DIGEST_SIZE * 2];
-    format_entry(entry, sizeof(entry), "nyx", salt_hex, PBKDF2_ITERATIONS, hash);
+    format_entry(entry, sizeof(entry), "nyx", salt_hex, PBKDF2_ITERATIONS, hash, 0);
     if (write_passwd(entry, strlen(entry)) > 0) {
-        printf("[AUTH] Created default user 'nyx' at %s (persistent, PBKDF2-HMAC-SHA256, %u iterations, XOR-encrypted)\n",
+        printf("[AUTH] Created default (guest) user 'nyx' at %s (persistent, PBKDF2-HMAC-SHA256, %u iterations, XOR-encrypted)\n",
                AUTH_PATH, PBKDF2_ITERATIONS);
         return 0;
     }
 
     // Disk write failed → still allow login via an in-memory fallback account.
-    add_fallback("nyx", "nyx");
+    add_fallback("nyx", "nyx", 0);
     printf("[AUTH] Could not write %s — using in-memory fallback user 'nyx'\n", AUTH_PATH);
     return 0;
 }
@@ -280,8 +286,9 @@ int auth_verify(const char* username, const char* password) {
     return fallback_verify(username, password);
 }
 
-void auth_add_user(const char* username, const char* password) {
+void auth_add_user(const char* username, const char* password, int avatar) {
     if (!username || !password) return;
+    if (avatar < 0 || avatar >= AVATAR_COUNT) avatar = 0;
 
     // Basic account policy: a non-empty username and a password of at least
     // AUTH_MIN_PASS characters (applies whether the account persists to disk or
@@ -293,7 +300,7 @@ void auth_add_user(const char* username, const char* password) {
     }
 
     if (ext2_fs.block_size == 0 || !passwd_exists()) {
-        if (fallback_add(username, password) == 0)
+        if (fallback_add(username, password, avatar) == 0)
             printf("[AUTH] Added fallback user '%s' (PBKDF2-HMAC-SHA256, %d users)\n",
                    username, fb_count);
         return;
@@ -321,7 +328,7 @@ void auth_add_user(const char* username, const char* password) {
     hash_password(password, salt_hex, PBKDF2_ITERATIONS, hash);
 
     char new_entry[128 + SHA256_DIGEST_SIZE * 2];
-    format_entry(new_entry, sizeof(new_entry), username, salt_hex, PBKDF2_ITERATIONS, hash);
+    format_entry(new_entry, sizeof(new_entry), username, salt_hex, PBKDF2_ITERATIONS, hash, avatar);
 
     char combined[4096];
     snprintf(combined, sizeof(combined), "%s%s", existing, new_entry);
@@ -357,4 +364,38 @@ void auth_list_users(void) {
             start = i + 1;
         }
     }
+}
+
+// Return the profile-picture id (0..AVATAR_COUNT-1) chosen by `username`, read
+// from the 5th field of its /etc/passwd entry (or the fallback table). Returns 0
+// (the default avatar) for an unknown user or an old entry without the field.
+int auth_get_avatar(const char* username) {
+    if (!username) return 0;
+    if (ext2_fs.block_size == 0 || !passwd_exists()) {
+        for (int i = 0; i < fb_count; i++)
+            if (strcmp(fb_users[i].username, username) == 0) return fb_users[i].avatar;
+        return 0;
+    }
+    char buf[2048];
+    int len = read_passwd(buf, sizeof(buf) - 1);
+    if (len < 0) return 0;
+    buf[len] = '\0';
+    int ulen = strlen(username);
+    int start = 0;
+    for (int i = 0; i <= len; i++) {
+        if (buf[i] == '\n' || buf[i] == '\0') {
+            if (i - start > ulen && strncmp(buf + start, username, ulen) == 0 &&
+                buf[start + ulen] == ':') {
+                // Skip the 4 ':' separators (user, salt, iter, hash) to the avatar.
+                int col = 0, j = start;
+                while (j < i && col < 4) { if (buf[j] == ':') col++; j++; }
+                int av = 0;
+                if (col == 4) while (j < i && buf[j] >= '0' && buf[j] <= '9') av = av * 10 + (buf[j++] - '0');
+                if (av < 0 || av >= AVATAR_COUNT) av = 0;
+                return av;
+            }
+            start = i + 1;
+        }
+    }
+    return 0;
 }

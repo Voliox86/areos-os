@@ -1505,10 +1505,12 @@ static void cmd_mv(int argc, char** argv) {
 }
 
 static void cmd_useradd(int argc, char** argv) {
-    if (argc < 3) { printf("Usage: useradd <username> <password>\n"); return; }
+    if (argc < 3) { printf("Usage: useradd <username> <password> [avatar 0-3]\n"); return; }
     // Persisted to /etc/passwd on the ext2 disk (PBKDF2-HMAC-SHA256), so the
     // account survives a reboot; falls back to an in-memory user with no disk.
-    auth_add_user(argv[1], argv[2]);
+    // Optional profile-picture id (0-3); users normally pick it at the login screen.
+    int avatar = (argc >= 4) ? atoi(argv[3]) : 0;
+    auth_add_user(argv[1], argv[2], avatar);
 }
 
 static void cmd_users(int argc, char** argv) {

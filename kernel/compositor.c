@@ -11,6 +11,7 @@
 #include "calc_win.h"
 #include "wallpaper_win.h"
 #include "rtc.h"
+#include "login.h"
 
 static window_t* windows[MAX_WINDOWS];
 static int window_count = 0;
@@ -270,12 +271,18 @@ static void draw_taskbar(void) {
 
     draw_button(2, tb_y + 4, 80, TASKBAR_H - 8, start_menu_open ? taskbar_hl : taskbar_bg, fb_rgb(255,255,255), "Menu");
 
+    // Reserve room for the logged-in user badge (avatar + name), left of the clock.
+    int av_s = TASKBAR_H - 14;
+    int ublock_w = av_s + 6 + (int)strlen(g_login_user) * FONT_WIDTH + 10;
+    int right_limit = (int)(fw - CLOCK_W - 8) - ublock_w;
+    if (right_limit < 90) right_limit = 90;
+
     int bx = 90;
     for (int i = 0; i < MAX_WINDOWS; i++) {
         if (!windows[i] || !windows[i]->visible) continue;
         if (windows[i]->workspace != current_workspace && windows[i]->state != WSTATE_MINIMIZED) continue;
         int bw = 150;
-        if (bx + bw > (int)(fw - CLOCK_W - 8)) bw = (int)(fw - CLOCK_W - 8) - bx;
+        if (bx + bw > right_limit) bw = right_limit - bx;
         if (bw < 40) break;
         uint32_t bbg = windows[i]->focused ? taskbar_hl : taskbar_bg;
         fb_fill_rect(bx, tb_y + 4, bw, TASKBAR_H - 8, bbg);
@@ -289,6 +296,12 @@ static void draw_taskbar(void) {
         }
         bx += bw + 2;
     }
+
+    // Logged-in user badge: profile picture + username.
+    int ubx = (int)(fw - CLOCK_W - 8) - ublock_w + 4;
+    draw_avatar(ubx, tb_y + 7, av_s, g_login_avatar, 0);
+    font_draw_string(ubx + av_s + 6, tb_y + (TASKBAR_H - FONT_HEIGHT) / 2,
+                     g_login_user, fb_rgb(215, 215, 235), taskbar_bg);
 
     rtc_time_t rt;
     rtc_read_time(&rt);
