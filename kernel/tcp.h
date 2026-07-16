@@ -20,7 +20,14 @@
 #define TCP_STATE_TIME_WAIT   8
 #define TCP_STATE_LISTEN      9
 
-#define TCP_MAX_CONNS 8
+// Connection table. Each bidirectional loopback session costs TWO slots (the
+// client's tcp_connect side + the server's tcp_accept side) plus one for a
+// listener, so N concurrent clients to one service need 1 + 2N slots. At 8 slots
+// four concurrent socket processes overflowed the table and a connect() failed
+// (the "concurrent multi-proc net" limitation); 32 supports ~15 concurrent
+// sessions. conns[] holds only pointers to the RX/retransmit buffers (kmalloc'd
+// per active conn), so a larger table costs almost no static memory.
+#define TCP_MAX_CONNS 32
 
 typedef struct {
     int active;

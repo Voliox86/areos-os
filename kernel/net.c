@@ -64,12 +64,18 @@ void kernel_poll_net(void) {
     extern void eth_poll(int iface_idx);
     extern void ip_loopback_poll(void);
     extern void tcp_tick(void);
-    // Not re-entrancy-guarded: socket programs stay SINGLE-PROCESS. The mid-syscall
-    // resume-CR3 crash that used to kill a busy-polling syscall is fixed (see
-    // irq_scheduler_tick), but two processes busy-polling concurrently (a forked
-    // server + client) still garble each other's loopback/TCP state — a separate
-    // data-correctness issue, future work. A cli/sti guard here doesn't fix that
-    // and only adds overhead, so it's intentionally absent.
+    // Serialized against task switches (v5.8.78): the loopback ring drain and the
+    // TCP state machine are NOT reentrant, and syscalls run preemptibly (IF=1), so
+    // two processes busy-polling the net concurrently used to interleave here — one
+    // draining the ring while another's SYN-ACK was in flight, so a forked
+    // server+client (or N socket processes) garbled each other's state and a
+    // connect() timed out. preempt_disable() makes irq_scheduler_tick keep the
+    // running process on-CPU for the whole poll (the timer still fires; it just
+    // doesn't switch tasks), so the drain always completes atomically w.r.t. other
+    // processes — no re-entrancy. IRQs stay enabled, so this adds no interrupt
+    // latency (cheaper than a cli/sti window). The blocking socket calls release
+    // preemption during their idle delay, so peers still make progress.
+    preempt_disable();
     ip_loopback_poll();   // deliver any self-addressed (loopback) packets
     for (int i = 0; i < 8; i++) {
         if (net_interfaces[i].name[0] && strcmp(net_interfaces[i].name, "lo") != 0) {
@@ -78,6 +84,7 @@ void kernel_poll_net(void) {
     }
     tcp_tick();           // drive TCP retransmit timers
     tcp_echo_poll();      // service the built-in loopback echo (port 7)
+    preempt_enable();
 }
 
 // ---- Userspace TCP socket layer -------------------------------------------
@@ -115,9 +122,17 @@ int nsock_create(int domain, int type, int protocol) {
 int nsock_connect(int s, uint32_t ip, uint16_t port) {
     if (!nsock_valid(s) || nsocks[s].type != SOCK_STREAM) return -1;   // TCP only
     static uint16_t ephemeral = 40000;            // client source-port pool
+    // The port pick + conn-table alloc + SYN must be one atomic step. `ephemeral++`
+    // is a non-atomic read-modify-write: two concurrent connects that interleaved
+    // here got the SAME source port, so the second client's SYN matched the first's
+    // server conn (find_conn_by_tuple keys on src_port) instead of spawning its own
+    // child — no SYN-ACK ever came back and that connect() hung in SYN_SENT. Holding
+    // preemption across the whole pick fixes it (a concurrent connect can't run).
+    preempt_disable();
     uint16_t sport = ephemeral++;
     if (ephemeral >= 60000) ephemeral = 40000;
     int c = tcp_connect(ip, port, sport);
+    preempt_enable();
     if (c < 0) return -1;
     nsocks[s].tcp_conn = c;
     // Drive the 3-way handshake to completion: tcp_connect fired the SYN; the
@@ -142,7 +157,9 @@ int nsock_bind(int s, uint32_t ip, uint16_t port) {
 int nsock_listen(int s, int backlog) {
     (void)backlog;
     if (!nsock_valid(s) || nsocks[s].local_port == 0) return -1;
+    preempt_disable();
     int l = tcp_listen(nsocks[s].local_port);     // passive open in tcp.c
+    preempt_enable();
     if (l < 0) return -1;
     nsocks[s].tcp_conn = l;
     nsocks[s].listening = 1;
@@ -155,7 +172,9 @@ int nsock_accept(int s) {
     // Block (busy-poll) until a client's handshake completes on our listen port,
     // then hand it out as a fresh socket. tcp_accept returns an ESTABLISHED child.
     for (int i = 0; i < 6000; i++) {
+        preempt_disable();
         int child = tcp_accept(lc);
+        preempt_enable();
         if (child >= 0) {
             for (int j = 0; j < MAX_SOCKETS; j++) {
                 if (!nsocks[j].in_use) {
@@ -180,7 +199,9 @@ int nsock_send(int s, const void* buf, int len) {
     // tcp_send returns the on-wire segment length (IP+TCP+payload); a socket
     // write() must report the number of *payload* bytes accepted, so map any
     // success to `len` and only a hard failure to -1.
+    preempt_disable();                            // atomic conn mutate + loopback enqueue
     int r = tcp_send(nsocks[s].tcp_conn, (const uint8_t*)buf, (uint32_t)len);
+    preempt_enable();
     return (r < 0) ? -1 : len;
 }
 
@@ -190,11 +211,13 @@ int nsock_recv(int s, void* buf, int len) {
     // Block (busy-poll) until some data arrives, the peer fully closes, or a
     // timeout. Returns >0 bytes, or 0 for EOF — like a real recv().
     for (int i = 0; i < 6000; i++) {
+        preempt_disable();                        // atomic recv_buf drain vs. a poll's append
         int n = tcp_recv(c, (uint8_t*)buf, (uint32_t)len);
+        preempt_enable();
         if (n > 0) return n;
         if (tcp_state(c) == TCP_STATE_CLOSED) return 0;   // closed, nothing buffered
         kernel_poll_net();
-        for (volatile int d = 0; d < 1500; d++) inb(0x80);
+        for (volatile int d = 0; d < 1500; d++) inb(0x80);   // preempt-enabled: peers progress
     }
     return 0;                                     // timed out -> treat as EOF
 }
@@ -267,7 +290,7 @@ int nsock_readable(int s) {
 
 int nsock_close(int s) {
     if (!nsock_valid(s)) return -1;
-    if (nsocks[s].tcp_conn >= 0) tcp_close(nsocks[s].tcp_conn);
+    if (nsocks[s].tcp_conn >= 0) { preempt_disable(); tcp_close(nsocks[s].tcp_conn); preempt_enable(); }
     if (nsocks[s].dq) { kfree(nsocks[s].dq); nsocks[s].dq = NULL; }   // UDP receive ring
     nsocks[s].in_use = 0;
     nsocks[s].tcp_conn = -1;
@@ -279,7 +302,7 @@ int nsock_close(int s) {
 // something to talk to over loopback (127.0.0.1) — fully self-contained, no
 // external host or NIC required. It also answers on the NIC address if reached.
 #define ECHO_PORT 7
-#define ECHO_MAX  8
+#define ECHO_MAX  16          // concurrent echo clients (server side); see TCP_MAX_CONNS
 static int echo_listen = -1;
 static int echo_conns[ECHO_MAX];
 
