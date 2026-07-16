@@ -894,6 +894,16 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             if (nfds > 0 && copy_from_user(kfds, a1, (uint64_t)nfds * 8) != 0) return -1;
             extern volatile uint32_t tick_count;
             process_t* self = get_cur_proc();
+            // poll re-enables interrupts to spin (the `sti` below), so the timer can
+            // preempt us and run ANOTHER process, whose syscall overwrites the shared
+            // user_cr3/user_rsp globals (isr_stubs.asm). Save them now and restore
+            // before any copy_to_user / return — exactly the discipline every other
+            // interrupt-enabling syscall follows (stdin_read_line, do_sleep_ms,
+            // stdin_readkey, pipe/socket reads, do_waitpid). Without it, copy_to_user
+            // and the asm return path translate through the FOREIGN address space,
+            // wild-writing a live page of an unrelated process (issue #20).
+            extern uint64_t user_cr3, user_rsp;
+            uint64_t saved_cr3 = user_cr3, saved_ursp = user_rsp;
             uint32_t start = tick_count;
             for (;;) {
                 __asm__ volatile("cli");        // atomic readiness snapshot vs. the timer/NIC IRQ
@@ -929,11 +939,14 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
                 int timed_out = (timeout == 0) ||
                     (timeout > 0 && (int32_t)(tick_count - (start + (uint32_t)timeout)) >= 0);
                 if (ready > 0 || timed_out) {
-                    __asm__ volatile("sti");
+                    // Still masked from the loop-top cli: restore OUR globals, copy,
+                    // and return without re-enabling interrupts, so the copy_to_user
+                    // and the asm return path can't be preempted into a foreign CR3.
+                    user_cr3 = saved_cr3; user_rsp = saved_ursp;
                     if (nfds > 0) copy_to_user(a1, kfds, (uint64_t)nfds * 8);
                     return (uint64_t)ready;                        // ready count, or 0 on timeout
                 }
-                if (self && signal_pending(self)) { __asm__ volatile("sti"); return (uint64_t)(-EINTR); }
+                if (self && signal_pending(self)) { user_cr3 = saved_cr3; user_rsp = saved_ursp; return (uint64_t)(-EINTR); }
                 // Enable IRQs so the 1000 Hz timer advances tick_count (the timeout);
                 // syscalls run with interrupts masked, so without this the deadline
                 // would never pass. Then drive the sockets and delay before re-checking.
