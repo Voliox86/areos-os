@@ -778,8 +778,11 @@ static void cmd_sb16play(int argc, char** argv) {
 // window instead of only on the serial console. (v5.8.24 — before this the
 // compositor was parked in kwait and the window was frozen until the job exited.)
 static void cmd_exec(int argc, char** argv) {
-    if (argc < 2) { printf("Usage: exec <file>\n"); return; }
-    int pid = spawn_user_path(argv[1]);
+    if (argc < 2) { printf("Usage: exec <file> [args...]\n"); return; }
+    // Forward the rest of the line as the program's argv (argv[0] = the path), so
+    // `exec /wget.elf http://...` runs a userspace tool with arguments straight from
+    // the kernel shell — no need to drop into /sh.elf first.
+    int pid = spawn_user_path_args(argv[1], &argv[1], argc - 1);
     if (pid < 0) {
         printf("exec: could not load %s (err %d)\n", argv[1], pid);
         return;
@@ -806,8 +809,8 @@ static void cmd_exec(int argc, char** argv) {
 // Run an ELF as a BACKGROUND job: spawn it and return immediately. It runs
 // preemptively alongside the desktop; 'ps' lists it and it's reaped when it exits.
 static void cmd_spawn(int argc, char** argv) {
-    if (argc < 2) { printf("Usage: spawn <file>\n"); return; }
-    int pid = spawn_user_path(argv[1]);
+    if (argc < 2) { printf("Usage: spawn <file> [args...]\n"); return; }
+    int pid = spawn_user_path_args(argv[1], &argv[1], argc - 1);   // forward argv
     if (pid < 0) { printf("spawn: could not load %s (err %d)\n", argv[1], pid); return; }
     printf("[spawn] %s running in background as PID %d\n", argv[1], pid);
 }
@@ -879,7 +882,7 @@ static void cmd_renice(int argc, char** argv) {
 // process exits). Marked sched_managed so irq_scheduler_tick round-robins it; it
 // leaves via the SYS_EXIT zombie path and reap_zombies() frees it. Returns the new
 // PID, or a negative error code.
-int spawn_user_path(const char* path) {
+int spawn_user_path_args(const char* path, char* const* argv, int argc) {
     int fd = vfs_open(path, 0, 0);
     if (fd < 0) return -1;
     uint32_t size = vfs_fsize(fd);
@@ -891,18 +894,33 @@ int spawn_user_path(const char* path) {
     vfs_close(fd);
     if (!elf_validate(copy, size)) { kfree(copy); return -4; }
     process_t* proc = NULL;
-    int r = elf_load(copy, size, &proc);
+    int r = elf_load_args(copy, size, argv, argc, &proc);   // seeds argv on the stack
     kfree(copy);
     if (r != 0 || !proc) return -5;
     proc_set_comm(proc, path); // name it after the file (elf_load hardcodes "elf")
-    strncpy(proc->cmdline, path, sizeof(proc->cmdline) - 1);
-    proc->cmdline[sizeof(proc->cmdline) - 1] = '\0';
+    // cmdline = space-joined argv (what ps / /proc show); fall back to the path.
+    if (argc > 0 && argv) {
+        int c = 0;
+        for (int i = 0; i < argc && c < (int)sizeof(proc->cmdline) - 1; i++) {
+            if (i) proc->cmdline[c++] = ' ';
+            for (const char* s = argv[i]; *s && c < (int)sizeof(proc->cmdline) - 1; s++)
+                proc->cmdline[c++] = *s;
+        }
+        proc->cmdline[c] = '\0';
+    } else {
+        strncpy(proc->cmdline, path, sizeof(proc->cmdline) - 1);
+        proc->cmdline[sizeof(proc->cmdline) - 1] = '\0';
+    }
     proc->sched_managed = 1;   // scheduler now round-robins this ring-3 process
     extern process_t* get_current_process(void);
     process_t* parent = get_current_process();
     proc->ppid = parent ? parent->pid : 0;   // so kwait() can find/wake the parent
     sched_enable();
     return (int)proc->pid;
+}
+
+int spawn_user_path(const char* path) {
+    return spawn_user_path_args(path, (char* const*)0, 0);
 }
 
 static void cmd_usertest(int argc, char** argv) {

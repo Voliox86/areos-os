@@ -300,6 +300,49 @@ void proc_set_comm(process_t* p, const char* path) {
 // `path` is the exec'd file's path (for comm/cmdline; may be NULL).
 // Returns -1 on failure before the commit point (caller left intact); on success it
 // "returns" into the new image. Runs inside the syscall (interrupts masked).
+// Build a fresh SysV argv frame (empty environment) at the top of `pd`'s stack page
+// and return the ring-3 RSP that points at the argc frame. This is the spawn-side
+// counterpart to do_execve's frame builder: it writes into a NEW address space's
+// stack (so the kernel shell's `exec <file> a b c` can forward argv without
+// replacing the caller). `stack_top` is elf_load_image's value; argc==0 leaves the
+// stack untouched (identical to a no-argv launch). Returns the adjusted RSP.
+uint64_t build_argv_stack(uint64_t* pd, uint64_t stack_top, char* const* kargv, int argc) {
+    extern uint64_t user_cr3;
+    if (argc <= 0 || !kargv) return stack_top;
+    if (argc > 32) argc = 32;
+
+    // copy_to_user() translates through the global user_cr3; aim it at the target
+    // address space, and mask interrupts across the copy loop so a scheduler tick
+    // can't swap user_cr3 out from under us (do_execve runs inside a masked syscall;
+    // this path runs from the kernel shell with IF=1, so we must guard it).
+    uint64_t flags;
+    __asm__ volatile("pushfq; popq %0; cli" : "=r"(flags) :: "memory");
+    uint64_t saved_cr3 = user_cr3;
+    user_cr3 = (uint64_t)pd;
+
+    uint64_t sp = (stack_top + 0xFFF) & ~0xFFFULL;      // raw top of the stack page
+    uint64_t uargv[33];
+    for (int i = argc - 1; i >= 0; i--) {
+        uint64_t len = strlen(kargv[i]) + 1;
+        sp -= len;
+        copy_to_user(sp, kargv[i], len);
+        uargv[i] = sp;
+    }
+    uargv[argc] = 0;                                     // argv terminator
+    sp &= ~0xFULL;
+    int qwords = 1 + (argc + 1) + 1;                     // argc + argv[]+NULL + envp NULL
+    if (qwords & 1) qwords++;                            // keep entry RSP 16-byte aligned
+    sp -= (uint64_t)qwords * 8;
+    uint64_t argc64 = (uint64_t)argc, off = 0, zero = 0;
+    copy_to_user(sp + off, &argc64, 8);                         off += 8;
+    copy_to_user(sp + off, uargv, ((uint64_t)argc + 1) * 8);    off += ((uint64_t)argc + 1) * 8;
+    copy_to_user(sp + off, &zero, 8);                   // envp[0] = NULL (empty environment)
+
+    user_cr3 = saved_cr3;
+    if (flags & 0x200) __asm__ volatile("sti" ::: "memory");
+    return sp;
+}
+
 int do_execve(const uint8_t* data, uint32_t size, char* const* kargv, int argc,
               char* const* kenvp, int envc, const char* path) {
     extern uint64_t syscall_frame_ptr, user_rsp, user_cr3;

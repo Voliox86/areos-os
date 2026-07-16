@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.73"
+#define KERNEL_VERSION "5.8.74"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -811,6 +811,9 @@ int copy_to_user(uint64_t udst, const void* src, uint64_t len); // via user_cr3 
 void free_page_directory(uint64_t* pml4);           // free a user address space (COW-refcount aware)
 int elf_load_image(const uint8_t* data, uint32_t size, uint64_t** out_pd,
                    uint64_t* out_entry, uint64_t* out_stack_top, uint64_t* out_brk);
+int elf_load_args(const uint8_t* data, uint32_t size, char* const* argv, int argc,
+                  process_t** out_proc);                 // elf_load + optional argv seed
+uint64_t build_argv_stack(uint64_t* pd, uint64_t stack_top, char* const* kargv, int argc); // process.c
 
 // Anonymous pipes (pipe.c)
 int  pipe_new(void);                    // alloc a pipe (1 read ref + 1 write ref) -> id, or -1
@@ -872,6 +875,7 @@ void preempt_enable(void);
 // Preemptive user (ring-3) processes: spawn one from an ELF path into the
 // scheduler (non-blocking), and reap the ones that have exited.
 int  spawn_user_path(const char* path);
+int  spawn_user_path_args(const char* path, char* const* argv, int argc); // spawn + forward argv
 void reap_zombies(void);
 // Block the current thread until child `pid` exits; returns its exit code (or -1
 // if there is no such process). Used by `exec` to run a foreground job.

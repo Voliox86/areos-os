@@ -124,15 +124,26 @@ int elf_load_image(const uint8_t* data, uint32_t size, uint64_t** out_pd,
     return 0;
 }
 
-int elf_load(const uint8_t* data, uint32_t size, process_t** out_proc) {
+// Load an ELF into a new ring-3 process, optionally seeding its stack with an argv
+// frame (argc==0 / argv==NULL → the classic no-argument launch). Shared by elf_load
+// (no args) and spawn_user_path_args (kernel shell `exec <file> a b c`).
+int elf_load_args(const uint8_t* data, uint32_t size, char* const* argv, int argc,
+                  process_t** out_proc) {
     uint64_t* pd; uint64_t entry, stack_top, brk;
     if (elf_load_image(data, size, &pd, &entry, &stack_top, &brk) != 0) return -1;
 
-    process_t* proc = create_user_process("elf", (void*)entry, (void*)stack_top, pd);
+    // Seed argv on the fresh stack (a no-op that returns stack_top when argc==0).
+    uint64_t rsp = build_argv_stack(pd, stack_top, argv, argc);
+
+    process_t* proc = create_user_process("elf", (void*)entry, (void*)rsp, pd);
     if (!proc) { free_page_directory(pd); return -1; }
     proc->program_break = brk;
     proc->heap_start = brk;      // heap grows lazily from here (see vm_handle_fault)
 
     *out_proc = proc;
     return 0;
+}
+
+int elf_load(const uint8_t* data, uint32_t size, process_t** out_proc) {
+    return elf_load_args(data, size, (char* const*)0, 0, out_proc);
 }
