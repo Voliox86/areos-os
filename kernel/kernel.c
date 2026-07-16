@@ -188,56 +188,75 @@ static const command_t commands[] = {
     {NULL, NULL, NULL, false}
 };
 
+static int is_builtin(const char* name) {
+    for (int i = 0; commands[i].name != NULL; i++)
+        if (!commands[i].hidden && strcmp(commands[i].name, name) == 0) return 1;
+    return 0;
+}
+
+// Enumerate every tab-completion candidate for the command word: shell builtins,
+// plus the base names (minus ".elf") of userspace programs in the initramfs root
+// (now that a bare `wget`/`whoami` auto-execs, they should complete too). An ELF
+// whose base name shadows a builtin is skipped, so each name is offered once.
+static void enum_completions(void (*cb)(const char* name, void* ctx), void* ctx) {
+    for (int i = 0; commands[i].name != NULL; i++)
+        if (!commands[i].hidden) cb(commands[i].name, ctx);
+    int fd = vfs_open("/", 0, 0);
+    if (fd < 0) return;
+    dirent_t* de = vfs_readdir(fd);
+    while (de) {
+        int l = strlen(de->name);
+        if (l > 4 && strcmp(de->name + l - 4, ".elf") == 0) {
+            char base[64];
+            int bl = l - 4; if (bl > 63) bl = 63;
+            memcpy(base, de->name, bl); base[bl] = '\0';
+            if (!is_builtin(base)) cb(base, ctx);
+        }
+        de = vfs_readdir(fd);
+    }
+    vfs_close(fd);
+}
+
+typedef struct { const char* partial; int plen; char* out; int out_size; int pos; } list_ctx_t;
+static void list_cb(const char* name, void* c) {
+    list_ctx_t* x = (list_ctx_t*)c;
+    if (strncmp(name, x->partial, x->plen) != 0) return;
+    int len = strlen(name);
+    if (x->pos + len + 2 > x->out_size - 1) return;   // out of room -> drop extras
+    memcpy(x->out + x->pos, name, len); x->pos += len;
+    x->out[x->pos++] = ' '; x->out[x->pos] = '\0';
+}
+
 void command_list_matches(const char* partial, char* out, int out_size) {
     out[0] = '\0';
-    int pos = 0;
-    int plen = strlen(partial);
-    for (int i = 0; commands[i].name != NULL && pos < out_size - 2; i++) {
-        if (commands[i].hidden) continue;
-        if (strncmp(commands[i].name, partial, plen) == 0) {
-            int len = strlen(commands[i].name);
-            if (pos + len + 2 > out_size - 1) break;
-            memcpy(out + pos, commands[i].name, len);
-            pos += len;
-            out[pos++] = ' ';
-            out[pos] = '\0';
-        }
+    list_ctx_t x = { partial, strlen(partial), out, out_size, 0 };
+    enum_completions(list_cb, &x);
+}
+
+typedef struct { const char* partial; int plen; int count; char first[64]; char common[64]; } compl_ctx_t;
+static void compl_cb(const char* name, void* c) {
+    compl_ctx_t* x = (compl_ctx_t*)c;
+    if (strncmp(name, x->partial, x->plen) != 0) return;
+    if (x->count == 0) {
+        strncpy(x->first, name, sizeof(x->first) - 1);  x->first[sizeof(x->first) - 1]  = '\0';
+        strncpy(x->common, name, sizeof(x->common) - 1); x->common[sizeof(x->common) - 1] = '\0';
+    } else {
+        for (int j = 0; x->common[j]; j++)              // shrink to the common prefix
+            if (name[j] != x->common[j]) { x->common[j] = '\0'; break; }
     }
+    x->count++;
 }
 
 void command_complete(const char* partial, char* out, int out_size, int* match_count) {
-    *match_count = 0;
+    compl_ctx_t x = { partial, strlen(partial), 0, "", "" };
+    enum_completions(compl_cb, &x);
+    *match_count = x.count;
     if (out && out_size > 0) out[0] = '\0';
-    int plen = strlen(partial);
-    char first_match[64] = "";
-    for (int i = 0; commands[i].name != NULL; i++) {
-        if (commands[i].hidden) continue;
-        if (strncmp(commands[i].name, partial, plen) == 0) {
-            if (*match_count == 0)
-                strncpy(first_match, commands[i].name, sizeof(first_match)-1);
-            (*match_count)++;
-        }
-    }
-    if (*match_count == 1 && out) {
-        strncpy(out, first_match, out_size - 1);
+    if (x.count == 1 && out) {
+        strncpy(out, x.first, out_size - 1);
         out[out_size - 1] = '\0';
-    } else if (*match_count > 1 && out) {
-        // Find common prefix
-        char common[64];
-        strncpy(common, first_match, sizeof(common)-1);
-        for (int i = 0; commands[i].name != NULL && common[0]; i++) {
-            if (commands[i].hidden) continue;
-            if (strncmp(commands[i].name, partial, plen) == 0) {
-                for (int j = 0; common[j]; j++) {
-                    if (commands[i].name[j] != common[j]) {
-                        common[j] = '\0';
-                        break;
-                    }
-                }
-            }
-        }
-        if (strlen(common) > (size_t)plen)
-            strncpy(out, common, out_size - 1);
+    } else if (x.count > 1 && out && strlen(x.common) > (size_t)x.plen) {
+        strncpy(out, x.common, out_size - 1);
         out[out_size - 1] = '\0';
     }
 }
