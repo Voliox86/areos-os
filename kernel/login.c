@@ -13,15 +13,36 @@ char g_login_user[32] = "nyx";
 int  g_login_avatar = 0;
 char g_login_home[64] = "/";     // this session's home directory (/home/<user>)
 
+// Give a brand-new home directory some starter content: a couple of folders and a
+// welcome note. Only run the first time the home is created (see setup_user_home),
+// so it never clobbers a user's own files on a later login.
+static void populate_home(const char* home) {
+    char p[96];
+    snprintf(p, sizeof(p), "%s/Documents", home); vfs_mkdir(p, 0755);
+    snprintf(p, sizeof(p), "%s/Downloads", home); vfs_mkdir(p, 0755);
+    char welcome[512];
+    int n = snprintf(welcome, sizeof(welcome),
+        "Welcome to NyxOS, %s!\n\n"
+        "This is your home directory (%s).\n"
+        "  - Double-click a file here to open it in the Text Editor.\n"
+        "  - Documents/ and Downloads/ are yours to fill.\n"
+        "  - Click your badge (bottom-right) to change your picture or log out.\n",
+        g_login_user, home);
+    snprintf(p, sizeof(p), "%s/welcome.txt", home);
+    vfs_write_file(p, welcome, (uint32_t)n);
+}
+
 // Ensure /home/<user> exists and record it as this session's home directory, so
-// new Terminal and File Manager windows start there instead of at /.
+// new Terminal and File Manager windows start there instead of at /. On the first
+// login that creates it, seed it with starter folders + a welcome file.
 static void setup_user_home(void) {
     vfs_mkdir("/home", 0755);                 // idempotent (fails harmlessly if present)
     char path[64];
     snprintf(path, sizeof(path), "/home/%s", g_login_user);
-    vfs_mkdir(path, 0755);
+    int fresh = (vfs_mkdir(path, 0755) == 0);  // 0 => created now (first login this boot)
     strncpy(g_login_home, path, sizeof(g_login_home) - 1);
     g_login_home[sizeof(g_login_home) - 1] = '\0';
+    if (fresh) populate_home(path);
 }
 
 // The current session's home directory node (or the root as a fallback), used as
