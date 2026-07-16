@@ -680,6 +680,51 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             if (ufd_lookup((int)a1, &internal) != 0) return -1;
             return vfs_fsize(internal);
         }
+        case SYS_STAT: {
+            /* stat(path, struct stat*) — statbuf = {u32 st_size, st_mode, st_ino}. */
+            if (!user_str_ok(a1) || !user_ptr_ok(a2, 12)) return -1;
+            char path[MAX_PATH];
+            if (copy_path_from_user(path, sizeof(path), a1) != 0) return -1;
+            uint32_t size = 0; int isdir = 0;
+            if (vfs_stat(path, &size, &isdir) != 0) return -1;
+            uint32_t sb[3] = { size, isdir ? (0x4000u | 0755u) : (0x8000u | 0644u), 0 };
+            return copy_to_user(a2, sb, sizeof(sb)) == 0 ? 0 : -1;
+        }
+        case SYS_FSTAT: {
+            if (!user_ptr_ok(a2, 12)) return -1;
+            int internal;
+            if (ufd_lookup((int)a1, &internal) != 0) return -1;
+            uint32_t sb[3];
+            if (internal & (UFD_PIPE_FLAG | UFD_SOCK_FLAG)) {   // pipe/socket: size 0, regular-ish
+                sb[0] = 0; sb[1] = 0x8000u | 0644u; sb[2] = 0;
+            } else {
+                uint32_t size = 0; int isdir = 0;
+                if (vfs_fstat(internal, &size, &isdir) != 0) return -1;
+                sb[0] = size; sb[1] = isdir ? (0x4000u | 0755u) : (0x8000u | 0644u); sb[2] = 0;
+            }
+            return copy_to_user(a2, sb, sizeof(sb)) == 0 ? 0 : -1;
+        }
+        case SYS_LSEEK: {
+            /* lseek(fd, offset, whence): 0=SET, 1=CUR, 2=END. Returns the new offset. */
+            int internal;
+            if (ufd_lookup((int)a1, &internal) != 0) return -1;
+            if (internal & (UFD_PIPE_FLAG | UFD_SOCK_FLAG)) return -1;   // not seekable
+            uint32_t* off = ufd_offset_of((int)a1);
+            if (!off) return -1;
+            int64_t offset = (int64_t)a2, noff;
+            int whence = (int)a3;
+            if (whence == 0)      noff = offset;
+            else if (whence == 1) noff = (int64_t)*off + offset;
+            else if (whence == 2) { int sz = vfs_fsize(internal); noff = (int64_t)(sz > 0 ? sz : 0) + offset; }
+            else return -1;
+            if (noff < 0) return -1;
+            *off = (uint32_t)noff;
+            return (int64_t)*off;
+        }
+        case SYS_GETPPID: {
+            process_t* cur = get_cur_proc();
+            return cur ? cur->ppid : 0;
+        }
         case SYS_EXEC: {
             if (!user_str_ok(a1)) return -1;
             char path[128];

@@ -45,6 +45,10 @@
 #define SYS_SIGPROCMASK 41
 #define SYS_ALARM    42
 #define SYS_POLL     43
+#define SYS_STAT     44
+#define SYS_FSTAT    45
+#define SYS_LSEEK    46
+#define SYS_GETPPID  47
 
 #define TTY_CANON   0   /* kernel line discipline: echoed, backspace-edited lines */
 #define TTY_RAW     1   /* byte-at-a-time, no echo, arrows as ESC [ A/B/C/D */
@@ -477,6 +481,42 @@ static inline long recvfrom(int fd, void* buf, long len, int flags,
 struct pollfd { int fd; short events; short revents; };
 static inline long poll(struct pollfd* fds, int nfds, int timeout) {
     return syscall3(SYS_POLL, (long)fds, nfds, timeout);
+}
+
+/* --- File metadata + seeking: stat/fstat/lseek, getppid (v5.8.80) ----------- */
+/* NyxOS keeps a minimal struct stat: the fields the kernel actually tracks. The
+ * layout MUST match the kernel's 3-u32 fill order in SYS_STAT/SYS_FSTAT. */
+struct stat {
+    unsigned int st_size;   /* file size in bytes (0 for directories) */
+    unsigned int st_mode;   /* S_IFDIR|perms or S_IFREG|perms */
+    unsigned int st_ino;    /* reserved (0 for now) */
+};
+#define S_IFMT   0xF000
+#define S_IFDIR  0x4000
+#define S_IFREG  0x8000
+#define S_ISDIR(m)  (((m) & S_IFMT) == S_IFDIR)
+#define S_ISREG(m)  (((m) & S_IFMT) == S_IFREG)
+
+#define SEEK_SET 0
+#define SEEK_CUR 1
+#define SEEK_END 2
+
+/* stat(path, &st) / fstat(fd, &st): fill st with size + mode. Return 0, or -1 if
+ * the path/fd is invalid. */
+static inline int stat(const char* path, struct stat* st) {
+    return (int)syscall2(SYS_STAT, (long)path, (long)st);
+}
+static inline int fstat(int fd, struct stat* st) {
+    return (int)syscall2(SYS_FSTAT, fd, (long)st);
+}
+/* lseek(fd, offset, whence): reposition the fd's read/write offset; SEEK_SET/CUR/
+ * END. Returns the new absolute offset, or -1 (e.g. a pipe/socket isn't seekable). */
+static inline long lseek(int fd, long offset, int whence) {
+    return syscall3(SYS_LSEEK, fd, offset, whence);
+}
+/* getppid(): the parent process id. */
+static inline int getppid(void) {
+    return (int)syscall1(SYS_GETPPID, 0);
 }
 
 #endif

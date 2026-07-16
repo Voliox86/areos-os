@@ -32,6 +32,15 @@ OBJS_KERNEL = boot.o kernel.o gdt.o idt.o isr.o isr_stubs.o irq.o \
 
 OBJS = $(OBJS_KERNEL)
 
+# Pin the default goal to `all` BEFORE -include pulls in the .d files below. Each
+# auto-generated .d holds a rule like `kernel.o: kernel.c ...`; since -include sits
+# above the `all:` target, on any incremental build (where .d files already exist)
+# the first included rule would otherwise HIJACK the default goal to kernel.o — so a
+# bare `make` (and build.ps1, which runs `make -C kernel` with no target) built only
+# kernel.o and never relinked nyx-kernel.bin, silently shipping a stale kernel.
+# `make clean` deletes the .d files, which is the only reason clean builds worked.
+.DEFAULT_GOAL := all
+
 # Auto-generated per-object header dependencies (from -MMD): every kernel .o now
 # depends on EVERY header it #includes, so editing e.g. tcp.h's TCP_MAX_CONNS
 # rebuilds tcp.o/net.o. Before this, only kernel.h was a tracked prerequisite, so
@@ -69,7 +78,7 @@ USER_ELFS = $(USER_DIR)/hello.elf $(USER_DIR)/init.elf $(USER_DIR)/spin.elf $(US
             $(USER_DIR)/pstorm.elf $(USER_DIR)/bigread.elf $(USER_DIR)/segv.elf \
             $(USER_DIR)/sockdemo.elf $(USER_DIR)/srvdemo.elf $(USER_DIR)/udpdemo.elf \
             $(USER_DIR)/nc.elf $(USER_DIR)/sigrec.elf $(USER_DIR)/alarmdemo.elf \
-            $(USER_DIR)/polldemo.elf $(USER_DIR)/wget.elf $(USER_DIR)/netstorm.elf
+            $(USER_DIR)/polldemo.elf $(USER_DIR)/wget.elf $(USER_DIR)/netstorm.elf $(USER_DIR)/stat.elf
 
 # Flags for Nyx C output (GCC: statement-exprs, __auto_type). -mno-red-zone is mandatory.
 NYXCFLAGS = -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR)
@@ -142,6 +151,12 @@ $(USER_DIR)/wget.o: $(USER_DIR)/wget.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
 $(USER_DIR)/netstorm.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/netstorm.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/netstorm.o
 $(USER_DIR)/netstorm.o: $(USER_DIR)/netstorm.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
+	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+
+# stat — demo of the v5.8.80 POSIX syscalls (stat/fstat/lseek/getppid).
+$(USER_DIR)/stat.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/stat.o
+	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/stat.o
+$(USER_DIR)/stat.o: $(USER_DIR)/stat.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
 	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 # sigrec — multi-fault recovery demo (sigsetjmp/siglongjmp catch repeated SIGSEGV).
@@ -402,12 +417,24 @@ $(USER_DIR)/libc.so: $(USER_DIR)/libc.o
 $(USER_DIR)/init.o: $(USER_DIR)/init.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
 	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-# Generate initramfs C header
+# Generate initramfs C header.
+# FORCE + content-compare: the recipe runs on EVERY make (FORCE is a phony that is
+# always "out of date"), so a freshly-built user/*.elf can never be missed. But we
+# regenerate into a temp and only replace initramfs_data.h when the bytes actually
+# differ, so initramfs.o relinks only on a real change — not every build. This is
+# the canonical regenerate-only-if-changed idiom, and here it also defends against
+# the WSL /mnt/c (9p) mtime skew that once let a stale initramfs — missing a
+# just-built .elf — ship silently despite the .h being newer on disk. Companion to
+# the -MMD/-MP auto-deps that track the hand-written headers.
 MKINITRAMFS = ../tools/mkinitramfs.py
-initramfs_data.h: $(MKINITRAMFS) $(USER_ELFS) $(USER_DIR)/libc.so $(USER_DIR)/libdemo.so
-	python3 $(MKINITRAMFS) $@ c
+initramfs_data.h: FORCE $(MKINITRAMFS) $(USER_ELFS) $(USER_DIR)/libc.so $(USER_DIR)/libdemo.so
+	@python3 $(MKINITRAMFS) $@.tmp c >/dev/null
+	@if cmp -s $@.tmp $@ 2>/dev/null; then rm -f $@.tmp; else mv $@.tmp $@; echo "  [initramfs] regenerated $@"; fi
 
 initramfs.o: initramfs.c initramfs_data.h
+
+.PHONY: FORCE
+FORCE:
 
 # SMP trampoline — flat binary embedded as ELF object
 trampoline.bin: trampoline.asm
@@ -428,4 +455,4 @@ disk: ../ext2-test.img
 .PHONY: disk
 
 clean:
-	rm -f *.o *.d *.bin initramfs_data.h trampoline.bin $(USER_DIR)/*.o $(USER_DIR)/*.elf $(USER_DIR)/hello.o
+	rm -f *.o *.d *.bin initramfs_data.h initramfs_data.h.tmp trampoline.bin $(USER_DIR)/*.o $(USER_DIR)/*.elf $(USER_DIR)/hello.o

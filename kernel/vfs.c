@@ -560,6 +560,30 @@ int vfs_isdir(const char* path) {
     return (n && n->type == 1) ? 1 : 0;
 }
 
+// stat() core: report a path's size + whether it's a directory. Handles ramdisk,
+// /proc, /dev and mounted (/mnt) files by leaning on vfs_isdir + vfs_open/vfs_fsize
+// (which already resolve mounts). Returns 0 on success, -1 if the path doesn't exist.
+int vfs_stat(const char* path, uint32_t* size, int* is_dir) {
+    if (vfs_isdir(path)) { if (is_dir) *is_dir = 1; if (size) *size = 0; return 0; }
+    int fd = vfs_open(path, 0, 0);     // O_RDONLY, no create — fails if absent
+    if (fd < 0) return -1;
+    int sz = vfs_fsize(fd);
+    vfs_close(fd);
+    if (is_dir) *is_dir = 0;
+    if (size) *size = (sz > 0) ? (uint32_t)sz : 0;
+    return 0;
+}
+
+// fstat() core: size + type from an already-open internal vfs fd (a vfs_node_t*).
+int vfs_fstat(int fd, uint32_t* size, int* is_dir) {
+    vfs_node_t* ino = (vfs_node_t*)(uintptr_t)(uint32_t)fd;
+    if (!ino) return -1;
+    if (is_dir) *is_dir = (ino->type == 1);
+    int sz = vfs_fsize(fd);
+    if (size) *size = (sz > 0) ? (uint32_t)sz : 0;
+    return 0;
+}
+
 int vfs_create_from_mem(const char* path, uint8_t* data, uint32_t size) {
     char child_name[MAX_NAME];
     vfs_node_t* parent = resolve_parent((char*)path, child_name);

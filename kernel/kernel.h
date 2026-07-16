@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.79"
+#define KERNEL_VERSION "5.8.80"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -117,6 +117,10 @@ typedef __builtin_va_list va_list;
 #define SYS_SIGPROCMASK 41
 #define SYS_ALARM    42
 #define SYS_POLL     43
+#define SYS_STAT     44   /* stat(path, struct stat*) — size + mode(dir/reg) */
+#define SYS_FSTAT    45   /* fstat(fd, struct stat*) */
+#define SYS_LSEEK    46   /* lseek(fd, offset, whence) — SEEK_SET/CUR/END */
+#define SYS_GETPPID  47   /* getppid() */
 
 /* SYS_TTYMODE modes. Canonical: read(0) returns a full line, echoed + backspace-
  * edited by the kernel. Raw: read(0) returns bytes as they arrive, NO echo, and
@@ -845,6 +849,8 @@ int vfs_write(int fd, const void* buf, size_t count);
 int vfs_pread(int fd, void* buf, uint32_t count, uint32_t offset);
 int vfs_pwrite(int fd, const void* buf, uint32_t count, uint32_t offset);
 int vfs_close(int fd);
+int vfs_stat(const char* path, uint32_t* size, int* is_dir);  // 0 ok / -1 not found
+int vfs_fstat(int fd, uint32_t* size, int* is_dir);           // by internal vfs fd
 int vfs_mkdir(const char* path, mode_t mode);
 int vfs_unlink(const char* path);
 dirent_t* vfs_readdir(int fd);
