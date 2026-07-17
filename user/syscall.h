@@ -49,6 +49,8 @@
 #define SYS_FSTAT    45
 #define SYS_LSEEK    46
 #define SYS_GETPPID  47
+#define SYS_DUP      48
+#define SYS_RENAME   49
 
 #define TTY_CANON   0   /* kernel line discipline: echoed, backspace-edited lines */
 #define TTY_RAW     1   /* byte-at-a-time, no echo, arrows as ESC [ A/B/C/D */
@@ -399,6 +401,18 @@ static inline long setfg(long pid) {
  * Pipe fds only for now (their ends are reference-counted). Returns newfd or -1. */
 static inline long dup2(int oldfd, int newfd) {
     return syscall2(SYS_DUP2, oldfd, newfd);
+}
+
+/* dup(oldfd): lowest-available fd referring to the same stream as oldfd (both stay
+ * open). Returns the new fd, or -1. */
+static inline int dup(int oldfd) {
+    return (int)syscall1(SYS_DUP, oldfd);
+}
+
+/* rename(oldpath, newpath): move/rename a VFS entry (paths are cwd-relative).
+ * Returns 0, or -1 if the source is missing or the move didn't land. */
+static inline int rename(const char* oldpath, const char* newpath) {
+    return (int)syscall2(SYS_RENAME, (long)oldpath, (long)newpath);
 }
 
 /* --- TCP sockets (SOCK_STREAM only for now) -------------------------------- */

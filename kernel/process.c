@@ -120,6 +120,16 @@ process_t* create_user_process(const char* name, void* entry, void* user_stack, 
     strncpy(p->comm, name, 31);
     p->comm[31] = '\0';
 
+    // Inherit the spawning context's cwd (the kernel shell's global current_dir,
+    // which the compositor sets per-terminal before running a command) so a tool
+    // launched after `cd /home/nyx` starts there, not at "/". fork() copies the
+    // parent's cwd in do_fork(); this covers the spawn/exec-from-shell path.
+    const char* cwd0 = vfs_getcwd();
+    if (cwd0 && cwd0[0]) {
+        strncpy(p->cwd, cwd0, sizeof(p->cwd) - 1);
+        p->cwd[sizeof(p->cwd) - 1] = '\0';
+    }
+
     if (!user_stack) {
         void* stack_page = alloc_page();
         if (!stack_page) { kfree(p); return NULL; }

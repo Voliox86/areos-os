@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.81"
+#define KERNEL_VERSION "5.8.82"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -121,6 +121,8 @@ typedef __builtin_va_list va_list;
 #define SYS_FSTAT    45   /* fstat(fd, struct stat*) */
 #define SYS_LSEEK    46   /* lseek(fd, offset, whence) — SEEK_SET/CUR/END */
 #define SYS_GETPPID  47   /* getppid() */
+#define SYS_DUP      48   /* dup(oldfd) — lowest-available fd aliasing oldfd */
+#define SYS_RENAME   49   /* rename(oldpath, newpath) — VFS move/rename */
 
 /* SYS_TTYMODE modes. Canonical: read(0) returns a full line, echoed + backspace-
  * edited by the kernel. Raw: read(0) returns bytes as they arrive, NO echo, and

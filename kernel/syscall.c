@@ -863,6 +863,35 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             }
             return newfd;
         }
+        case SYS_DUP: {
+            // dup(oldfd): return the lowest-available fd that refers to the same
+            // stream as oldfd — both stay open (unlike dup2's move for VFS files).
+            // Pipe ends are refcounted so we incref; VFS/socket handles aren't, so
+            // the new fd just aliases the same handle (vfs_close is a no-op for the
+            // ramdisk nodes ring 3 opens, so closing either fd later is safe).
+            int oldfd = (int)a1;
+            process_t* p = get_cur_proc();
+            int internal;
+            if (!p || ufd_lookup(oldfd, &internal) != 0) return -1;
+            int newfd = ufd_alloc(internal);          /* lowest free slot (>= UFD_BASE) */
+            if (newfd < 0) return -1;                  /* fd table full */
+            if (internal & UFD_PIPE_FLAG)
+                pipe_incref(UFD_PIPE_ID(internal), UFD_PIPE_IS_WRITE(internal));
+            p->ufd_offset[newfd] = p->ufd_offset[oldfd];   /* start at the same offset */
+            return newfd;
+        }
+        case SYS_RENAME: {
+            // rename(oldpath, newpath): move/rename within the VFS (both cwd-relative).
+            // Wraps the hardened vfs_rename; refuses a missing source and confirms the
+            // destination exists afterward.
+            if (!user_str_ok(a1) || !user_str_ok(a2)) return -1;
+            char oldp[MAX_PATH], newp[MAX_PATH];
+            if (copy_path_from_user(oldp, sizeof(oldp), a1) != 0) return -1;
+            if (copy_path_from_user(newp, sizeof(newp), a2) != 0) return -1;
+            if (vfs_stat(oldp, 0, 0) != 0) return -1;         /* source must exist */
+            vfs_rename(oldp, newp);
+            return (vfs_stat(newp, 0, 0) == 0) ? 0 : -1;      /* did the move land? */
+        }
         case SYS_GETDENTS: {
             // getdents(path, buf, max): enumerate directory `path`, writing up to
             // `max` fixed 68-byte records { char name[64]; u32 type } into the user
