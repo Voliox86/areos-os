@@ -52,8 +52,13 @@ OBJS = $(OBJS_KERNEL)
 
 all: $(USER_ELFS) nyx-kernel.bin
 
-nyx-kernel.bin: $(OBJS)
-	$(LD) $(LDFLAGS) -o $@ $^
+# linker.ld is a prerequisite so editing the SECTIONS layout (e.g. capturing the
+# -mcmodel=large .lbss/.ldata into .bss/.data) forces a relink. It is NOT passed to
+# ld as an input object — the recipe uses $(OBJS), not $^, and LDFLAGS has -T linker.ld.
+# (Before this, a linker.ld-only change left nyx-kernel.bin stale on incremental builds,
+# because every .o was unchanged — the same stale-build class as the tcp.h/default-goal bugs.)
+nyx-kernel.bin: $(OBJS) linker.ld
+	$(LD) $(LDFLAGS) -o $@ $(OBJS)
 
 # Header prerequisites are tracked automatically now (-MMD + the -include above), so
 # a change to ANY included header — kernel.h's KERNEL_VERSION, tcp.h's TCP_MAX_CONNS,

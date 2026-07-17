@@ -42,16 +42,26 @@ void init_memory(uint64_t mem_size) {
     if (total_pages > MAX_PAGES) total_pages = MAX_PAGES;
     free_pages = total_pages;
 
-    // Mark page 0 as used (NULL page)
-    page_bitmap[0] &= ~1;
-    free_pages--;
-
-    // Mark kernel pages as used (from 0x100000 up to end of BSS)
+    // Reserve the ENTIRE low region below the kernel — [0, _kernel_end) — not just
+    // page 0 and the kernel image. The legacy sub-1MB area is NOT usable RAM: it holds
+    // the real-mode IVT/BIOS data area, the 0xA0000-0xBFFFF VGA framebuffer window
+    // (MMIO), and the 0xC0000-0xFFFFF video/system BIOS ROMs. QEMU/SeaBIOS shadow the
+    // video BIOS into 0xC0000-0xC7FFF as write-protected ROM. We do NOT parse the
+    // multiboot RAM map, so the old code (which reserved only page 0 + [0x100000,end))
+    // left pages 0x1000-0xFFFFF "free": alloc_page scans low->high, so under memory
+    // pressure it handed out these ROM/MMIO frames — writes are dropped, reads return
+    // firmware bytes — and the allocator wrote live kernel structures (heap/slab
+    // metadata, page tables, user pages) onto ROM, reading back BIOS garbage. That is
+    // the long-standing "pipeline corruption" Heisenbug: stress-dependent (the low RAM
+    // pool must be exhausted to reach the 0xA0000+ hole) and manifestation-varying
+    // (heap_free #GP, page-table MAPCORRUPT, or user SIGSEGV depending on the frame's
+    // use). The kernel loads at 1MB and never allocates sub-1MB RAM (the SMP trampoline
+    // at 0x8000 is a direct copy, not alloc_page), so forgoing the ~640KB of usable
+    // conventional RAM below 1MB is a negligible, safe loss.
     extern uint8_t _kernel_end[];
     uintptr_t kernel_end = (uintptr_t)_kernel_end;
-    uint32_t kernel_start_page = 0x100000 / PAGE_SIZE;
     uint32_t kernel_end_page = (uint32_t)((kernel_end + PAGE_SIZE - 1) / PAGE_SIZE);
-    for (uint32_t i = kernel_start_page; i < kernel_end_page && i < total_pages; i++) {
+    for (uint32_t i = 0; i < kernel_end_page && i < total_pages; i++) {
         page_bitmap[i / 32] &= ~(1 << (i % 32));
         free_pages--;
     }

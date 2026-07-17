@@ -17,15 +17,28 @@ SECTIONS {
 
     .rodata : ALIGN(16) {
         *(.rodata)
+        *(.rodata.*)
+        *(.lrodata)             /* large-model (-mcmodel=large) rodata */
+        *(.lrodata.*)
     } :data
 
     .data : ALIGN(16) {
         *(.data)
+        *(.data.*)
+        *(.ldata)               /* large-model data */
+        *(.ldata.*)
     } :data
 
     .bss : ALIGN(4096) {
         *(.bss)
         *(.bss.*)
+        /* -mcmodel=large puts large objects in .lbss/.ldata/.lrodata. Without
+         * capturing .lbss here, the linker emits page_refcount[]/page_pinned[] (the
+         * allocator's own metadata) AFTER _kernel_end, so init_memory never reserves
+         * their frames — alloc_page then hands them out and the page-zeroing memset
+         * wipes the refcounts, double-allocating live pages: THE pipeline corruption. */
+        *(.lbss)
+        *(.lbss.*)
         *(COMMON)
     } :data
 
