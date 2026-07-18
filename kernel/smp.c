@@ -171,6 +171,12 @@ void ap_scheduler_tick(void) {
         if (!p || p->state != PROC_RUN) continue;
         if (p->sched_cpu != (int32_t)me->cpu_number) continue;
         if (!p->stack) continue;
+        // The BSP skips these and so must we: a user process that is not
+        // sched_managed (init.elf, the blocking-exec target) is deliberately
+        // never round-robined — its saved frame was never built to be resumed
+        // by a scheduler. Running one anyway means iretq'ing into whatever
+        // happens to be there, which is the #GP at RIP 0x10049f.
+        if (p->page_directory != NULL && !p->sched_managed) continue;
         pick = p;
         me->sched_scan = idx;
         break;

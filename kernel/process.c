@@ -430,10 +430,21 @@ int do_clone(uint64_t fn, uint64_t stack, uint64_t arg, uint64_t flags) {
     // actually running on (get_current_process, fixed in v5.8.97 — until then a
     // thread on an AP blocked the BSP's task instead of its own and the machine
     // wedged). Opt-in, so the default placement stays exactly as it always was.
-    // STILL PINNED. The v5.8.97 fix removed the wedge — threads now complete
-    // when spread — but the next failure is immediate: `pstorm` panics with a
-    // **#GP (err 0x8) at RIP 0x10049f**, inside the interrupt-stub / ring
-    // transition path, after two iterations. One layer at a time.
+    // Spreading a thread group needs the page tables coherent (TLB shootdown),
+    // every task able to identify itself on its own core (v5.8.97), and the
+    // BSP not writing its frame into an AP's task (the affinity guard in
+    // irq_scheduler_tick). Opt-in, so the default placement never changes.
+    // Spreading a thread group needs all of: coherent page tables (TLB
+    // shootdown), every task able to identify itself on its own core (v5.8.97),
+    // the BSP not writing its frame into an AP's task, and the AP scheduler
+    // honouring the same "never round-robin this" filter the BSP uses.
+    // Opt-in, so the default placement never changes.
+    // STILL PINNED — see scratchpad/GP-iretq-hunt.md for the full handoff.
+    // Four hypotheses were reasoned from the source and all four were wrong or
+    // insufficient. What is known: the panic is the `iretq` closing irq_common
+    // (RIP 0x10049f), error code 0x0 (NOT selector-related, so a non-canonical
+    // RIP or bad RFLAGS in the popped frame). Whoever writes that frame has not
+    // been identified, and finding them needs measurement, not more reading.
     t->sched_cpu      = tg_leader(self)->sched_cpu;
     t->program_break  = self->program_break;
     t->heap_start     = self->heap_start;
@@ -903,7 +914,14 @@ void irq_scheduler_tick(void) {
     }
 
     // Remember where to resume the outgoing thread.
-    cur->stack = (void*)saved_rsp;
+    // Remember where to resume the outgoing thread — but ONLY if it is really
+    // ours. current_idx can come to point at an AP-pinned task without this
+    // scheduler ever choosing one: the reap paths swap-remove and then patch
+    // `current_idx` to the moved slot, which can hold anything. Writing our
+    // frame into that task's stack hands an AP a context whose CS/SS belong to
+    // us, and the AP's iretq takes a #GP (err 0x8) — the panic pstorm hit at
+    // RIP 0x10049f once processes were spread across cores.
+    if (cur->sched_cpu == 0) cur->stack = (void*)saved_rsp;
 
     // Round-robin to the next runnable thread. We schedule kernel threads and
     // spawned (sched_managed) user processes; we skip idle unless nothing else
