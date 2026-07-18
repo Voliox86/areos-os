@@ -15,6 +15,23 @@
 // counter; the scheduler cursor and user_cr3/user_rsp move here when APs start
 // running user processes.
 typedef struct {
+    /* ---- ABI-FIXED PREFIX ---------------------------------------------------
+     * syscall_entry (isr_stubs.asm) reaches these four through GS, using the
+     * CPU_* byte offsets defined there. Their positions are a contract with the
+     * assembler, not an implementation detail: the compile-time check below
+     * fails the build if anyone reorders or inserts ahead of them. New fields
+     * go BELOW this block.
+     *
+     * They live per-CPU rather than per-process because syscall_entry has no
+     * free register to find the current process with — swapgs is the only
+     * register-free anchor the hardware offers. See kernel.h for what that does
+     * and does not fix.
+     * ------------------------------------------------------------------------ */
+    uint64_t sc_user_rsp;   // +0   user RSP stashed on entry, reloaded for iretq
+    uint64_t sc_kernel_rsp; // +8   kernel stack this CPU enters syscalls on
+    uint64_t sc_user_cr3;   // +16  user CR3 saved on entry, restored on exit
+    uint64_t sc_frame_ptr;  // +24  base of the saved user register frame
+
     uint32_t apic_id;       // APIC id the BSP assigned/expects for this CPU
     uint32_t apic_id_self;  // APIC id the CPU read from its OWN Local APIC (proof)
     uint32_t cpu_number;
@@ -23,14 +40,35 @@ typedef struct {
     volatile int started;
     volatile int running;
     volatile uint64_t ticks; // THIS core's LAPIC-timer ticks (APs only; BSP uses tick_count)
+    volatile uint64_t stress_ops;  // allocator-hammer iterations this core completed
+    volatile uint64_t stress_bad;  // integrity failures this core observed
 } cpu_info_t;
+
+/* Pin the assembler contract. If this line fails to compile, someone moved a
+ * field in the ABI-fixed prefix and the CPU_* offsets in isr_stubs.asm no longer
+ * match — which would silently corrupt every syscall rather than fault. */
+typedef char cpu_abi_prefix_offsets_are_pinned[
+    (__builtin_offsetof(cpu_info_t, sc_user_rsp)   ==  0 &&
+     __builtin_offsetof(cpu_info_t, sc_kernel_rsp) ==  8 &&
+     __builtin_offsetof(cpu_info_t, sc_user_cr3)   == 16 &&
+     __builtin_offsetof(cpu_info_t, sc_frame_ptr)  == 24) ? 1 : -1];
 
 extern cpu_info_t cpu_info[MAX_CPUS];
 extern uint32_t cpu_count;
+
+/* Point this CPU's IA32_KERNEL_GS_BASE at its own block, so `swapgs` at syscall
+ * entry lands on it. Called by the BSP and by every AP. */
+void cpu_install_gs_base(uint32_t cpu_id);
 
 void smp_init(void);
 void ap_main(uint32_t cpu_id);
 cpu_info_t* cpu_self(void);
 void ap_timer_tick(void);
+
+// Cross-CPU allocator stress. `smp_stress_active` is what pulls the APs out of
+// their idle loop and into smp_stress_iteration(); the BSP runs the same
+// iteration itself, so every core contends for the same locks.
+extern volatile int smp_stress_active;
+void smp_stress_iteration(cpu_info_t* me);
 
 #endif

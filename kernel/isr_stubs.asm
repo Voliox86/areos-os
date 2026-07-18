@@ -150,21 +150,22 @@ isr_common:
 ; RAX = syscall number, RDI/RSI/RDX/R10/R8/R9 = args (Linux convention)
 ; RCX = return RIP (set by syscall), R11 = saved RFLAGS (set by syscall)
 global syscall_entry
-global user_rsp
-global kernel_rsp
-global user_cr3
-global syscall_frame_ptr
 extern syscall_handler
 extern signal_dispatch
 
-section .data
-user_rsp:  dq 0
-kernel_rsp: dq 0
-user_cr3:  dq 0
-; Base of the saved user register frame on the kernel stack during a syscall:
-; [+0..112]=GPRs (r15..rax), [+120]=RFLAGS, [+128]=RIP. do_fork() reads it to
-; clone the caller's ring-3 context into the child (with rax=0 for the child).
-syscall_frame_ptr: dq 0
+; Byte offsets into cpu_info_t's ABI-fixed prefix (smp.h). These four slots used
+; to be plain globals right here — one set for the whole machine, which is fine
+; on one CPU and catastrophic the moment a second core takes a syscall: both
+; would stash their user CR3 and RSP over each other. They are now per-CPU, and
+; a compile-time check in smp.h fails the build if these offsets ever drift.
+;
+;   +24 = base of the saved user register frame on the kernel stack:
+;         [+0..112]=GPRs (r15..rax), [+120]=RFLAGS, [+128]=RIP. do_fork() reads
+;         it to clone the caller's ring-3 context into the child (rax=0 there).
+%define CPU_USER_RSP    0
+%define CPU_KERNEL_RSP  8
+%define CPU_USER_CR3    16
+%define CPU_FRAME_PTR   24
 
 section .text
 ; Entry: rax=syscall#, rdi/rsi/rdx/r10/r8/r9=args, rcx=user RIP, r11=user RFLAGS,
@@ -176,15 +177,32 @@ section .text
 ; CR3. (The previous version clobbered RAX/RBX during the CR3 switch *before*
 ; SAVE_REGS, corrupting the syscall number and the user's RBX/RSP.)
 syscall_entry:
-    mov [user_rsp], rsp          ; stash user RSP (higher-half alias, mapped in user CR3)
-    mov rsp, [kernel_rsp]        ; switch to kernel stack (stored as a higher-half alias)
+    ; GS is how we reach per-CPU state with NO free register — the one thing the
+    ; hardware gives us here. Each core's IA32_GS_BASE holds the HIGHER-HALF alias
+    ; of its own cpu_info slot (cpu_install_gs_base), so these accesses resolve
+    ; under the user CR3 too, through the PML4[511] mirror.
+    ;
+    ; NO swapgs, deliberately. The textbook discipline is to swap GS on every
+    ; ring transition, and it is wrong for this kernel: irq_common enters from a
+    ; process in ring 0 and can iretq into a DIFFERENT process in ring 3, so the
+    ; swaps would not pair — the next `syscall` would then compute gs:0 and write
+    ; to address 0. Instead GS_BASE simply stays pointed at the per-CPU block in
+    ; both rings. That is safe here precisely because NyxOS gives userspace no GS
+    ; base of its own (no TLS, no arch_prctl, CR4.FSGSBASE off), and ring 3 still
+    ; cannot read the block: the linear address it computes lands on a supervisor
+    ; page and faults.
+    ;
+    ; IF USERSPACE EVER GETS A GS BASE (TLS), this must become a real swapgs —
+    ; and then irq_common and isr_common need the paired swaps too.
+    mov [gs:CPU_USER_RSP], rsp   ; stash user RSP
+    mov rsp, [gs:CPU_KERNEL_RSP] ; switch to this CPU's kernel stack
     push rcx                     ; user return RIP
     push r11                     ; user RFLAGS
     SAVE_REGS                    ; save all 15 user GPRs intact — nothing clobbered yet
 
     ; All user state is now on the (higher-half) kernel stack; rax/rbx are free.
     mov rax, cr3
-    mov [user_cr3], rax          ; save user CR3
+    mov [gs:CPU_USER_CR3], rax   ; save user CR3
     mov rax, [kernel_pml4_phys]
     mov cr3, rax                 ; -> kernel CR3 (higher-half stack still mapped via 511)
 
@@ -196,7 +214,7 @@ syscall_entry:
     mov rcx, [rsp + 88]          ; RDX = arg3
     mov r8,  [rsp + 40]          ; R10 = arg4
     mov r9,  [rsp + 56]          ; R8  = arg5
-    mov [syscall_frame_ptr], rsp ; expose the saved user frame to do_fork() (frame base)
+    mov [gs:CPU_FRAME_PTR], rsp  ; expose the saved user frame to do_fork() (frame base)
     ; arg6 (user R9, at frame+48) is the 7th integer arg -> passed on the stack per
     ; SysV. Push it so the callee finds it just above the return address, then pop it
     ; back after the call so rsp is the frame base again for the RAX-slot write below.
@@ -213,7 +231,7 @@ syscall_entry:
     call signal_dispatch
 
     ; Return: back to user CR3 first (higher-half stack stays mapped), then restore.
-    mov rax, [user_cr3]
+    mov rax, [gs:CPU_USER_CR3]
     mov cr3, rax
     RESTORE_REGS                 ; restore user GPRs (RAX = return value)
     pop r11                      ; user RFLAGS
@@ -223,11 +241,11 @@ syscall_entry:
     ; also enters ring 3, with no STAR/GDT selector-ordering constraints). Build the
     ; iret frame: SS, RSP, RFLAGS, CS, RIP.
     push 0x23                    ; user SS (USER_DS, RPL 3)
-    push qword [user_rsp]        ; user RSP
+    push qword [gs:CPU_USER_RSP] ; user RSP
     push r11                     ; RFLAGS
     push 0x1B                    ; user CS (USER_CS, RPL 3)
     push rcx                     ; user RIP
-    iretq
+    iretq                        ; (no swapgs — GS_BASE stays per-CPU; see entry)
 
 ; IRQ stubs (mapped to INT 32-47)
 %macro IRQ 2

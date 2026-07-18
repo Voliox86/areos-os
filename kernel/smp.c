@@ -47,6 +47,65 @@ void ap_timer_tick(void) {
     apic_eoi();
 }
 
+// Point this CPU's GS base at its own cpu_info slot, so syscall_entry can reach
+// the ABI-fixed prefix with no free register (isr_stubs.asm explains why this is
+// IA32_GS_BASE and not the usual swapgs/IA32_KERNEL_GS_BASE pairing).
+//
+// The HIGHER-HALF alias is essential: `syscall` arrives still on the USER CR3,
+// which maps the kernel only through the PML4[511] mirror, never at its low link
+// address. Must be called AFTER any reload of the GS selector — loading a
+// segment selector in long mode zeroes that segment's base.
+#define IA32_GS_BASE 0xC0000101   /* 0xC0000100 is FS_BASE, 0xC0000102 is KERNEL_GS_BASE */
+
+void cpu_install_gs_base(uint32_t cpu_id) {
+    if (cpu_id >= MAX_CPUS) return;
+    write_msr(IA32_GS_BASE, (uint64_t)&cpu_info[cpu_id] + KERNEL_BASE);
+}
+
+volatile int smp_stress_active = 0;
+
+// One round of the cross-CPU allocator hammer. This is how the spinlocks get
+// PROVEN rather than merely written: without it the locks are never contended,
+// because only the BSP ever allocates. Every core runs this concurrently — the
+// APs from their idle loop, the BSP from cmd_smpstress — so alloc_page,
+// free_page, kmalloc and kfree really are entered from four cores at once.
+//
+// Each operation is verified, and anything wrong lands in this core's own
+// stress_bad counter (never a shared one, and never a printf — an AP has no
+// business in either).
+void smp_stress_iteration(cpu_info_t* me) {
+    uint64_t tag = 0xA5A5A5A500000000ULL | (uint64_t)me->apic_id_self;
+
+    void* p = alloc_page();
+    if (!p) {
+        me->stress_bad++;                  // 4 KB at a time, paired — never expected
+    } else {
+        // The failure this catches: the same frame handed to two cores at once.
+        // Write our own tag through the identity map, hold it a moment, and it
+        // must still be ours when we read it back.
+        volatile uint64_t* q = (volatile uint64_t*)p;
+        q[0] = tag;
+        for (volatile int d = 0; d < 64; d++) { }
+        if (q[0] != tag) me->stress_bad++;
+        free_page(p);
+    }
+
+    void* k = kmalloc(96);
+    if (!k) {
+        me->stress_bad++;
+    } else {
+        // Same idea one layer up: a torn slab/heap freelist shows as a block
+        // whose ends no longer hold what this core just wrote into them.
+        volatile uint8_t* b = (volatile uint8_t*)k;
+        uint8_t a = (uint8_t)me->apic_id_self, z = (uint8_t)~me->apic_id_self;
+        b[0] = a; b[95] = z;
+        for (volatile int d = 0; d < 64; d++) { }
+        if (b[0] != a || b[95] != z) me->stress_bad++;
+        kfree(k);
+    }
+    me->stress_ops++;
+}
+
 // Bring this AP's Local APIC online and start its periodic timer. Every register
 // touched here is CPU-local, so none of it disturbs the BSP's LAPIC.
 static void ap_lapic_init(void) {
@@ -246,16 +305,26 @@ void ap_main(uint32_t cpu_id) {
     // no diagnostic. Descriptor tables first, LAPIC second, `sti` last.
     gdt_load_on_ap();
     idt_load_on_ap();
+    cpu_install_gs_base(cpu_id);   // after the trampoline's `mov gs, ax` zeroed the base
+    setup_syscall_msrs();          // STAR/LSTAR/SF_MASK are per-CPU; ready for stage 3
     ap_lapic_init();
 
     // Kernel idle loop. This core now genuinely executes and services its own
     // timer interrupts, which is what a climbing cpu_info[].ticks proves. It
-    // stays OUT of the scheduler on purpose: current_idx, saved_rsp/next_rsp and
-    // the allocators are all unsynchronised globals today, so running processes
-    // here would corrupt the BSP. That needs per-CPU state and real spinlocks.
+    // stays OUT of the scheduler on purpose: current_idx and saved_rsp/next_rsp
+    // are still unsynchronised globals, so running processes here would corrupt
+    // the BSP. That is the next stage.
     //
-    // `sti; hlt` is the race-free idiom — sti's one-instruction shadow means the
-    // interrupt can't slip in before the halt. Halting also stops this core from
-    // starving the BSP under single-threaded TCG.
-    for (;;) __asm__ volatile("sti; hlt");
+    // The ALLOCATORS, though, are locked as of v5.8.91 — so an AP may now enter
+    // them, and smp_stress_active is what sends it in to prove the locks hold
+    // under real contention.
+    //
+    // `sti; hlt` is the race-free idiom: sti's one-instruction shadow means an
+    // interrupt can't slip in between enabling and halting. Halting also stops
+    // this core from starving the BSP under single-threaded TCG.
+    cpu_info_t* me = &cpu_info[cpu_id];
+    for (;;) {
+        if (smp_stress_active) smp_stress_iteration(me);
+        else __asm__ volatile("sti; hlt");
+    }
 }

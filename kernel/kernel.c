@@ -55,6 +55,7 @@ static void cmd_ps(int argc, char** argv);
 static void cmd_mtdemo(int argc, char** argv);
 static void cmd_mem(int argc, char** argv);
 static void cmd_cpus(int argc, char** argv);
+static void cmd_smpstress(int argc, char** argv);
 static void cmd_cowtest(int argc, char** argv);
 static void cmd_crash(int argc, char** argv);
 static void cmd_hexdump(int argc, char** argv);
@@ -129,6 +130,7 @@ static const command_t commands[] = {
     {"mtdemo",    cmd_mtdemo,    "Preemptive multitasking self-test", false},
     {"mem",       cmd_mem,       "Show memory usage", false},
     {"cpus",      cmd_cpus,      "List CPU cores (SMP)", false},
+    {"smpstress", cmd_smpstress, "Hammer the allocators from every CPU: smpstress [secs]", false},
     {"cowtest",   cmd_cowtest,   "Test demand paging + copy-on-write", false},
 
     {"crash",     cmd_crash,     "Trigger a kernel panic", false},
@@ -1396,6 +1398,52 @@ static void cmd_cpus(int argc, char** argv) {
         printf("APs run a kernel idle loop only (no user processes yet).\n");
 }
 
+// Prove the allocator spinlocks under REAL cross-CPU contention. Every online
+// core runs the same alloc/verify/free loop at once — the APs from their idle
+// loop, this thread for the BSP — which is the only way locks that are never
+// contended can be said to work at all.
+//
+// Two independent checks: each core verifies the memory it was handed still
+// holds what it wrote (nobody else got the same frame), and the machine-wide
+// free-page count must come back to where it started (every operation is paired,
+// so a torn bitmap shows as drift even if no single operation looked wrong).
+static void cmd_smpstress(int argc, char** argv) {
+    uint32_t secs = (argc >= 2) ? (uint32_t)atoi(argv[1]) : 3;
+    if (secs == 0 || secs > 30) secs = 3;
+
+    for (uint32_t i = 0; i < MAX_CPUS; i++) {
+        cpu_info[i].stress_ops = 0;
+        cpu_info[i].stress_bad = 0;
+    }
+
+    uint32_t free_before = get_free_pages();
+    printf("smpstress: %u CPU(s) hammering alloc_page/kmalloc for %us...\n", cpu_count, secs);
+
+    smp_stress_active = 1;
+    uint32_t deadline = tick_count + secs * 1000;      // PIT runs at 1000 Hz
+    while ((int32_t)(tick_count - deadline) < 0) smp_stress_iteration(&cpu_info[0]);
+    smp_stress_active = 0;
+    sleep(200);                                        // let each AP finish its iteration
+
+    uint32_t free_after = get_free_pages();
+    uint64_t total_ops = 0, total_bad = 0;
+    printf("CPU  ROLE  OPS         BAD\n");
+    for (uint32_t i = 0; i < cpu_count && i < MAX_CPUS; i++) {
+        printf("%-3u  %-4s  %-10lu  %lu\n", i, i == 0 ? "BSP" : "AP",
+               cpu_info[i].stress_ops, cpu_info[i].stress_bad);
+        total_ops += cpu_info[i].stress_ops;
+        total_bad += cpu_info[i].stress_bad;
+    }
+    printf("smpstress: %lu ops, %lu integrity failures\n", total_ops, total_bad);
+    // Drift means frames went missing or were double-freed. One expected
+    // exception: a COLD slab cache keeps the first page it grows into (slab pages
+    // are never returned to the page allocator), so the first run after boot is
+    // legitimately one page short. Run it twice — the second must balance exactly.
+    printf("smpstress: free pages %u -> %u (delta %d) -> %s\n",
+           free_before, free_after, (int)free_after - (int)free_before,
+           free_before == free_after ? "BALANCED OK" : "check (cold slab keeps its first page)");
+}
+
 static void cmd_cowtest(int argc, char** argv) {
     (void)argc; (void)argv;
     // Two pages in an otherwise-unused PML4 slot (0xFFFFA000_00000000).
@@ -1970,6 +2018,9 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
     bootsplash_update(5, 23, "Creating idle process...");
     printf("[INIT] System Calls...\n"); init_syscalls();
     bootsplash_update(6, 23, "Initializing system calls...");
+    // The BSP's own GS base, before anything can issue a `syscall`: syscall_entry
+    // reaches its per-CPU slots through GS and has no register to spare.
+    cpu_install_gs_base(0);
     setup_syscall_msrs();
     printf("[INIT] Syscall kernel stack...\n");
     bootsplash_update(7, 23, "Allocating syscall stack...");

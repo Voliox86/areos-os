@@ -102,7 +102,6 @@ int pipe_readable(int id) {
 }
 
 int pipe_read(int id, char* kbuf, int n) {
-    extern uint64_t user_cr3, user_rsp;
     if (id < 0 || id >= MAX_PIPES || !pipes[id].used || n <= 0) return -1;
     pipe_t* p = &pipes[id];
     process_t* self = get_current_process();

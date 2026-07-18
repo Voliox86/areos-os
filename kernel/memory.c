@@ -1,5 +1,20 @@
 #include "kernel.h"
 #include "slab.h"
+#include "spinlock.h"
+
+// The physical allocator's state — page_bitmap, page_refcount, free_pages,
+// memory_used — is now reachable from any CPU, so it needs a real lock rather
+// than preempt_disable(). Held for a bitmap scan at most, always with interrupts
+// off (a #PF handler allocates, and re-entering on the same core would deadlock).
+// init_memory/reserve_low_pages run before any AP exists and stay unlocked.
+static spinlock_t page_lock = SPINLOCK_INIT;
+
+// One lock for kmalloc/kfree, covering BOTH the slab caches and the heap free
+// list. They are two allocators but one dependency graph — slab_new_page() calls
+// alloc_page(), and kmalloc falls through from slab to heap — so a single lock
+// keeps the ordering trivially deadlock-free (kmalloc_lock is always taken
+// before page_lock, never the reverse).
+static spinlock_t kmalloc_lock = SPINLOCK_INIT;
 
 // Bitmap-based physical page allocator
 // Each bit represents one 4KB page (1 = free, 0 = used)
@@ -112,18 +127,21 @@ void init_memory(uint64_t mem_size, const mb_mmap_entry_t* mmap, int mmap_count)
 }
 
 void* alloc_page(void) {
+    uint64_t fl = spin_lock_irqsave(&page_lock);
     for (uint32_t i = 0; i < BITMAP_WORDS && i * 32 < total_pages; i++) {
         if (page_bitmap[i]) {
             uint32_t bit = __builtin_ctz(page_bitmap[i]);
             uint32_t page_idx = i * 32 + bit;
-            if (page_idx >= total_pages) return NULL;
+            if (page_idx >= total_pages) break;
             page_bitmap[i] &= ~(1 << bit);
             free_pages--;
             memory_used += PAGE_SIZE;
             page_refcount[page_idx] = 1;       // one owner until COW-shared
+            spin_unlock_irqrestore(&page_lock, fl);
             return (void*)(uintptr_t)(page_idx * PAGE_SIZE);
         }
     }
+    spin_unlock_irqrestore(&page_lock, fl);
     return NULL;
 }
 
@@ -132,8 +150,16 @@ void* alloc_page(void) {
 void page_incref(void* addr) {
     uint32_t page_idx = (uint32_t)(uintptr_t)addr / PAGE_SIZE;
     if (page_idx >= total_pages) return;
+    uint64_t fl = spin_lock_irqsave(&page_lock);
     if (page_refcount[page_idx] < 0xFF) page_refcount[page_idx]++;
+    spin_unlock_irqrestore(&page_lock, fl);
 }
+
+// Free-frame count. The strongest whole-machine invariant the SMP stress test
+// has: every core's allocations are paired with a free, so this number must be
+// identical before and after the run. A broken lock shows up as drift here even
+// when no individual operation looked wrong.
+uint32_t get_free_pages(void) { return free_pages; }
 
 uint32_t page_get_refcount(void* addr) {
     uint32_t page_idx = (uint32_t)(uintptr_t)addr / PAGE_SIZE;
@@ -144,15 +170,24 @@ uint32_t page_get_refcount(void* addr) {
 void free_page(void* addr) {
     uint32_t page_idx = (uint32_t)(uintptr_t)addr / PAGE_SIZE;
     if (page_idx >= total_pages) return;
-    // Shared page (COW): drop one reference, keep the frame for the others.
-    if (page_refcount[page_idx] > 1) { page_refcount[page_idx]--; return; }
-    // Pinned (shared-libc master) frames live for the whole OS lifetime: never free
-    // one, and floor its refcount at 1 so a stray over-decrement can't underflow it.
-    if (page_pinned[page_idx]) { page_refcount[page_idx] = 1; return; }
-    page_refcount[page_idx] = 0;
-    page_bitmap[page_idx / 32] |= 1 << (page_idx % 32);
-    free_pages++;
-    memory_used -= PAGE_SIZE;
+    uint64_t fl = spin_lock_irqsave(&page_lock);
+    // Shared page (COW): drop one reference, keep the frame for the others. The
+    // read-decide-write on the refcount is exactly why this needs the lock: two
+    // cores dropping the last two references could otherwise both see >1.
+    if (page_refcount[page_idx] > 1) {
+        page_refcount[page_idx]--;
+    } else if (page_pinned[page_idx]) {
+        // Pinned (shared-libc master) frames live for the whole OS lifetime: never
+        // free one, and floor the refcount at 1 so a stray over-decrement can't
+        // underflow it.
+        page_refcount[page_idx] = 1;
+    } else {
+        page_refcount[page_idx] = 0;
+        page_bitmap[page_idx / 32] |= 1 << (page_idx % 32);
+        free_pages++;
+        memory_used -= PAGE_SIZE;
+    }
+    spin_unlock_irqrestore(&page_lock, fl);
 }
 
 // Small allocation header for slab/heap routing
@@ -174,10 +209,12 @@ void slab_init_all(void) {
 
 // kmalloc: use slab for small objects (<=512 bytes), heap for larger
 void* kmalloc(size_t size) {
-    // preempt_disable: the slab/heap freelists are not reentrant, so a preemptive
-    // context switch mid-update (to another thread that also allocates) would
-    // corrupt them. Keep the whole allocation atomic w.r.t. the scheduler.
-    preempt_disable();
+    // The slab/heap freelists are not reentrant. preempt_disable() used to hold
+    // them together by stopping a context switch mid-update — which was enough
+    // while one CPU ran everything, and is worth nothing against another core
+    // that never consults it. The spinlock replaces it, and taking it with
+    // interrupts off subsumes what preempt_disable was doing locally.
+    uint64_t fl = spin_lock_irqsave(&kmalloc_lock);
     void* result = NULL;
     // Try the slab for small objects. slab_alloc returns NULL when no cache
     // class covers (size + header); in that case fall through to the heap
@@ -202,7 +239,7 @@ void* kmalloc(size_t size) {
             result = (void*)(hdr + 1);
         }
     }
-    preempt_enable();
+    spin_unlock_irqrestore(&kmalloc_lock, fl);
     return result;
 }
 
@@ -213,7 +250,7 @@ void* kmalloc_aligned(size_t size, uint32_t align) {
 
 void kfree(void* ptr) {
     if (!ptr) return;
-    preempt_disable();
+    uint64_t fl = spin_lock_irqsave(&kmalloc_lock);
     alloc_hdr_t* hdr = ((alloc_hdr_t*)ptr) - 1;
     extern void heap_free(void*);
     if (hdr->magic == ALLOC_MAGIC_SLAB) {
@@ -222,7 +259,7 @@ void kfree(void* ptr) {
         // ALLOC_MAGIC_HEAP, or a raw heap block allocated without our header.
         heap_free(hdr);
     }
-    preempt_enable();
+    spin_unlock_irqrestore(&kmalloc_lock, fl);
 }
 
 void* krealloc(void* ptr, size_t size) {

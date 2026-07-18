@@ -125,7 +125,6 @@ static void signal_terminate(process_t* p, int sig) {
  * RIP; the user RSP lives in the `user_rsp` global. Called on the kernel CR3 with
  * user_cr3 still pointing at the caller's address space (copy_to_user works). */
 void signal_dispatch(uint64_t* frame) {
-    extern uint64_t user_rsp;
     process_t* p = get_current_process();
     if (!p || !p->page_directory) return;
 
@@ -151,7 +150,6 @@ void signal_dispatch(uint64_t* frame) {
          * kernel CR3, and user_cr3/user_rsp are saved/restored across the park because
          * other processes' syscalls clobber those globals while we sleep. */
         if (sig == SIGTSTP || sig == SIGSTOP) {
-            extern uint64_t user_cr3;
             uint64_t s_cr3 = user_cr3, s_rsp = user_rsp;
             p->stop_sig = (uint32_t)sig;
             p->stopped_reported = 0;
@@ -218,7 +216,6 @@ void signal_dispatch(uint64_t* frame) {
  * so a handler that returns normally re-executes it (and re-faults): real handlers exit()
  * or longjmp() out. */
 int signal_deliver_fault(uint64_t* f, int sig) {
-    extern uint64_t user_cr3;
     process_t* p = get_current_process();
     if (!p || !p->page_directory) return 0;
     if (sig <= 0 || sig >= NSIG || uncatchable(sig)) return 0;
@@ -256,7 +253,6 @@ int signal_deliver_fault(uint64_t* f, int sig) {
  * saved by signal_dispatch into THIS syscall's frame + user_rsp and unblock the
  * handled signal, so the syscall return path iretq's back to where we interrupted. */
 void do_sigreturn(void) {
-    extern uint64_t syscall_frame_ptr, user_rsp;
     process_t* p = get_current_process();
     if (!p || !p->sig_active) return;        /* ignore a spurious sigreturn */
     uint64_t* frame = (uint64_t*)syscall_frame_ptr;

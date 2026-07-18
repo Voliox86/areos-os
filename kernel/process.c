@@ -161,14 +161,15 @@ process_t* create_user_process(const char* name, void* entry, void* user_stack, 
 // 15 GPRs r15..rax at frame[0..14], then RFLAGS at frame[15], RIP at frame[16].
 // The layout mirrors init_user_task_stack (SAVE_REGS block below an iretq frame),
 // so the scheduler resumes it through the same irq_common RESTORE_REGS/iretq path.
-static int init_forked_task_stack(process_t* proc, uint64_t* frame, uint64_t user_rsp) {
+// (parameter is `u_rsp`, not `user_rsp`: that name is now the per-CPU accessor.)
+static int init_forked_task_stack(process_t* proc, uint64_t* frame, uint64_t u_rsp) {
     void* stack_mem = kmalloc(4096);
     if (!stack_mem) return -1;
     uint64_t* sp = (uint64_t*)((uintptr_t)stack_mem + 4096);
 
     // iretq frame back to ring 3 (identical shape to init_user_task_stack).
     *--sp = USER_DS;                 // ss
-    *--sp = user_rsp;                // rsp = parent's user stack (COW-shared)
+    *--sp = u_rsp;                   // rsp = parent's user stack (COW-shared)
     *--sp = frame[15] | 0x202;       // rflags (parent's, IF + reserved bit forced on)
     *--sp = USER_CS;                 // cs
     *--sp = frame[16];               // rip = the instruction after the parent's syscall
@@ -206,8 +207,6 @@ static int init_forked_task_stack(process_t* proc, uint64_t* frame, uint64_t use
 // current_idx and the parent's page tables are stable. Returns the child pid, or
 // -1 on failure (out of memory / process slots / called from a kernel thread).
 int do_fork(void) {
-    extern uint64_t syscall_frame_ptr;      // parent's saved user frame (isr_stubs.asm)
-    extern uint64_t user_rsp;               // parent's ring-3 RSP at syscall entry
     extern void free_page_directory(uint64_t* pml4);
 
     process_t* parent = get_current_process();
@@ -438,7 +437,6 @@ int do_clone(uint64_t fn, uint64_t stack, uint64_t arg, uint64_t flags) {
 // that page agrees on the key. The word itself is read through the identity map — the
 // same supervisor path copy_to_user uses, so this stays SMEP/SMAP-clean.
 int do_futex(uint64_t uaddr, int op, uint32_t val) {
-    extern uint64_t user_cr3, user_rsp;
     process_t* self = get_current_process();
     if (!self || !self->page_directory) return -1;
     if (uaddr & 3) return -1;                       // futex words must be 4-byte aligned
@@ -515,7 +513,6 @@ void proc_set_comm(process_t* p, const char* path) {
 // replacing the caller). `stack_top` is elf_load_image's value; argc==0 leaves the
 // stack untouched (identical to a no-argv launch). Returns the adjusted RSP.
 uint64_t build_argv_stack(uint64_t* pd, uint64_t stack_top, char* const* kargv, int argc) {
-    extern uint64_t user_cr3;
     if (argc <= 0 || !kargv) return stack_top;
     if (argc > 32) argc = 32;
 
@@ -553,7 +550,6 @@ uint64_t build_argv_stack(uint64_t* pd, uint64_t stack_top, char* const* kargv, 
 
 int do_execve(const uint8_t* data, uint32_t size, char* const* kargv, int argc,
               char* const* kenvp, int envc, const char* path) {
-    extern uint64_t syscall_frame_ptr, user_rsp, user_cr3;
     process_t* self = get_current_process();
     if (!self || !self->page_directory) return -1;
     if (argc < 0) argc = 0;
@@ -773,7 +769,6 @@ void preempt_enable(void)  { if (preempt_count > 0) preempt_count--; }
 // in the kernel address space; user processes get their own CR3, and the TSS
 // RSP0 must be their kernel stack so their next ring3→ring0 entry lands safely.
 static void sched_target(process_t* p) {
-    extern uint64_t kernel_rsp;                     // syscall-entry stack (isr_stubs.asm)
     next_rsp = (uint64_t)p->stack;
     if (p->page_directory) {
         // A process interrupted in ring 0 (mid-syscall) resumes there, whose
@@ -938,7 +933,6 @@ void reap_zombies(void) {
 // that iretq re-enables them.
 int do_waitpid(int wpid, int* out_code, int options) {
     extern void free_page_directory(uint64_t* pml4);
-    extern uint64_t user_cr3, user_rsp;
     process_t* self = get_current_process();
     if (!self) return -1;
     uint64_t saved_cr3 = user_cr3, saved_ursp = user_rsp;

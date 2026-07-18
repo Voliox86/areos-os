@@ -36,8 +36,6 @@ void setup_syscall_msrs(void) {
 }
 
 // Provide kernel stack to user processes via the syscall_entry global variable
-extern uint64_t user_rsp;
-extern uint64_t kernel_rsp;
 
 void set_kernel_rsp(uint64_t rsp) {
     kernel_rsp = rsp;
@@ -137,7 +135,6 @@ static void ufd_release(int ufd) {
  * `blocked_in_kernel` set so the scheduler resumes it on the KERNEL CR3, and
  * the shared user_cr3/user_rsp globals saved/restored around the loop. */
 static int stdin_read_line(char* kbuf, int max) {
-    extern uint64_t user_cr3, user_rsp;
     process_t* self = get_cur_proc();
     uint64_t saved_cr3 = user_cr3, saved_ursp = user_rsp;
     int len = 0;
@@ -181,7 +178,6 @@ static int stdin_read_line(char* kbuf, int max) {
  * (home/end) — 3 bytes, emitted only if they fit. Blocking follows the same
  * discipline as stdin_read_line, and a pending signal interrupts with -EINTR. */
 static int stdin_read_raw(char* kbuf, int max) {
-    extern uint64_t user_cr3, user_rsp;
     process_t* self = get_cur_proc();
     uint64_t saved_cr3 = user_cr3, saved_ursp = user_rsp;
     int len = 0;
@@ -235,7 +231,6 @@ static int stdin_read_raw(char* kbuf, int max) {
  * reads keys directly via getkey_poll, no echo, no line discipline. */
 static int stdin_readkey(uint32_t timeout_ms) {
     extern volatile uint32_t tick_count;         /* 1000 Hz -> milliseconds */
-    extern uint64_t user_cr3, user_rsp;
     process_t* self = get_cur_proc();
     uint64_t saved_cr3 = user_cr3, saved_ursp = user_rsp;
     uint32_t deadline = tick_count + timeout_ms;  /* wrap-safe via signed compare */
@@ -270,7 +265,6 @@ static int stdin_readkey(uint32_t timeout_ms) {
  * THIS process. A pending signal (e.g. Ctrl-C) cuts the sleep short with -EINTR. */
 static int do_sleep_ms(uint32_t ms) {
     extern volatile uint32_t tick_count;         /* 1000 Hz -> milliseconds */
-    extern uint64_t user_cr3, user_rsp;
     process_t* self = get_cur_proc();
     uint64_t saved_cr3 = user_cr3, saved_ursp = user_rsp;
     uint32_t deadline = tick_count + ms;         /* wrap-safe via signed compare */
@@ -310,7 +304,6 @@ static int do_sleep_ms(uint32_t ms) {
  * (whose table pages are identity-mapped physical memory) and access the
  * resulting physical page via the kernel's identity map. `user_cr3` is saved by
  * syscall_entry for the process that trapped. */
-extern uint64_t user_cr3;
 
 /* Physical-frame masks (bits 51:12 / 51:21 / 51:30). Must exclude bit 63 (NX)
  * and the low flag bits — masking with ~0xFFF alone keeps NX, producing a
@@ -968,7 +961,6 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             // restores the pre-handler context into this syscall's frame; we return
             // the restored RAX so the entry stub's post-write leaves it intact.
             do_sigreturn();
-            extern uint64_t syscall_frame_ptr;
             uint64_t* f = (uint64_t*)syscall_frame_ptr;
             return f ? f[14] : 0;
         }
@@ -1001,7 +993,6 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             // stdin_readkey, pipe/socket reads, do_waitpid). Without it, copy_to_user
             // and the asm return path translate through the FOREIGN address space,
             // wild-writing a live page of an unrelated process (issue #20).
-            extern uint64_t user_cr3, user_rsp;
             uint64_t saved_cr3 = user_cr3, saved_ursp = user_rsp;
             uint32_t start = tick_count;
             for (;;) {

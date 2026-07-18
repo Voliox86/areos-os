@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.90"
+#define KERNEL_VERSION "5.8.91"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -790,6 +790,29 @@ void irq_eoi(uint64_t int_no);
 // VGA/BIOS window, the high SeaBIOS/ACPI regions, PCI MMIO) is reserved automatically.
 typedef struct { uint64_t base; uint64_t len; uint32_t type; } mb_mmap_entry_t;
 void init_memory(uint64_t mem_size, const mb_mmap_entry_t* mmap, int mmap_count);
+#include "smp.h"
+
+/* The syscall entry/exit path's scratch slots. They were three plain globals in
+ * isr_stubs.asm; as of v5.8.91 they live in the PER-CPU block, and these names
+ * resolve to the calling core's copy so the C code that reads and writes them
+ * keeps its exact shape.
+ *
+ * What this fixes: cross-CPU clobbering. Two cores in a syscall at once would
+ * have overwritten each other's saved user CR3 and RSP — the wild-writer class
+ * that made the v5.8.83 hunt so painful, multiplied by every core.
+ *
+ * What this does NOT fix, on purpose: they are still shared between processes
+ * time-slicing on the SAME core, so the save/restore dances around every
+ * blocking wait (do_waitpid, pipe reads, futex, signal parking) remain
+ * necessary. Ending those needs the slots saved into the process at context
+ * switch time, which is a separate change from making the machine SMP-safe.
+ */
+#define user_rsp          (cpu_self()->sc_user_rsp)
+#define kernel_rsp        (cpu_self()->sc_kernel_rsp)
+#define user_cr3          (cpu_self()->sc_user_cr3)
+#define syscall_frame_ptr (cpu_self()->sc_frame_ptr)
+
+uint32_t get_free_pages(void); // free physical frames (SMP stress invariant)
 void enable_smep_smap(void);   // CR4.SMEP/SMAP if the CPU supports them (kernel.c)
 int  cpu_apply_smep_smap(void); // same, silent + returns bit0=SMEP bit1=SMAP (APs use this)
 void* kmalloc(size_t size);
