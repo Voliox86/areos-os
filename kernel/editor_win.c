@@ -20,11 +20,17 @@ editor_win_t* editor_create_ctx(void) {
 
 static void editor_save(editor_win_t* ed) {
     char* filename = ed->filename[0] ? ed->filename : "/home/user/untitled.txt";
-    char buf[EDITOR_MAX_LINES * EDITOR_LINE_LEN];
+    // 512 * 256 = 128 KB. This used to be a STACK array, and kernel task stacks
+    // are kmalloc(4096) — 4 KB. Every single Save overflowed the kernel stack by
+    // a factor of thirty-two, straight through whatever happened to live below
+    // it. On the heap it is just a large allocation.
+    char* buf = (char*)kmalloc(EDITOR_MAX_LINES * EDITOR_LINE_LEN);
+    if (!buf) return;
+    const int bufsz = EDITOR_MAX_LINES * EDITOR_LINE_LEN;
     int pos = 0;
-    for (int i = 0; i < ed->line_count && pos < (int)sizeof(buf) - 2; i++) {
+    for (int i = 0; i < ed->line_count && pos < bufsz - 2; i++) {
         int len = strlen(ed->lines[i]);
-        if (pos + len + 1 >= (int)sizeof(buf)) break;
+        if (pos + len + 1 >= bufsz) break;
         memcpy_asm(buf + pos, ed->lines[i], len);
         pos += len;
         buf[pos++] = '\n';
@@ -37,6 +43,7 @@ static void editor_save(editor_win_t* ed) {
     } else {
         snprintf(ed->status, sizeof(ed->status), "Save failed: %s", filename);
     }
+    kfree(buf);
 }
 
 static void editor_open(editor_win_t* ed, const char* path) {
@@ -236,8 +243,8 @@ void editor_win_click(window_t* win, int mx, int my, int btn) {
     editor_win_t* ed = (editor_win_t*)win->reserved;
     if (!ed || btn != 1) return;
     // Toolbar click
-    if (my >= win->y && my < win->y + TOOLBAR_H) {
-        int rx = mx - win->x;
+    if (my >= WIN_CLIENT_Y(win) && my < WIN_CLIENT_Y(win) + TOOLBAR_H) {
+        int rx = mx - WIN_CLIENT_X(win);
         if (rx >= 4 && rx < 4 + BTN_W) {
             // Open
             if (!ed->filename[0]) {
@@ -266,7 +273,7 @@ void editor_win_click(window_t* win, int mx, int my, int btn) {
         }
     }
     // Click in text area → move cursor
-    int text_area_y = win->y + TOOLBAR_H;
+    int text_area_y = WIN_CLIENT_Y(win) + TOOLBAR_H;   /* was missing TITLE_H too */
     int avail_h = (int)win->h - TOOLBAR_H - STATUS_H;
     if (my >= text_area_y && my < text_area_y + avail_h && mx >= win->x + 36) {
         int max_rows = avail_h / FONT_HEIGHT;

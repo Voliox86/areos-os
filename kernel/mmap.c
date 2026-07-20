@@ -90,6 +90,18 @@ int do_mprotect(uint64_t addr, uint64_t length, int prot) {
     addr &= ~0xFFFULL;
     length = (length + 0xFFF) & ~0xFFFULL;
     uint64_t end = addr + length;
+
+    // The range must be USER memory, and must not wrap. Both callers of this
+    // prologue (mprotect and munmap) accepted ANY address and ANY length:
+    //  - aimed at the shared-libc mapping, mprotect made those pages writable
+    //    for one process — and since that is one physical copy mapped read-only
+    //    into everybody, it is a shared-library patch visible system-wide;
+    //  - aimed at a higher-half address, both walked the kernel's own tables;
+    //  - with a huge length, the per-4 KB loop below ran for billions of
+    //    iterations with interrupts masked — an unprivileged hard hang.
+    // The bound is the one user_v2p and the ELF loader use; one definition, in
+    // kernel.h, so it cannot drift between the places that enforce it.
+    if (end <= addr || addr < USER_SPACE_MIN || end > USER_SPACE_END) return -1;
     for (int i = 0; i < PROC_MAX_VMAS; i++) {
         vma_t* v = &p->mmap_vmas[i];
         if (v->used && v->start < end && v->end > addr) v->prot = (uint32_t)prot;
@@ -110,6 +122,18 @@ int do_munmap(uint64_t addr, uint64_t length) {
     addr &= ~0xFFFULL;
     length = (length + 0xFFF) & ~0xFFFULL;
     uint64_t end = addr + length;
+
+    // The range must be USER memory, and must not wrap. Both callers of this
+    // prologue (mprotect and munmap) accepted ANY address and ANY length:
+    //  - aimed at the shared-libc mapping, mprotect made those pages writable
+    //    for one process — and since that is one physical copy mapped read-only
+    //    into everybody, it is a shared-library patch visible system-wide;
+    //  - aimed at a higher-half address, both walked the kernel's own tables;
+    //  - with a huge length, the per-4 KB loop below ran for billions of
+    //    iterations with interrupts masked — an unprivileged hard hang.
+    // The bound is the one user_v2p and the ELF loader use; one definition, in
+    // kernel.h, so it cannot drift between the places that enforce it.
+    if (end <= addr || addr < USER_SPACE_MIN || end > USER_SPACE_END) return -1;
 
     vm_free_range((uint64_t*)p->page_directory, addr, end);
 

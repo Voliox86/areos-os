@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.99"
+#define KERNEL_VERSION "5.9.0-LTS"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -404,18 +404,24 @@ typedef struct {
     uint64_t rsp0;
     uint64_t rsp1;
     uint64_t rsp2;
-    uint32_t reserved_ss0;    // offset 28 (was SS0 in 32-bit)
-    uint32_t reserved_ss1;    // offset 32 (was SS1 in 32-bit)
-    uint32_t reserved_ss2;    // offset 36 (was SS2 in 32-bit)
-    uint64_t ist1;            // offset 40
-    uint64_t ist2;            // offset 48
-    uint64_t ist3;            // offset 56
-    uint64_t ist4;            // offset 64
-    uint64_t ist5;            // offset 72
-    uint64_t ist6;            // offset 80
-    uint64_t ist7;            // offset 88
-    uint32_t reserved2;       // offset 96
-    uint16_t iomap_base;      // offset 100
+    // Intel Vol 3, Fig 7-11: exactly EIGHT reserved bytes here, not twelve.
+    // This used to carry three dwords (a leftover of the 32-bit SS0/SS1/SS2
+    // fields), which pushed every IST slot four bytes too high: tss_set_ist()
+    // wrote IST1 at offset 40 while the CPU reads it from 36. The double-fault
+    // handler's stack pointer was therefore always garbage, so a double fault
+    // triple-faulted and rebooted instead of reaching the panic screen — the IST
+    // mechanism has never actually worked.
+    uint64_t reserved1;       // offset 28
+    uint64_t ist1;            // offset 36
+    uint64_t ist2;            // offset 44
+    uint64_t ist3;            // offset 52
+    uint64_t ist4;            // offset 60
+    uint64_t ist5;            // offset 68
+    uint64_t ist6;            // offset 76
+    uint64_t ist7;            // offset 84
+    uint64_t reserved2;       // offset 92
+    uint16_t reserved3;       // offset 100
+    uint16_t iomap_base;      // offset 102 -> struct is 104 bytes
 } __attribute__((packed)) tss_entry_t;
 
 // RTC time structure (also in rtc.h)
@@ -758,6 +764,7 @@ void tss_set_ist(uint8_t ist_idx, uint64_t stack_top);
 void load_tss(void);
 void load_tss_for_cpu(uint32_t cpu);   // each core loads its OWN TSS (see gdt.c)
 void sched_target(process_t* p);       // aim this CPU's next_rsp/next_cr3/TSS at p
+void sched_forget(process_t* p);       // clear p from every core's sched_cur before freeing it
 void init_idt(void);
 void idt_set_gate(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags);
 void idt_set_gate_ist(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags, uint8_t ist);
@@ -782,7 +789,11 @@ void idt_load_on_ap(void);     // point an AP at the BSP's IDT (shared, read-onl
 #define IST_STACK_SIZE 8192
 #define IST_DOUBLE_FAULT 1
 void init_isr(void);
-void isr_handler(uint64_t int_no, uint64_t rip, uint64_t error, uint64_t cs, uint64_t* frame);
+// fault_cr3: the CR3 that was live when the exception was taken. isr_common must
+// pass it because it switches to the kernel tables before calling in — read_cr3()
+// inside the handler would report the KERNEL's CR3 for every ring-3 fault.
+void isr_handler(uint64_t int_no, uint64_t rip, uint64_t error, uint64_t cs, uint64_t* frame,
+                 uint64_t fault_cr3);
 void init_irq(void);
 void irq_handler(uint64_t irq_no);
 void irq_install_handler(int irq, void (*handler)(void*));
@@ -826,6 +837,19 @@ void init_memory(uint64_t mem_size, const mb_mmap_entry_t* mmap, int mmap_count)
 #define saved_rsp         (cpu_self()->sc_saved_rsp)
 #define next_rsp          (cpu_self()->sc_next_rsp)
 #define next_cr3          (cpu_self()->sc_next_cr3)
+
+/* THE user/kernel address boundary. Canonical user space is the lower half:
+ * [USER_SPACE_MIN, USER_SPACE_END). Anything at or above USER_SPACE_END is
+ * non-canonical or the higher-half kernel mirror. Defined here rather than in
+ * syscall.c because it is not a syscall concept — the ELF loader needs the same
+ * bound (a PT_LOAD above it maps into the kernel's own page tables), and so does
+ * anything else that accepts an address from userspace. One definition, so the
+ * boundary cannot drift between the places that enforce it. */
+/* Largest single PT_LOAD we will honour. Bounds the per-page allocation loop
+ * in elf_load_image at 65536 iterations; no NyxOS binary comes close. */
+#define ELF_MAX_SEGMENT (256ULL * 1024 * 1024)
+#define USER_SPACE_MIN 0x1000ULL
+#define USER_SPACE_END 0x0000800000000000ULL
 
 uint32_t get_free_pages(void); // free physical frames (SMP stress invariant)
 process_t* create_kernel_thread_on_cpu(const char* name, void* entry, int cpu);
@@ -933,6 +957,7 @@ int vfs_write(int fd, const void* buf, size_t count);
 int vfs_pread(int fd, void* buf, uint32_t count, uint32_t offset);
 int vfs_pwrite(int fd, const void* buf, uint32_t count, uint32_t offset);
 int vfs_close(int fd);
+void vfs_dup(int fd);   // count an extra fd aliasing a mount-backed mirror
 int vfs_stat(const char* path, uint32_t* size, int* is_dir);  // 0 ok / -1 not found
 int vfs_fstat(int fd, uint32_t* size, int* is_dir);           // by internal vfs fd
 int vfs_mkdir(const char* path, mode_t mode);

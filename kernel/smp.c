@@ -108,13 +108,28 @@ void tlb_shootdown(uint64_t vaddr) {
         __asm__ volatile("mfence" ::: "memory");
         apic_send_ipi_all_but_self(IPI_TLB_VECTOR);
 
-        // Bounded wait: a core that never answers (wedged, or stopped) must not
-        // hang the machine — better a possibly-stale TLB on one core than a
-        // dead system, and the count below makes it visible if it ever happens.
+        // Bounded wait: a core that never answers must not hang the machine —
+        // better a possibly-stale TLB on one core than a dead system.
+        //
+        // The bound is deliberately modest. An acknowledgement is microseconds;
+        // the reason to time out at all is a core that CANNOT answer, e.g. one
+        // sitting with interrupts disabled. That is not hypothetical — it is
+        // exactly what `tlbtest` does on purpose — and with a huge bound the
+        // sender burns seconds spinning for an answer that will never come.
         int spins = 0;
-        while (shootdown_pending && ++spins < 100000000)
+        while (shootdown_pending && ++spins < 2000000)
             __asm__ volatile("pause" ::: "memory");
-        if (shootdown_pending) shootdown_pending = 0;
+        if (shootdown_pending) {
+            // Say so ONCE. A silently degraded TLB is the kind of thing that
+            // turns into an unexplainable bug three versions later.
+            static int warned = 0;
+            if (!warned) {
+                warned = 1;
+                printf("[SMP] WARNING: TLB shootdown timed out (cpus 0x%x did not ack);"
+                       " their TLB may be stale. Reported once.\n", shootdown_pending);
+            }
+            shootdown_pending = 0;
+        }
     }
     tlb_shootdowns++;
     spin_unlock(&shootdown_lock);
@@ -155,8 +170,8 @@ void ap_scheduler_tick(void) {
     apic_eoi();
 
     process_t* cur = (process_t*)me->sched_cur;
-    if (cur) cur->stack = (void*)me->sc_saved_rsp;   // remember where to resume it
-    else     me->idle_rsp = me->sc_saved_rsp;        // ...or where idle left off
+    if (cur) cur->stack = (void*)me->sc_saved_rsp;    // remember where to resume it
+    else     me->idle_rsp = me->sc_saved_rsp;         // ...or where idle left off
 
     extern process_t* process_table[MAX_PROCESSES];
     extern int process_count;

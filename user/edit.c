@@ -53,7 +53,16 @@ static void s_goto(int row, int col) { s_str("\x1b["); s_int(row); s_putc(';'); 
 
 static int slen(const char* s) { int n = 0; while (s[n]) n++; return n; }
 
+/* Set when the file did not fit the editor's fixed limits. save() REFUSES while
+ * this is set, because saving would write back only the part that fitted — over
+ * the original, via O_TRUNC. That is silent destruction of the user's file, and
+ * the editor cannot know which part mattered. Refusing is the only honest
+ * behaviour: an editor that will not save is annoying, one that eats your file
+ * is not acceptable. */
+static int truncated = 0;
+
 static void load(void) {
+    truncated = 0;
     long fd = open(fname, O_RDONLY, 0);
     if (fd < 0) { nlines = 0; return; }          /* new file */
     static char fb[8192];
@@ -61,18 +70,30 @@ static void load(void) {
     while (total < (long)sizeof(fb) - 1 &&
            (r = read((int)fd, fb + total, sizeof(fb) - 1 - total)) > 0)
         total += r;
+    /* The read stopped at the buffer limit, so there may be more file left. */
+    if (total >= (long)sizeof(fb) - 1) truncated = 1;
     close((int)fd);
     fb[total] = '\0';
-    nlines = 0; int col = 0;
-    for (long i = 0; i < total && nlines < MAXLINES; i++) {
+    nlines = 0;
+    int col = 0;
+    long i = 0;
+    for (; i < total && nlines < MAXLINES; i++) {
         char ch = fb[i];
         if (ch == '\n') { buf[nlines][col] = '\0'; nlines++; col = 0; }
-        else if (ch != '\r' && col < MAXCOL - 1) buf[nlines][col++] = ch;
+        else if (ch != '\r') {
+            if (col < MAXCOL - 1) buf[nlines][col++] = ch;
+            else truncated = 1;                  /* line longer than MAXCOL */
+        }
     }
+    if (i < total) truncated = 1;                /* ran out of lines (MAXLINES) */
     if (col > 0 && nlines < MAXLINES) { buf[nlines][col] = '\0'; nlines++; }
+    if (truncated) strcpy(msg, "READ-ONLY: file too big for editor");
 }
 
 static void save(void) {
+    /* Checked BEFORE the open: O_TRUNC empties the file the instant it succeeds,
+     * so any check after it would already have destroyed the data it protects. */
+    if (truncated) { strcpy(msg, "REFUSED: truncated on load, would lose data"); return; }
     long fd = open(fname, O_CREAT | O_TRUNC, 0644);
     if (fd < 0) { strcpy(msg, "SAVE FAILED"); return; }
     long bytes = 0;
@@ -105,6 +126,10 @@ static void render(void) {
     s_str(" ");
     s_str(fname);
     s_str(dirty ? " *" : "  ");
+    /* Persistent, not transient: the main loop clears `msg` on any keystroke, so
+     * the warning from load() would vanish the moment the user started typing —
+     * and they would only learn the file is unsaveable when they tried to save. */
+    if (truncated) s_str(" [READ-ONLY]");
     s_str("  Ln "); s_int(cy + 1); s_putc('/'); s_int(nlines);
     s_str("  Col "); s_int(cx + 1);
     s_str("   ^O Save  ^X Exit");

@@ -105,8 +105,22 @@ static void map_pml4(uint64_t* pml4, void* phys, void* virt, uint64_t flags) {
         pt = pt_next(pde, "pde", vaddr, pd_idx);
     }
 
+    uint64_t old = pt[pt_idx];
+
     pt[pt_idx] = (uint64_t)phys | PAGE_PRESENT | PAGE_WRITABLE | (flags & PAGE_USER ? PAGE_USER : 0) | (flags & PAGE_NX);
-    __asm__ volatile("invlpg (%0)" :: "r"(virt) : "memory");
+
+    // Two different situations, and conflating them would be expensive:
+    //
+    //  - REPLACING a live translation. Other cores may hold the old one cached
+    //    and would go on using it, so they must be told. (This is the case my
+    //    own tlbtest hit: its remap was invisible to CPU 1 until a shootdown.)
+    //
+    //  - Creating one where there was none. A remote core holding the old
+    //    not-present state simply faults and re-walks, so a broadcast buys
+    //    nothing — and this is the demand-fault path, so putting an IPI here
+    //    would tax every page fault in the system.
+    if (old & PAGE_PRESENT) tlb_shootdown(vaddr);
+    else __asm__ volatile("invlpg (%0)" :: "r"(virt) : "memory");
 }
 
 void map_page(void* phys, void* virt, uint64_t flags) {
@@ -138,7 +152,11 @@ void unmap_page(void* virt) {
 
     uint64_t* pt = (uint64_t*)(pde & ~0xFFF);
     pt[pt_idx] = 0;
-    __asm__ volatile("invlpg (%0)" :: "r"(virt) : "memory");
+    // Removal from the KERNEL page tables, which every core shares — the case
+    // v5.8.95 missed while wiring up vm_free_range/vm_protect_range/vm_unmap.
+    // Its one caller (vbe.c, at mode-set) runs on the BSP holding no allocator
+    // lock, so the shootdown rule is satisfied.
+    tlb_shootdown(vaddr);
 }
 
 uint64_t* get_kernel_page_directory(void) {
@@ -318,8 +336,24 @@ int vm_handle_fault(uint64_t cr2, uint64_t err) {
     // page-table entry (nor intermediate tables) yet; map_page_dir creates them.
     // The heap window belongs to the THREAD GROUP: a page sbrk'd by one thread must
     // fault in for any sibling that touches it, so test the leader's window, not ours.
+    // The window is read from ANOTHER process_t (the thread-group leader), reached
+    // via find_process(), which walks the process table with no lock. So it can be
+    // observed mid-update or belong to a slot being recycled. Sanity-check it
+    // before trusting it: a heap that starts below user space, or an inverted
+    // window, is never legitimate — and a window starting at 0 swallows the
+    // program's own .text, which is exactly how a zeroed NX page ended up mapped
+    // over live code. Rejecting it here costs one comparison and can only ever
+    // STOP this path firing on a nonsense window; it never enables it anywhere it
+    // did not already fire.
+    //
+    // HONEST SCOPE: hardening, NOT the fix for the v5.9.0 intermittent [fault].
+    // With this guard in place the fault still reproduced (NX violation on the
+    // process's own .text, CR2 == RIP, err 0x15), so the zeroed-NX page that
+    // lands over user code does NOT come through this path. Still unexplained;
+    // see the ordering note in elf.c and P0.1 in the release blockers.
     process_t* mm = tg_leader(p);
     if ((err & 0x4) && !(err & 0x1) && p && p->page_directory && mm &&
+        mm->heap_start >= USER_SPACE_MIN && mm->program_break > mm->heap_start &&
         cr2 >= mm->heap_start && cr2 < mm->program_break) {
         void* page = alloc_page();
         if (!page) return 0;
@@ -460,10 +494,29 @@ void vm_protect_range(uint64_t* pml4, uint64_t start, uint64_t end, int prot) {
     for (uint64_t va = start; va < end; va += PAGE_SIZE) {
         uint64_t* pte = pte_ptr(pml4, va, 0);
         if (pte && (*pte & PAGE_PRESENT)) {
+            uint64_t e = *pte;
             uint64_t f = PAGE_PRESENT | PAGE_USER;
             if (prot & PROT_WRITE) f |= PAGE_WRITABLE;
             if (!(prot & PROT_EXEC)) f |= PAGE_NX;
-            *pte = (*pte & PTE_ADDR_MASK) | f;
+
+            // A COW page must STAY copy-on-write. Rebuilding the entry from the
+            // frame address alone dropped PTE_COW and, for PROT_WRITE, granted
+            // PAGE_WRITABLE outright — so after fork(), an mprotect(PROT_WRITE)
+            // on shared memory let this process write the frame the OTHER one is
+            // still reading. No fault, no copy: silent cross-process corruption,
+            // the exact isolation fork() exists to provide.
+            //
+            // Keeping the marker and withholding the write bit means the first
+            // write still faults into the COW handler, which privatises the page
+            // and only then applies the writability this call asked for.
+            if (e & PTE_COW) {
+                f &= ~PAGE_WRITABLE;
+                f |= PTE_COW;
+            }
+            // Demand-mapped entries keep their marker for the same reason.
+            if (e & PTE_DEMAND) f |= PTE_DEMAND;
+
+            *pte = (e & PTE_ADDR_MASK) | f;
             // mprotect can only ever RESTRICT what another core already has
             // cached (a writable entry becoming read-only), so it must be
             // broadcast for the new protection to actually bind.

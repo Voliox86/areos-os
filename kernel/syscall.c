@@ -31,8 +31,20 @@ void setup_syscall_msrs(void) {
     // gates use the same +KERNEL_BASE aliasing for interrupts from ring 3.)
     write_msr(MSR_LSTAR, (uint64_t)syscall_entry + KERNEL_BASE);
 
-    // SF_MASK: clear IF (bit 9) and DF (bit 10) during syscall
-    write_msr(MSR_SF_MASK, (1 << 9) | (1 << 10));
+    // SF_MASK: RFLAGS bits to CLEAR on entry to the kernel. Every one of these is
+    // ring-3 state that would otherwise survive into kernel code:
+    //   TF (8)  single-step. A syscall made with TF set raised a #DB on the very
+    //           first kernel instruction — a debug exception in ring 0, from an
+    //           unprivileged program, at an attacker-chosen moment.
+    //   IF (9)  interrupts, so entry is atomic until the kernel stack is set up.
+    //   DF (10) direction. The counterpart of the `cld` now in SAVE_REGS: with DF
+    //           set, memcpy_asm/memset_asm (bare rep movsb/stosb) run BACKWARDS.
+    //   NT (14) nested task, which would corrupt an IRET's behaviour.
+    //   AC (18) alignment check — and, more importantly, the flag that SUSPENDS
+    //           SMAP. The kernel enables SMAP (v5.8.86) precisely so a stray
+    //           ring-0 access to a user page traps; letting ring 3 hand us AC=1
+    //           would switch that protection off for the whole syscall.
+    write_msr(MSR_SF_MASK, (1 << 8) | (1 << 9) | (1 << 10) | (1 << 14) | (1 << 18));
 }
 
 // Provide kernel stack to user processes via the syscall_entry global variable
@@ -49,8 +61,6 @@ void set_kernel_rsp(uint64_t rsp) {
  * kernel. Rejecting those stops a ring-3 process from handing the kernel a
  * kernel address as a syscall buffer (which would be an arbitrary kernel
  * read/write or info-leak primitive). */
-#define USER_SPACE_MIN 0x1000ULL
-#define USER_SPACE_END 0x0000800000000000ULL
 
 static int user_ptr_ok(uint64_t ptr, uint64_t len) {
     if (ptr < USER_SPACE_MIN) return 0;
@@ -314,22 +324,44 @@ static int do_sleep_ms(uint32_t ms) {
 
 /* Non-static: do_futex (process.c) keys its wait queue by the word's physical address,
  * so every task sharing the page agrees on the key. */
+/* SECURITY: this is THE choke point for turning a userspace address into a
+ * physical one, so it is where the user/kernel boundary has to be enforced —
+ * not at each caller.
+ *
+ * The hole this closes: alloc_page_directory() mirrors kernel_pml4[511] into
+ * EVERY user PML4, and that entry is the identity map of all physical RAM.
+ * KERNEL_BASE is 0xFFFFFF8000000000 == -2^39, so (KERNEL_BASE + X) >> 39 & 0x1FF
+ * is exactly 511 and the walk below resolved KERNEL_BASE+X to physical X. Any
+ * copy_to_user() whose destination was not separately validated was therefore an
+ * arbitrary write into kernel memory — reachable from ring 3 through
+ * signal_dispatch's user RSP, sigprocmask's oldset pointer, and others.
+ *
+ * Two independent guards, because one of them being bypassed should not be
+ * enough:
+ *   1. the address must lie in the canonical LOWER half (user space);
+ *   2. every level of the walk must be marked PAGE_USER, so a mapping the
+ *      hardware would refuse to ring 3 is refused here too.
+ * Guard 2 is what keeps this correct if a kernel-only mapping ever appears in
+ * the lower half, where guard 1 alone would let it through.
+ */
 uint64_t user_v2p(uint64_t vaddr) {
     if (!user_cr3) return 0;
+    if (vaddr < USER_SPACE_MIN || vaddr >= USER_SPACE_END) return 0;
+
     uint64_t* pml4 = (uint64_t*)(user_cr3 & PT_ADDR_4K);
     uint64_t e = pml4[(vaddr >> 39) & 0x1FF];
-    if (!(e & 1)) return 0;
+    if ((e & 5) != 5) return 0;                 /* PRESENT | USER */
     uint64_t* pdpt = (uint64_t*)(e & PT_ADDR_4K);
     e = pdpt[(vaddr >> 30) & 0x1FF];
-    if (!(e & 1)) return 0;
+    if ((e & 5) != 5) return 0;
     if (e & 0x80) return (e & PT_ADDR_1G) + (vaddr & 0x3FFFFFFFULL);
     uint64_t* pd = (uint64_t*)(e & PT_ADDR_4K);
     e = pd[(vaddr >> 21) & 0x1FF];
-    if (!(e & 1)) return 0;
+    if ((e & 5) != 5) return 0;
     if (e & 0x80) return (e & PT_ADDR_2M) + (vaddr & 0x1FFFFFULL);
     uint64_t* pt = (uint64_t*)(e & PT_ADDR_4K);
     e = pt[(vaddr >> 12) & 0x1FF];
-    if (!(e & 1)) return 0;
+    if ((e & 5) != 5) return 0;
     return (e & PT_ADDR_4K) + (vaddr & 0xFFFULL);
 }
 
@@ -895,6 +927,8 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             if (newfd < 0) return -1;                  /* fd table full */
             if (internal & UFD_PIPE_FLAG)
                 pipe_incref(UFD_PIPE_ID(internal), UFD_PIPE_IS_WRITE(internal));
+            else if (!(internal & UFD_SOCK_FLAG))
+                vfs_dup(internal);   /* mount-backed mirrors need the alias counted */
             p->ufd_offset[newfd] = p->ufd_offset[oldfd];   /* start at the same offset */
             return newfd;
         }

@@ -134,8 +134,8 @@ void soundtest_win_click(window_t* win, int mx, int my, int btn) {
     soundtest_win_t* st = (soundtest_win_t*)win->reserved;
     if (!st || btn != 1) return;
 
-    int x0 = win->x + 12;
-    int y0 = win->y + 12 + FONT_HEIGHT + 6;
+    int x0 = WIN_CLIENT_X(win) + 12;
+    int y0 = WIN_CLIENT_Y(win) + 12 + FONT_HEIGHT + 6;
     int bw = BTN_W;
     int bh = BTN_H;
 

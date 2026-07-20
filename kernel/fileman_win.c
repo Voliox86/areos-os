@@ -398,7 +398,7 @@ void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
 void fileman_win_click(window_t* win, int mx, int my, int btn) {
     fileman_win_t* fm = (fileman_win_t*)win->reserved;
     if (!fm) return;
-    int cx = win->x, cy = win->y + TITLE_H;
+    int cx = WIN_CLIENT_X(win), cy = WIN_CLIENT_Y(win);
     uint32_t cw = win->w, ch = win->h;
     uint32_t char_h = FONT_HEIGHT;
 
@@ -551,7 +551,7 @@ void fileman_win_click(window_t* win, int mx, int my, int btn) {
 // list). Uses the same geometry as draw/click, so drop-target detection matches
 // what the user sees.
 static int fileman_row_at(fileman_win_t* fm, window_t* win, int my) {
-    int cy = win->y + TITLE_H;
+    int cy = WIN_CLIENT_Y(win);
     uint32_t char_h = FONT_HEIGHT;
     int search_bar_h = fm->search_active ? HEADER_H : 0;
     int list_header_y = cy + TOOLBAR_H + HEADER_H + search_bar_h;
@@ -581,7 +581,7 @@ void fileman_win_mousemove(window_t* win, int mx, int my, int btns) {
             fm->drag_start_x = mx;
             fm->drag_start_y = my;
             // Determine which file was under cursor at press time
-            int cy = win->y + TITLE_H;
+            int cy = WIN_CLIENT_Y(win);
             uint32_t char_h = FONT_HEIGHT;
             int list_header_y = cy + TOOLBAR_H + HEADER_H + search_bar_h;
             int list_y = list_header_y + char_h + 4;
@@ -844,7 +844,20 @@ void fileman_win_key(window_t* win, int key) {
             char path[256];
             fileman_get_path(fm, fm->input_buf, path, sizeof(path));
             if (fm->input_mode == 3) {
-                // Rename
+                // Rename. The selection was validated when the rename STARTED,
+                // but it can be cleared while the user is still typing the new
+                // name — fileman_refresh() drops it when a search filter no
+                // longer matches, and deleting resets it to -1. Committing then
+                // indexed entries[-1], reading 64 bytes from before the array
+                // and handing them to vfs_rename as a path. Re-check here, the
+                // same way every other consumer of sel_index already does.
+                if (fm->sel_index < 0 || fm->sel_index >= fm->entry_count) {
+                    snprintf(fm->status, sizeof(fm->status), "Rename cancelled: selection lost");
+                    fm->input_mode = 0;
+                    fm->input_pos = 0;
+                    fm->input_buf[0] = '\0';
+                    return;
+                }
                 char old_path[256];
                 fileman_get_path(fm, fm->entries[fm->sel_index], old_path, sizeof(old_path));
                 vfs_rename(old_path, path);

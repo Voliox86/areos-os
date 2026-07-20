@@ -18,8 +18,22 @@ extern irq_eoi
 %define CPU_NEXT_RSP    40
 %define CPU_NEXT_CR3    48
 
-; Save all registers (15 pushes)
+; Save all registers (15 pushes).
+;
+; The `cld` is a SECURITY requirement, not tidiness. RFLAGS.DF is part of ring 3's
+; state and survives into the handler: a user program can execute `std` and then
+; simply wait for a timer interrupt. Every rep-string in the kernel would then run
+; BACKWARDS — and memcpy_asm/memset_asm in stubs.asm are exactly `rep movsb` /
+; `rep stosb`, so essentially every copy and clear in the kernel would walk down
+; through memory instead of up. The SysV ABI also requires DF clear on entry to
+; any C function, so compiler-emitted string ops assume it too.
+;
+; The `syscall` path is already covered by IA32_FMASK (syscall.c clears IF and
+; DF); interrupts and exceptions were not covered by anything. Putting it in this
+; macro covers every entry path that saves state — irq_common, isr_common and
+; ap_timer_stub — in one place, so a new stub cannot forget it.
 %macro SAVE_REGS 0
+    cld
     push rax
     push rbx
     push rcx
@@ -147,6 +161,13 @@ isr_common:
     mov rdx, [rsp + 128]     ; error code
     mov rcx, [rsp + 144]     ; CS (ring is CS & 3)
     mov r8, rsp              ; 5th arg: exception frame base (GPRs..int/err/RIP/CS/RFLAGS/RSP/SS)
+    ; 6th arg: the CR3 THAT FAULTED. The handler cannot read this for itself —
+    ; we switched to the kernel's tables above, so a read_cr3() in C reports the
+    ; KERNEL's CR3 on every single ring-3 fault, unconditionally. A diagnostic
+    ; built on that measures the handler, not the faulting task, and will happily
+    ; report "wrong address space" for a perfectly ordinary user bug. It did:
+    ; five P0.1 hypotheses were chased against that artefact.
+    mov r9, r15
     call isr_handler         ; may rewrite the frame to divert a ring-3 fault into a signal handler
     mov cr3, r15             ; restore the faulting address space before returning
     RESTORE_REGS
@@ -232,6 +253,31 @@ syscall_entry:
     ; not return at all for a default-terminate signal. rsp = the saved user frame.
     mov rdi, rsp
     call signal_dispatch
+
+    ; ATOMIC RETURN WINDOW — this cli is the fix for P0.1, and it is load-bearing.
+    ;
+    ; Below, we switch CR3 to the user space and THEN run ~20 instructions before
+    ; the iretq that actually drops to ring 3. Across that window the task is still
+    ; CPL 0 (kernel code) but already on the USER CR3. If it is preempted there, the
+    ; scheduler saves a frame whose CS says ring 0 (0x08 — true, we ARE in ring 0),
+    ; and irq_scheduler_tick's rule "a ring-0 frame resumes on the kernel CR3, since
+    ; the syscall switches to user itself before its iretq" then resumes us on the
+    ; KERNEL CR3 — but we have ALREADY done our switch and will not repeat it. The
+    ; `push 0x1B / iretq` below then returns to ring 3 on the kernel CR3, and the
+    ; first user instruction fetch faults (CR2 == RIP). That is P0.1 exactly:
+    ; intermittent, always in `threads`, load-dependent, recoverable.
+    ;
+    ; Why the window is reachable at all: syscall ENTRY masks IF via SF_MASK, so a
+    ; simple syscall runs cli'd from entry to iretq and cannot be preempted here.
+    ; But BLOCKING syscalls sti to yield (futex_wait, do_waitpid, poll, pipe read)
+    ; and return with IF=1 — so the exit path runs preemptibly. `threads`
+    ; synchronises on futex constantly, which is why the fault is always in it.
+    ;
+    ; cli makes the CR3-switch..iretq window non-preemptible; iretq then restores
+    ; the user RFLAGS (IF=1) atomically as it enters ring 3. One instruction, and it
+    ; covers every syscall regardless of what it left IF as. The ENTRY side needs no
+    ; equivalent: its pre-switch window already runs with IF=0 from SF_MASK.
+    cli
 
     ; Return: back to user CR3 first (higher-half stack stays mapped), then restore.
     mov rax, [gs:CPU_USER_CR3]
@@ -411,6 +457,7 @@ extern tlb_shootdown_ipi
 
 global tlb_ipi_stub
 tlb_ipi_stub:
+    cld                          ; see SAVE_REGS: ring 3 may have left DF set
     push rax
     push rcx
     push rdx

@@ -40,7 +40,10 @@ static int exception_signal(uint64_t int_no) {
     }
 }
 
-void isr_handler(uint64_t int_no, uint64_t rip, uint64_t error, uint64_t cs, uint64_t* frame) {
+// fault_cr3 is supplied by isr_common (saved before it switched to the kernel
+// tables). Do NOT substitute read_cr3() here — see the note at that call site.
+void isr_handler(uint64_t int_no, uint64_t rip, uint64_t error, uint64_t cs, uint64_t* frame,
+                 uint64_t fault_cr3) {
     // Page fault: give demand-paging / copy-on-write a chance to resolve it
     // (allocate the page / make a private copy) and retry the instruction.
     if (int_no == 14 && vm_handle_fault(read_cr2(), error))
@@ -70,6 +73,26 @@ void isr_handler(uint64_t int_no, uint64_t rip, uint64_t error, uint64_t cs, uin
                    cur ? (unsigned)cur->pid : 0, cur ? cur->comm : "?",
                    exception_names[int_no], int_no, rip, error);
             if (int_no == 14) printf(" fault-addr 0x%lx", cr2);
+            // Which address space was the task ACTUALLY in when it died? Kept
+            // deliberately (three values, no state, on a path where the process
+            // dies anyway): it is what separates a wrong-address-space kernel bug
+            // from an ordinary user-program bug in any future report.
+            //
+            // fault_cr3 comes from isr_common, which stashed CR3 BEFORE switching
+            // to the kernel tables. Using read_cr3() here instead is the trap that
+            // cost this project five refuted P0.1 hypotheses: it reports the
+            // KERNEL's CR3 on every ring-3 fault, so <ON-KERNEL-CR3> fired
+            // unconditionally and looked like hard evidence of a wrong CR3.
+            {
+                extern uint64_t kernel_pml4_phys;
+                uint64_t cr3n = fault_cr3 & ~0xFFFULL;
+                uint64_t pdn  = cur ? ((uint64_t)cur->page_directory & ~0xFFFULL) : 0;
+                uint64_t kpn  = (uint64_t)kernel_pml4_phys & ~0xFFFULL;
+                printf(" | cpu=%u cr3=0x%lx pd=0x%lx cs=0x%lx%s%s",
+                       (unsigned)cpu_self()->cpu_number, cr3n, pdn, cs,
+                       (cr3n == kpn)        ? " <ON-KERNEL-CR3>" : "",
+                       (pdn && cr3n != pdn) ? " <CR3-MISMATCH>"  : "");
+            }
             printf(" -> killed (signal %d)\n", signo);
             if (cur) {
                 cur->exit_code = 128 + signo;   // waitpid status convention: 128 + signo

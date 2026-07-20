@@ -23,6 +23,16 @@ typedef struct vfs_node {
     uint32_t child_count;
     uint32_t readdir_idx;  // per-directory readdir cursor
     uint8_t  mount_backed; // 1 = transient node mirroring a mounted-FS file
+    /* How many live fds point at this node. A VFS "fd" IS this pointer (see
+     * vfs_open), so the pool must not recycle a node while anyone still holds
+     * one — the next alloc_node() would hand the same memory to a different
+     * file. This was tracked only for mount mirrors aliased by dup(); /proc
+     * nodes and unlinked ramdisk files were recycled or wiped out from under
+     * their holders. One count, every node kind: 1 after open, +1 per dup,
+     * -1 per close, released at zero. */
+    uint32_t open_refs;
+    uint8_t  orphaned;     // unlinked from the tree while still open; free at last close
+    uint8_t  on_free_list; // already queued in free_nodes[] — double-free guard
     char     mpath[MAX_NAME]; // path within the mount (e.g. "/foo.txt")
     void*    mount_ent;    // mount_entry_t* to flush writes through
     uint32_t dev_type;    // 0 = regular file; else a /dev special (DEV_* below)
@@ -89,11 +99,32 @@ static vfs_node_t* alloc_node(void) {
     return node;
 }
 
+/* Queue a node for reuse. The `on_free_list` check is not defensive padding:
+ * pushing the same node twice puts it in free_nodes[] twice, and the next two
+ * alloc_node() calls then hand ONE node to two different files. Several paths
+ * could reach this twice for the same node (a close racing proc_sync, an unlink
+ * of a still-open file), so the guard belongs here rather than at each caller. */
 static void free_node(vfs_node_t* n) {
     preempt_disable();
-    if (n && free_node_count < MAX_INODES)
+    if (n && !n->on_free_list && free_node_count < MAX_INODES) {
+        n->on_free_list = 1;
         free_nodes[free_node_count++] = n;
+    }
     preempt_enable();
+}
+
+/* Release a node's storage and return it to the pool — but only once nobody
+ * holds an fd onto it. While it is still open we merely mark it orphaned: it is
+ * already out of the directory tree, so it is invisible to lookups, and the last
+ * vfs_close finishes the job. That is the unlink-while-open behaviour callers
+ * already assume, and it is what stops the pool recycling live handles. */
+static void release_node(vfs_node_t* n) {
+    if (!n) return;
+    if (n->open_refs > 0) { n->orphaned = 1; return; }
+    if (n->data) { kfree(n->data); n->data = NULL; }
+    n->size = 0;
+    n->child_count = 0;
+    free_node(n);
 }
 
 // Append `child` to directory `parent`; returns 0, or -1 if `parent` already holds
@@ -313,11 +344,19 @@ static void proc_sync(void) {
     extern int process_count;
     preempt_disable();
     // 1. Remove pid dirs whose process is gone (free their children first).
+    //
+    // release_node, not free_node: a VFS fd IS the node pointer, and this runs
+    // from vfs_open/vfs_isdir — so `cat /proc/<pid>/status` on a process that
+    // exits mid-read used to have its node handed straight back to the pool and
+    // reissued by the very next open. The reader then read, and could write
+    // through, whatever file got the slot. Held nodes are unlinked from /proc
+    // here (so they stop resolving) and freed by their last close instead.
     for (uint32_t i = 0; i < proc_node->child_count; ) {
         vfs_node_t* c = proc_node->children[i];
         if (c->proc_type == PROC_PID_DIR && !find_process(c->proc_pid)) {
-            for (uint32_t j = 0; j < c->child_count; j++) free_node(c->children[j]);
-            free_node(c);
+            for (uint32_t j = 0; j < c->child_count; j++) release_node(c->children[j]);
+            c->child_count = 0;
+            release_node(c);
             proc_node->children[i] = proc_node->children[--proc_node->child_count];
         } else i++;
     }
@@ -415,6 +454,7 @@ int vfs_open(const char* path, int flags, mode_t mode) {
             dn->type = 1; dn->mount_backed = 1; dn->mount_ent = me;
             strncpy(dn->mpath, sub, MAX_NAME - 1);
             dn->data = (uint8_t*)dents; dn->size = (uint32_t)nd;
+            dn->open_refs = 1;
             return (int)(uintptr_t)dn;
         }
         if (dents) kfree(dents);
@@ -440,6 +480,7 @@ int vfs_open(const char* path, int flags, mode_t mode) {
                 }
             }
         }
+        n->open_refs = 1;
         return (int)(uintptr_t)n;
     }
 
@@ -461,11 +502,13 @@ int vfs_open(const char* path, int flags, mode_t mode) {
             if (ino->data) { kfree(ino->data); ino->data = 0; }
             ino->size = 0;
         }
+        ino->open_refs++;
         return (int)(uintptr_t)ino;
     }
 
     if (!ino) return -1;
     ino->readdir_idx = 0;  // reset readdir cursor on open
+    ino->open_refs++;
     return (int)(uintptr_t)ino;
 }
 
@@ -553,11 +596,35 @@ int vfs_pwrite(int fd, const void* buf, uint32_t count, uint32_t offset) {
     return (int)count;
 }
 
+/* dup(oldfd) aliases a handle, and for a VFS handle "the handle" is literally
+ * this node pointer. That was documented as safe because vfs_close is a no-op
+ * for the ramdisk nodes ring 3 normally opens — true, but NOT for a
+ * mount-backed mirror, which vfs_close frees. Two fds onto one /mnt file
+ * therefore produced a double kfree of ->data and a node returned to the pool
+ * twice, which then hands the same node out to two different opens.
+ *
+ * A count of the aliases is enough: only the last close releases. The count is
+ * kept for EVERY node kind, not just mount mirrors — a dup'd /proc handle is
+ * just as capable of outliving the process whose directory it names. */
+void vfs_dup(int fd) {
+    if (fd <= 0) return;
+    vfs_node_t* ino = (vfs_node_t*)(uintptr_t)(uint32_t)fd;
+    ino->open_refs++;
+}
+
 int vfs_close(int fd) {
     if (fd <= 0) return 0;
     vfs_node_t* ino = (vfs_node_t*)(uintptr_t)(uint32_t)fd;
-    if (ino->mount_backed) {          // transient mirror — release it
-        if (ino->data) kfree(ino->data);
+    if (ino->open_refs > 0) ino->open_refs--;
+    if (ino->open_refs > 0) return 0;              // another fd still holds it
+
+    /* At zero refs, two kinds of node go back to the pool: a transient
+     * mount mirror (which only ever existed for this fd), and one that was
+     * unlinked or reaped from the tree while this fd was open. Everything else
+     * is a live tree node and simply stays where it is. */
+    if (ino->mount_backed || ino->orphaned) {
+        if (ino->data) { kfree(ino->data); ino->data = NULL; }
+        ino->size = 0;
         free_node(ino);
     }
     return 0;
@@ -654,14 +721,29 @@ int vfs_unlink(const char* path) {
     vfs_node_t* parent = resolve_parent(path, child_name);
     if (!parent || parent->type != 1) return -1;
     for (uint32_t i = 0; i < parent->child_count; i++) {
-        if (strcmp(parent->children[i]->name, child_name) == 0) {
-            if (parent->children[i]->data) kfree(parent->children[i]->data);
-            memset_asm(parent->children[i], 0, sizeof(vfs_node_t));
-            for (uint32_t j = i; j < parent->child_count - 1; j++)
-                parent->children[j] = parent->children[j+1];
-            parent->child_count--;
-            return 0;
-        }
+        vfs_node_t* victim = parent->children[i];
+        if (strcmp(victim->name, child_name) != 0) continue;
+
+        /* Removing a directory that still has children used to drop the whole
+         * subtree on the floor: the directory node went away and every node
+         * under it stayed allocated but unreachable, gone from the tree and
+         * never returned to the pool. Refuse instead — same rule the ext2 side
+         * applies, and it stops `rm` from quietly destroying a populated
+         * directory. */
+        if (victim->type == 1 && victim->child_count > 0) return -1;
+
+        /* This was `memset_asm(victim, 0, sizeof(vfs_node_t))` and nothing else:
+         * the node was wiped in place but never handed back, so every delete
+         * permanently burned one of the MAX_INODES slots (256 total, root alone
+         * holds ~58) until file creation simply stopped working. The wipe was
+         * also done with no regard for open fds — and an fd here is a pointer
+         * straight at this struct. release_node does both parts properly. */
+        for (uint32_t j = i; j < parent->child_count - 1; j++)
+            parent->children[j] = parent->children[j+1];
+        parent->child_count--;
+        victim->parent = NULL;
+        release_node(victim);
+        return 0;
     }
     return -1;
 }

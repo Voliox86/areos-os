@@ -99,9 +99,16 @@ void gui_demo(void) {
                 int steps = (x1 > x0 ? x1 - x0 : x0 - x1) > (y1 > y0 ? y1 - y0 : y0 - y1)
                     ? (x1 > x0 ? x1 - x0 : x0 - x1)
                     : (y1 > y0 ? y1 - y0 : y0 - y1);
+                // steps is 0 whenever the pointer has not moved since the last
+                // sample — i.e. any time the user holds the button down without
+                // dragging, which is the single most ordinary thing to do with a
+                // paint tool. The loop still ran once, and `(x1 - x0) * 0 / 0` is
+                // a divide by zero: #DE, in ring 0, on a plain mouse press.
+                // At zero steps the two endpoints are the same point, so there is
+                // nothing to interpolate — plot it and move on.
                 for (int i = 0; i <= steps; i++) {
-                    int x = x0 + (x1 - x0) * i / steps;
-                    int y = y0 + (y1 - y0) * i / steps;
+                    int x = steps ? x0 + (x1 - x0) * i / steps : x0;
+                    int y = steps ? y0 + (y1 - y0) * i / steps : y0;
                     if (y > 20) draw_pixel(x, y, colors[color_idx]);
                 }
             } else {

@@ -350,7 +350,7 @@ void minesweeper_win_click(window_t* win, int mx, int my, int btn) {
     minesweeper_win_t* m = (minesweeper_win_t*)win->reserved;
     if (!m) return;
 
-    int cx = win->x, cy = win->y + TITLE_H;
+    int cx = WIN_CLIENT_X(win), cy = WIN_CLIENT_Y(win);
     int hx = cx + MS_MARGIN, hy = cy + MS_MARGIN;
     int board_w = MS_COLS * MS_CELL;
 

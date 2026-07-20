@@ -162,7 +162,7 @@ void calc_win_click(window_t* win, int mx, int my, int btn) {
     if (!calc) return;
 
     int x0 = win->x + CALC_MARGIN;
-    int y0 = win->y + CALC_MARGIN;
+    int y0 = WIN_CLIENT_Y(win) + CALC_MARGIN;   /* was missing TITLE_H */
     int by_start = y0 + CALC_DISP_H + CALC_GAP + TITLE_H;
 
     for (int i = 0; i < 16; i++) {

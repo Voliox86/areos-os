@@ -10,7 +10,18 @@ global create_task_stack
 
 ; switch_context(uint64_t* old_rsp_ptr, uint64_t new_rsp)
 ; RDI = old_rsp_ptr, RSI = new_rsp (x86_64 ABI)
+; CURRENTLY UNUSED — the preemptive scheduler switches through irq_common's
+; saved_rsp/next_rsp instead. Kept because create_task_stack's frame layout is
+; the reference the process.c stack builders are written against.
+;
+; It also USED TO BE BROKEN: it pushed 14 registers and popped 15, so resuming a
+; context this function had saved consumed the return address as if it were RAX
+; and `ret` jumped to whatever sat above it. It only ever appeared to work
+; because the one frame it was fed came from create_task_stack, which lays out
+; 15 slots. The `push rax` below restores the symmetry; do not remove it without
+; removing a pop as well.
 switch_context:
+    push rax
     push rbx
     push rcx
     push rdx
@@ -25,11 +36,15 @@ switch_context:
     push r13
     push r14
     push r15
-    ; [RSP+0]=r15, [RSP+8]=r14, ..., [RSP+96]=rdi, [RSP+104]=rsi
-    ; Read saved args from stack
-    mov rax, [rsp + 96]        ; old_rsp_ptr
+    ; Pushed rax..r15, so from RSP: r15=+0 r14=+8 r13=+16 r12=+24 r11=+32
+    ; r10=+40 r9=+48 r8=+56 rbp=+64 rdi=+72 rsi=+80 rdx=+88 rcx=+96 rbx=+104
+    ; rax=+112. The saved ARGS are rdi (old_rsp_ptr) and rsi (new_rsp).
+    ; These offsets were +96/+104, which are rcx and rbx — so this function
+    ; read the wrong two registers as its arguments on top of the push/pop
+    ; imbalance. Both are fixed; it remains unused.
+    mov rax, [rsp + 72]        ; saved RDI = old_rsp_ptr
     mov [rax], rsp             ; *old_rsp_ptr = current RSP
-    mov rsp, [rsp + 104]       ; RSP = new_rsp
+    mov rsp, [rsp + 80]        ; saved RSI = new_rsp
     pop r15
     pop r14
     pop r13

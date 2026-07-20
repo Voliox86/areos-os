@@ -140,7 +140,7 @@ void paint_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
 void paint_win_click(window_t* win, int mx, int my, int btn) {
     paint_win_t* pw = (paint_win_t*)win->reserved;
     if (!pw) return;
-    int cx = win->x, cy = win->y;
+    int cx = WIN_CLIENT_X(win), cy = WIN_CLIENT_Y(win);   /* content, not title bar */
     uint32_t cw = win->w;
     (void)win->h;
 
@@ -239,8 +239,8 @@ void paint_win_key(window_t* win, int key) {
 void paint_win_mousemove(window_t* win, int mx, int my, int btns) {
     (void)btns;
     paint_win_t* pw = (paint_win_t*)win->reserved;
-    if (!pw) return;
-    int cx = win->x, cy = win->y;
+    if (!pw || !pw->drawing) return;
+    int cx = WIN_CLIENT_X(win), cy = WIN_CLIENT_Y(win);
     uint32_t cw = win->w;
 
     int canvas_x = cx + (int)(cw - PAINT_CANVAS_W) / 2;

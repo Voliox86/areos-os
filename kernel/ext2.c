@@ -4,8 +4,11 @@
 
 ext2_fs_t ext2_fs;
 
-static uint8_t* block_buf = NULL;
-static uint32_t block_buf_size = 0;
+/* Bytes an on-disk directory entry occupies before its name: inode + rec_len +
+ * name_len + file_type. `de->name` lives at +8, not +4 — the driver had that
+ * wrong in four places and wrote past the end of the block buffer each time. */
+#define EXT2_DIRENT_HDR   8u
+
 
 static void read_sectors(uint32_t lba, uint8_t count, void* buf) {
     ata_read_sectors(ext2_fs.drive, ext2_fs.part_start_lba + lba, count, buf);
@@ -17,13 +20,69 @@ static uint32_t block_to_lba(uint32_t block) {
     return block * sectors_per_block;
 }
 
-static uint8_t* get_block_buf(void) {
-    if (block_buf && block_buf_size >= ext2_fs.block_size)
-        return block_buf;
-    if (block_buf) kfree(block_buf);
-    block_buf = (uint8_t*)kmalloc(ext2_fs.block_size);
-    if (block_buf) block_buf_size = ext2_fs.block_size;
-    return block_buf;
+/* THREE buffers, not one, and the distinction is the whole point.
+ *
+ * There used to be a single shared staging buffer, handed to everyone who needed
+ * to hold a block. That is safe only if no holder ever calls another block-layer
+ * function while its data is live — and they do, constantly. The worst case was
+ * free_inode_blocks(): it read an indirect block into the shared buffer, then
+ * walked it calling ext2_free_block() on each entry — and ext2_free_block loads
+ * the block BITMAP into that same buffer. After the very first free, the array
+ * being iterated WAS the bitmap, so the loop went on "freeing" bitmap bytes
+ * reinterpreted as block numbers. Deleting one file could release arbitrary
+ * blocks across the disk, and this is the one subsystem whose damage survives a
+ * reboot.
+ *
+ * Splitting by ROLE makes the reentrancy safe by construction rather than by
+ * everyone remembering:
+ *   0 = general staging (the caller's data block)
+ *   1 = bitmap staging  (allocator/free paths only — never a caller's data)
+ *   2 = auxiliary       (a nested read while 0 is still live)
+ *   3 = auxiliary 2     (the doubly-indirect walk needs two levels live)
+ *   4 = metadata        (BGD / inode reads, consumed immediately — these are
+ *                        called FROM the free path, so they must not land on
+ *                        the caller's staged block either)
+ */
+static uint8_t* ext2_bufs[5]     = { NULL, NULL, NULL, NULL, NULL };
+static uint32_t ext2_buf_sizes[5] = { 0, 0, 0, 0, 0 };
+
+static uint8_t* get_buf_n(int n) {
+    if (ext2_bufs[n] && ext2_buf_sizes[n] >= ext2_fs.block_size)
+        return ext2_bufs[n];
+    if (ext2_bufs[n]) kfree(ext2_bufs[n]);
+    ext2_bufs[n] = (uint8_t*)kmalloc(ext2_fs.block_size);
+    ext2_buf_sizes[n] = ext2_bufs[n] ? ext2_fs.block_size : 0;
+    return ext2_bufs[n];
+}
+
+static uint8_t* get_block_buf(void)  { return get_buf_n(0); }
+static uint8_t* get_bitmap_buf(void) { return get_buf_n(1); }
+static uint8_t* get_aux_buf(void)    { return get_buf_n(2); }
+static uint8_t* get_aux2_buf(void)   { return get_buf_n(3); }
+static uint8_t* get_meta_buf(void)   { return get_buf_n(4); }
+
+/* Seconds since the Unix epoch, from the RTC.
+ *
+ * The driver had no time source at all, so every inode field that holds one was
+ * left at zero. For atime/mtime that is merely ugly (every file dates to 1970);
+ * for DTIME it is a real inconsistency, because ext2 defines a freed inode as
+ * one with a non-zero dtime and e2fsck reports "deleted inode has zero dtime"
+ * for every file NyxOS has ever removed. Civil-date-to-days is Howard Hinnant's
+ * days_from_civil, which is exact for the whole proleptic Gregorian range. */
+static uint32_t ext2_now(void) {
+    rtc_time_t t;
+    rtc_read_time(&t);
+    if (t.year < 1970 || t.month < 1 || t.month > 12) return 0;
+
+    int32_t y = (int32_t)t.year;
+    uint32_t m = t.month, d = t.day ? t.day : 1;
+    y -= (m <= 2);
+    int32_t era = (y >= 0 ? y : y - 399) / 400;
+    uint32_t yoe = (uint32_t)(y - era * 400);
+    uint32_t doy = (153 * (m + (m > 2 ? (uint32_t)-3 : 9)) + 2) / 5 + d - 1;
+    uint32_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    int64_t days = (int64_t)era * 146097 + (int64_t)doe - 719468;
+    return (uint32_t)(days * 86400 + t.hour * 3600 + t.minute * 60 + t.second);
 }
 
 static int read_block_group_bgd(uint32_t group, ext2_bgd_t* bgd) {
@@ -32,7 +91,7 @@ static int read_block_group_bgd(uint32_t group, ext2_bgd_t* bgd) {
     uint32_t bgd_in_block = group % bgd_per_block;
 
     uint32_t block = ext2_fs.bgd_block + bgd_block_offset;
-    uint8_t* buf = get_block_buf();
+    uint8_t* buf = get_meta_buf();
     if (!buf) return -1;
 
     ext2_read_block(block, buf);
@@ -41,8 +100,7 @@ static int read_block_group_bgd(uint32_t group, ext2_bgd_t* bgd) {
 }
 
 void init_ext2(void) {
-    block_buf = NULL;
-    block_buf_size = 0;
+    for (int i = 0; i < 5; i++) { ext2_bufs[i] = NULL; ext2_buf_sizes[i] = 0; }
 }
 
 int ext2_mount(uint8_t drive, uint32_t part_lba) {
@@ -56,10 +114,28 @@ int ext2_mount(uint8_t drive, uint32_t part_lba) {
     if (ext2_fs.sb.magic != EXT2_SUPER_MAGIC)
         return -1;
 
+    /* Every geometry field below comes off the DISK, and each one of them fed
+     * either a divide or a buffer size further down:
+     *   log_block_size -> `1024 << n`, undefined for n >= 22 and absurd well
+     *                     before that; it sizes every kmalloc'd block buffer.
+     *   inodes_per_group -> the divisor in ext2_read_inode. Zero is a #DE, i.e.
+     *                     a kernel fault raised by plugging in a bad image.
+     *   inode_size     -> block_size / inode_size. Zero-or-too-big is the same #DE.
+     *   *_per_group    -> the bit count handed to find_free_bit, which walks a
+     *                     buffer only block_size*8 bits long.
+     * A corrupt or hostile image is not an exotic input for a filesystem driver —
+     * it is the normal one. Validate once here, so nothing downstream has to. */
+    if (ext2_fs.sb.log_block_size > 2) return -1;          /* 1024 / 2048 / 4096 */
     ext2_fs.block_size = 1024 << ext2_fs.sb.log_block_size;
     ext2_fs.inodes_per_group = ext2_fs.sb.inodes_per_group;
     ext2_fs.blocks_per_group = ext2_fs.sb.blocks_per_group;
     ext2_fs.inode_size = ext2_fs.sb.inode_size ? ext2_fs.sb.inode_size : 128;
+
+    if (ext2_fs.inodes_per_group == 0 || ext2_fs.blocks_per_group == 0) return -1;
+    if (ext2_fs.inode_size < sizeof(ext2_inode_t) ||
+        ext2_fs.inode_size > ext2_fs.block_size) return -1;
+    if (ext2_fs.blocks_per_group > ext2_fs.block_size * 8) return -1;
+    if (ext2_fs.inodes_per_group > ext2_fs.block_size * 8) return -1;
 
     if (ext2_fs.block_size == 1024)
         ext2_fs.bgd_block = 2;
@@ -87,7 +163,7 @@ int ext2_read_inode(uint32_t ino, ext2_inode_t* inode) {
     uint32_t block = inode_table_block + index / inodes_per_block;
     uint32_t offset_in_block = (index % inodes_per_block) * bytes_per_inode;
 
-    uint8_t* buf = get_block_buf();
+    uint8_t* buf = get_meta_buf();
     if (!buf) return -1;
 
     ext2_read_block(block, buf);
@@ -114,7 +190,7 @@ int ext2_read_inode_block(ext2_inode_t* inode, uint32_t iblock, void* buf) {
     iblock -= 12;
     if (iblock < ptrs_per_block) {
         if (inode->block[12] == 0) return -1;
-        uint32_t* indirect = (uint32_t*)get_block_buf();
+        uint32_t* indirect = (uint32_t*)get_aux_buf();   /* buf may BE buffer 0 */
         ext2_read_block(inode->block[12], indirect);
         if (indirect[iblock] == 0) return -1;
         return ext2_read_block(indirect[iblock], buf);
@@ -123,11 +199,11 @@ int ext2_read_inode_block(ext2_inode_t* inode, uint32_t iblock, void* buf) {
     iblock -= ptrs_per_block;
     if (iblock < ptrs_per_block * ptrs_per_block) {
         if (inode->block[13] == 0) return -1;
-        uint32_t* dindirect = (uint32_t*)get_block_buf();
+        uint32_t* dindirect = (uint32_t*)get_aux_buf();
         ext2_read_block(inode->block[13], dindirect);
         uint32_t block_idx = dindirect[iblock / ptrs_per_block];
         if (block_idx == 0) return -1;
-        uint32_t* indirect = (uint32_t*)get_block_buf();
+        uint32_t* indirect = (uint32_t*)get_aux2_buf(); /* dindirect[] still live */
         ext2_read_block(block_idx, indirect);
         uint32_t target = indirect[iblock % ptrs_per_block];
         if (target == 0) return -1;
@@ -142,12 +218,19 @@ static uint32_t resolve_path(const char* path) {
     if (path[1] == '\0') return EXT2_ROOT_INO;
 
     uint32_t cur_ino = EXT2_ROOT_INO;
-    char component[256];
+    char component[MAX_FILENAME];
     const char* p = path + 1;
 
     while (*p) {
+        /* `component[ci++] = *p++` with no ceiling. This is the single most
+         * travelled function in the driver — every open, stat, readdir and write
+         * enters through it — so an over-long path component was a kernel stack
+         * smash reachable from any unprivileged process that could name a file. */
         int ci = 0;
-        while (*p && *p != '/') component[ci++] = *p++;
+        while (*p && *p != '/') {
+            if (ci >= (int)sizeof(component) - 1) return 0;   /* name cannot exist */
+            component[ci++] = *p++;
+        }
         component[ci] = '\0';
         if (*p == '/') p++;
 
@@ -164,11 +247,22 @@ static uint32_t resolve_path(const char* path) {
             uint8_t* block_buf_local = get_block_buf();
             if (ext2_read_inode_block(&dir_inode, iblock, block_buf_local) < 0) break;
             uint32_t off = 0;
-            while (off < ext2_fs.block_size && off < bytes_left) {
+            while (off + EXT2_DIRENT_HDR <= ext2_fs.block_size && off < bytes_left) {
                 ext2_dirent_t* de = (ext2_dirent_t*)(block_buf_local + off);
-                if (de->inode == 0 || de->rec_len < 1) { off += (de->rec_len < 1) ? 1 : de->rec_len; continue; }
-                char dname[256];
+                /* The old guard nudged `off` forward by 1 on a rec_len below the
+                 * header size, which kept the loop alive walking misaligned
+                 * garbage instead of stopping at an obviously corrupt block. */
+                if (de->rec_len < EXT2_DIRENT_HDR) break;
+                if (off + de->rec_len > ext2_fs.block_size) break;
+                if (de->inode == 0) { off += de->rec_len; continue; }
+
                 uint8_t name_len = de->name_len & 0xFF;
+                /* A 255-byte name near the end of the block reads past the buffer;
+                 * one longer than a component can be simply cannot match. */
+                if (off + EXT2_DIRENT_HDR + name_len > ext2_fs.block_size) break;
+                if (name_len >= MAX_FILENAME) { off += de->rec_len; continue; }
+
+                char dname[MAX_FILENAME];
                 __builtin_memcpy(dname, de->name, name_len);
                 dname[name_len] = '\0';
                 if (strcmp(dname, component) == 0) {
@@ -271,11 +365,24 @@ static void write_bgd(uint32_t group, const ext2_bgd_t* bgd) {
     uint32_t bgd_block_offset = group / bgd_per_block;
     uint32_t bgd_in_block = group % bgd_per_block;
     uint32_t block = ext2_fs.bgd_block + bgd_block_offset;
-    uint8_t* buf = get_block_buf();
+    uint8_t* buf = get_meta_buf();   /* reached from the free path — never buffer 0 */
     if (!buf) return;
     ext2_read_block(block, buf);
     __builtin_memcpy(buf + bgd_in_block * sizeof(ext2_bgd_t), bgd, sizeof(ext2_bgd_t));
     ext2_write_block(block, buf);
+}
+
+/* The block group descriptor tracks how many DIRECTORIES live in the group, and
+ * nothing in the driver ever touched it — so e2fsck reported "directories count
+ * wrong for group #0" as soon as NyxOS created its second directory. It is
+ * advisory (allocators use it to spread directories out) but it is part of the
+ * format, and a filesystem is only consistent if the summaries agree. */
+static void bgd_adjust_dir_count(int delta) {
+    ext2_bgd_t bgd;
+    if (read_block_group_bgd(0, &bgd) < 0) return;
+    if (delta > 0) bgd.used_dirs_count++;
+    else if (bgd.used_dirs_count > 0) bgd.used_dirs_count--;
+    write_bgd(0, &bgd);
 }
 
 int ext2_sync_bgd(uint32_t group) {
@@ -302,20 +409,47 @@ static int find_free_bit(const uint8_t* bitmap, uint32_t size_bits) {
     return -1;
 }
 
+/* Bit index <-> block number, for group 0.
+ *
+ * ext2 numbers the block bitmap from `first_data_block`, NOT from zero: bit i in
+ * group g stands for block `first_data_block + g*blocks_per_group + i`. On the
+ * 1024-byte-block image NyxOS actually ships (makefile: mkfs.ext2 -b 1024)
+ * first_data_block is 1, and the allocator used the bit index AS the block
+ * number — so it handed out block K while marking bit K, which really owns
+ * block K+1. Both halves of that are wrong in the same breath: the block it
+ * returns is the one the bitmap still calls used (the last inode-table block on
+ * a fresh image), and the block it marks used is one nobody holds.
+ *
+ * It looked like it worked because the collision lands on the TAIL of the inode
+ * table — inodes ~897-1024 on the shipped image — which an almost-empty
+ * filesystem never reaches. It is a silent overwrite of live metadata that only
+ * surfaces once the disk fills up or something runs fsck, and it is written to
+ * a real disk, so it outlives the reboot that hides every other bug here.
+ *
+ * These two must always move together: alloc converts one way, free the other. */
+static inline uint32_t bit_to_block(uint32_t bit)   { return ext2_fs.sb.first_data_block + bit; }
+static inline uint32_t block_to_bit(uint32_t block) { return block - ext2_fs.sb.first_data_block; }
+
 uint32_t ext2_alloc_block(void) {
     ext2_bgd_t bgd;
     if (read_block_group_bgd(0, &bgd) < 0) return 0;
 
-    uint8_t* buf = get_block_buf();
+    uint8_t* buf = get_bitmap_buf();
     if (!buf) return 0;
 
     ext2_read_block(bgd.block_bitmap, buf);
 
+    /* The bitmap is ONE block: it can only describe block_size*8 blocks, however
+     * many blocks_per_group claims. ext2_mount rejects an image where those
+     * disagree, so this is the belt to that braces — find_free_bit walks a raw
+     * byte array and cannot tell where it ends. */
     uint32_t blocks_in_group = ext2_fs.blocks_per_group;
+    if (blocks_in_group > ext2_fs.block_size * 8) blocks_in_group = ext2_fs.block_size * 8;
     int bit = find_free_bit(buf, blocks_in_group);
     if (bit < 0) return 0;
 
-    uint32_t block_num = (uint32_t)bit; // group 0 blocks
+    uint32_t block_num = bit_to_block((uint32_t)bit);   // group 0 blocks
+    if (block_num >= ext2_fs.sb.total_blocks) return 0;
 
     // Mark bit as used
     buf[bit / 8] |= (1 << (bit % 8));
@@ -344,7 +478,10 @@ uint32_t ext2_alloc_inode(void) {
 
     ext2_read_block(bgd.inode_bitmap, buf);
 
+    /* Same one-block ceiling as the block bitmap. Inode numbering needs no
+     * first_data_block adjustment: inodes are 1-based, so bit i IS inode i+1. */
     uint32_t inodes_in_group = ext2_fs.inodes_per_group;
+    if (inodes_in_group > ext2_fs.block_size * 8) inodes_in_group = ext2_fs.block_size * 8;
     int bit = find_free_bit(buf, inodes_in_group);
     if (bit < 0) return 0;
 
@@ -388,8 +525,18 @@ int ext2_write_file(const char* path, const void* buf, uint32_t len) {
     while (remaining > 0) {
         uint32_t block_num = 0;
         uint32_t chunk = (remaining < ext2_fs.block_size) ? remaining : ext2_fs.block_size;
-        uint8_t block_buf[4096];
-        __builtin_memset(block_buf, 0, sizeof(block_buf));
+        /* Was a 4096-byte array on the KERNEL stack, sized by a guess rather than
+         * by ext2_fs.block_size — every access below is block_size-wide, so any
+         * image with a larger block ran straight off the end of it, in a function
+         * that also descends into the ATA layer. block_size is bounded at mount
+         * now, but a block-sized buffer belongs on the heap regardless: this is
+         * exactly buffer 0's documented role, the caller's staged data block.
+         * Nothing called from inside this loop touches buffer 0 (the allocator
+         * uses 1 and 4, the indirect walk uses 2), and ext2_write_inode — which
+         * does use 0 — runs after the loop has finished with it. */
+        uint8_t* block_buf = get_block_buf();
+        if (!block_buf) return -1;
+        __builtin_memset(block_buf, 0, ext2_fs.block_size);
         __builtin_memcpy(block_buf, data, chunk);
 
         if (iblock < 12) {
@@ -405,10 +552,15 @@ int ext2_write_file(const char* path, const void* buf, uint32_t len) {
                 if (inode.block[12] == 0) {
                     inode.block[12] = ext2_alloc_block();
                     if (inode.block[12] == 0) return -1;
-                    __builtin_memset(block_buf, 0, ext2_fs.block_size);
-                    ext2_write_block(inode.block[12], block_buf);
+                    /* There used to be a memset(block_buf)+write here to zero the
+                     * fresh indirect block. block_buf holds THIS iteration's file
+                     * data, already staged above — so zeroing it wiped the 13th
+                     * block of every file that needed an indirect block, and the
+                     * write at the bottom of the loop then stored those zeros as
+                     * the user's data. Deleted rather than rewritten with a spare
+                     * buffer: ext2_alloc_block already zeroes what it hands back. */
                 }
-                uint8_t* ibuf = get_block_buf();
+                uint8_t* ibuf = get_aux_buf();   /* buf still holds dindirect[] */
                 ext2_read_block(inode.block[12], ibuf);
                 uint32_t* indirect = (uint32_t*)ibuf;
                 if (indirect[sind_iblock] == 0) {
@@ -434,47 +586,75 @@ int ext2_write_file(const char* path, const void* buf, uint32_t len) {
 
     // Update inode size and block count
     inode.size = len;
-    inode.blocks_512 = blocks_needed * (ext2_fs.block_size / 512);
+    /* i_blocks charges the inode for EVERY block it owns, metadata included, so
+     * a file with an indirect block owed one more than its data blocks. e2fsck
+     * reported "i_blocks is 46, should be 48" on the first file large enough to
+     * need one. (The writer never goes past singly-indirect, so that is the only
+     * metadata block it can own.) */
+    uint32_t meta_blocks = inode.block[12] ? 1 : 0;
+    inode.blocks_512 = (blocks_needed + meta_blocks) * (ext2_fs.block_size / 512);
+    inode.mtime = inode.ctime = ext2_now();
 
     // Write inode back
     ext2_write_inode(ino, &inode);
+    /* The in-memory superblock's free counters were decremented by every
+     * ext2_alloc_block above and then never written anywhere — ext2_sync_
+     * superblock existed but had no callers, so the on-disk totals drifted
+     * further from the truth with every write and e2fsck reported them wrong
+     * from the first file onward. */
+    ext2_sync_superblock();
 
     return len;
 }
 
+static int add_dirent_to_parent(uint32_t parent_ino, const char* name,
+                                uint32_t new_ino, uint8_t file_type);
+static void ext2_free_inode(uint32_t ino);
+
+/* Split "/a/b/c" into parent "/a/b" and child "c".
+ *
+ * create_file, mkdir and unlink each did this inline, and all three the same
+ * wrong way: `memcpy(parent_path, path, last_slash)` and `strcpy(filename, ...)`
+ * into 256-byte STACK arrays, with nothing anywhere bounding the path length.
+ * A long enough path smashed the kernel stack before the driver ever looked at
+ * the disk. Callers do bound their paths today, but a filesystem driver that is
+ * only safe because of what its callers happen to do is one refactor away from
+ * being unsafe — so it checks its own inputs. */
+static int split_parent_child(const char* path, char* parent, uint32_t parent_sz,
+                              char* child, uint32_t child_sz) {
+    if (!path || path[0] != '/') return -1;
+
+    int last_slash = -1, len = 0;
+    while (path[len]) { if (path[len] == '/') last_slash = len; len++; }
+    if (last_slash < 0) return -1;
+
+    uint32_t clen = (uint32_t)(len - last_slash - 1);
+    if (clen == 0 || clen >= child_sz) return -1;      /* "" or too long to hold */
+    __builtin_memcpy(child, path + last_slash + 1, clen);
+    child[clen] = '\0';
+
+    if (last_slash == 0) { parent[0] = '/'; parent[1] = '\0'; return 0; }
+    if ((uint32_t)last_slash >= parent_sz) return -1;
+    __builtin_memcpy(parent, path, last_slash);
+    parent[last_slash] = '\0';
+    return 0;
+}
+
 int ext2_create_file(const char* path) {
     if (!path || path[0] != '/') return -1;
-    // Check if already exists
-    if (ext2_resolve(path)) return -1;
+    if (ext2_resolve(path)) return -1;                 // already exists
 
-    // Split into parent dir and filename
-    char parent_path[256];
-    char filename[256];
-    int last_slash = -1;
-    for (int i = 0; path[i]; i++)
-        if (path[i] == '/') last_slash = i;
-
-    if (last_slash <= 0) {
-        // File at root
-        parent_path[0] = '/'; parent_path[1] = '\0';
-    } else {
-        memcpy(parent_path, path, last_slash);
-        parent_path[last_slash] = '\0';
-    }
-    strcpy(filename, path + last_slash + 1);
+    char parent_path[MAX_PATH];
+    char filename[MAX_FILENAME];
+    if (split_parent_child(path, parent_path, sizeof(parent_path),
+                                 filename,    sizeof(filename)) < 0) return -1;
 
     uint32_t parent_ino = ext2_resolve(parent_path);
     if (!parent_ino) return -1;
 
-    ext2_inode_t parent_inode;
-    if (ext2_read_inode(parent_ino, &parent_inode) < 0) return -1;
-    if (!(parent_inode.mode & EXT2_S_IFDIR)) return -1;
-
-    // Allocate inode
     uint32_t new_ino = ext2_alloc_inode();
     if (!new_ino) return -1;
 
-    // Initialize new inode
     ext2_inode_t new_inode;
     memset_asm(&new_inode, 0, sizeof(ext2_inode_t));
     new_inode.mode = EXT2_S_IFREG | 0x1A4; // 0644
@@ -483,92 +663,22 @@ int ext2_create_file(const char* path) {
     new_inode.size = 0;
     new_inode.links_count = 1;
     new_inode.blocks_512 = 0;
+    new_inode.atime = new_inode.ctime = new_inode.mtime = ext2_now();
 
-    if (ext2_write_inode(new_ino, &new_inode) < 0) return -1;
+    if (ext2_write_inode(new_ino, &new_inode) < 0) { ext2_free_inode(new_ino); return -1; }
 
-    // Add directory entry in parent
-    uint32_t name_len = strlen(filename);
-    uint32_t entry_size = sizeof(ext2_dirent_t) - 255 + name_len;
-    entry_size = (entry_size + 3) & ~3; // align to 4
-
-    // Find a block with space or allocate a new one
-    uint32_t iblock = 0;
-    uint8_t* buf = get_block_buf();
-    if (!buf) return -1;
-    int found_space = 0;
-
-    while (iblock < 12 && iblock * ext2_fs.block_size < parent_inode.size) {
-        if (parent_inode.block[iblock] == 0) break;
-        ext2_read_block(parent_inode.block[iblock], buf);
-
-        uint32_t off = 0;
-        while (off < ext2_fs.block_size) {
-            ext2_dirent_t* de = (ext2_dirent_t*)(buf + off);
-            uint32_t de_name_len = de->name_len & 0xFF;
-            if (de->inode == 0) {
-                // Unused entry - check if it has space
-                if (de->rec_len >= entry_size + 4) {
-                    // Reuse this spot
-                    de->inode = new_ino;
-                    de->name_len = name_len;
-                    de->file_type = EXT2_FT_REG_FILE;
-                    memset_asm(de->name, 0, de->rec_len - 4);
-                    memcpy(de->name, filename, name_len);
-                    ext2_write_block(parent_inode.block[iblock], buf);
-                    found_space = 1;
-                    break;
-                }
-            } else {
-                // Check if this is the last entry in the block
-                uint32_t min_size = sizeof(ext2_dirent_t) - 255 + de_name_len;
-                min_size = (min_size + 3) & ~3;
-                if (de->rec_len > min_size + entry_size) {
-                    // Shrink last entry, add new one after
-                    uint32_t remaining = de->rec_len - min_size;
-                    de->rec_len = min_size;
-                    ext2_dirent_t* new_de = (ext2_dirent_t*)(buf + off + min_size);
-                    new_de->inode = new_ino;
-                    new_de->rec_len = remaining;
-                    new_de->name_len = name_len;
-                    new_de->file_type = EXT2_FT_REG_FILE;
-                    memset_asm(new_de->name, 0, remaining - 4);
-                    memcpy(new_de->name, filename, name_len);
-                    ext2_write_block(parent_inode.block[iblock], buf);
-                    found_space = 1;
-                    break;
-                }
-            }
-            off += de->rec_len;
-        }
-        if (found_space) break;
-        iblock++;
+    /* This used to be a verbatim copy of add_dirent_to_parent, carrying its own
+     * copy of every bound bug that function had — and it also did
+     * `parent_inode.links_count++` for a plain file, which is simply not how ext2
+     * counts links (only subdirectories add one, via their ".."). Every file ever
+     * created inflated its parent's link count by one, which fsck reports and
+     * which nothing in NyxOS ever put back. Both problems go away by calling the
+     * one implementation instead of shadowing it. */
+    if (add_dirent_to_parent(parent_ino, filename, new_ino, EXT2_FT_REG_FILE) < 0) {
+        ext2_free_inode(new_ino);
+        return -1;
     }
-
-    if (!found_space) {
-        // Allocate a new block for the directory
-        uint32_t new_block = ext2_alloc_block();
-        if (!new_block) return -1;
-        memset_asm(buf, 0, ext2_fs.block_size);
-        ext2_dirent_t* de = (ext2_dirent_t*)buf;
-        de->inode = new_ino;
-        de->rec_len = ext2_fs.block_size;
-        de->name_len = name_len;
-        de->file_type = EXT2_FT_REG_FILE;
-        memcpy(de->name, filename, name_len);
-        ext2_write_block(new_block, buf);
-
-        // Link block to parent inode
-        if (iblock < 12) {
-            parent_inode.block[iblock] = new_block;
-        } else {
-            return -1; // too many blocks for direct
-        }
-        parent_inode.size += ext2_fs.block_size;
-    }
-
-    parent_inode.links_count++; // or not, dir links don't increment for files
-    ext2_write_inode(parent_ino, &parent_inode);
-
+    ext2_sync_superblock();      // free_inodes changed; push the count to disk
     return 0;
 }
 
@@ -589,10 +699,26 @@ int ext2_readdir(const char* path, dirent_t* entries, uint32_t max_entries) {
         uint8_t* block_buf_local = get_block_buf();
         if (ext2_read_inode_block(&inode, iblock, block_buf_local) < 0) break;
         uint32_t off = 0;
-        while (off < ext2_fs.block_size && off < bytes_left && count < (int)max_entries) {
+        while (off + EXT2_DIRENT_HDR <= ext2_fs.block_size && off < bytes_left &&
+               count < (int)max_entries) {
             ext2_dirent_t* de = (ext2_dirent_t*)(block_buf_local + off);
-            if (de->inode == 0) { off += de->rec_len ? de->rec_len : 8; continue; }
+            // A rec_len below the 8-byte header size makes `off += de->rec_len`
+            // below stand still (or go backwards), spinning this loop forever on
+            // a corrupt or hostile image. Stop instead.
+            if (de->rec_len < EXT2_DIRENT_HDR) break;
+            if (off + de->rec_len > ext2_fs.block_size) break;
+            if (de->inode == 0) { off += de->rec_len; continue; }
+
             uint8_t name_len = de->name_len & 0xFF;
+            // ext2 allows names up to 255 bytes; dirent_t.name is MAX_FILENAME
+            // (128). Copying unclamped wrote up to 128 bytes past the field, and
+            // for the last slot past the whole caller array — a kernel stack
+            // smash with attacker-chosen bytes, reachable from an unprivileged
+            // process because ext2_create does not bound the name either.
+            if (name_len >= MAX_FILENAME) name_len = MAX_FILENAME - 1;
+            // The name must also lie inside the block we actually read.
+            if (off + EXT2_DIRENT_HDR + name_len > ext2_fs.block_size) break;
+
             if (name_len > 0) {
                 __builtin_memcpy(entries[count].name, de->name, name_len);
                 entries[count].name[name_len] = '\0';
@@ -612,13 +738,20 @@ int ext2_readdir(const char* path, dirent_t* entries, uint32_t max_entries) {
 // ========== Block and inode freeing ==========
 
 static void ext2_free_block(uint32_t block_num) {
+    /* Mirror of bit_to_block in the allocator — see the note there. A block below
+     * first_data_block is not describable by this bitmap at all (it is the boot
+     * block); freeing it would underflow into a wild byte index. */
+    if (block_num < ext2_fs.sb.first_data_block) return;
+    uint32_t bit = block_to_bit(block_num);
+    if (bit >= ext2_fs.block_size * 8) return;      /* outside group 0's bitmap */
+
     ext2_bgd_t bgd;
     if (read_block_group_bgd(0, &bgd) < 0) return;
-    uint8_t* buf = get_block_buf();
+    uint8_t* buf = get_bitmap_buf();   /* NOT the shared staging buffer */
     if (!buf) return;
     ext2_read_block(bgd.block_bitmap, buf);
-    if (buf[block_num / 8] & (1 << (block_num % 8))) {
-        buf[block_num / 8] &= ~(1 << (block_num % 8));
+    if (buf[bit / 8] & (1 << (bit % 8))) {
+        buf[bit / 8] &= ~(1 << (bit % 8));
         ext2_write_block(bgd.block_bitmap, buf);
         bgd.free_blocks_count++;
         write_bgd(0, &bgd);
@@ -649,7 +782,13 @@ static void free_inode_blocks(ext2_inode_t* inode) {
         uint32_t* dindirect = (uint32_t*)buf;
         for (uint32_t i = 0; i < ptrs_per_block; i++) {
             if (dindirect[i]) {
-                uint8_t* ibuf = get_block_buf();
+                /* This asked for get_block_buf() — the buffer `dindirect` is
+                 * still walking. Reading the level-2 block into it overwrote the
+                 * level-1 array mid-loop, so from the first iteration onward the
+                 * walk was freeing block numbers read out of the wrong table.
+                 * Precisely the aliasing this file's five-buffer split exists to
+                 * prevent; the split just never reached this line. */
+                uint8_t* ibuf = get_aux_buf();
                 ext2_read_block(dindirect[i], ibuf);
                 uint32_t* indirect = (uint32_t*)ibuf;
                 for (uint32_t j = 0; j < ptrs_per_block; j++)
@@ -682,6 +821,19 @@ static void ext2_free_inode(uint32_t ino) {
 
 // ========== Directory helpers ==========
 
+/* THE one place a directory entry is created. ext2_create_file used to carry a
+ * line-for-line copy of this function, which meant every bug below existed twice
+ * and had to be found twice; it now calls this.
+ *
+ * The bugs were all one shape — a field written without asking how much room it
+ * had. `name_len` is a uint8 on disk but was assigned an unbounded strlen, so a
+ * 300-byte name recorded itself as 44 while the memcpy still copied 300. And the
+ * name field starts 8 bytes into the entry, not 4, so `memset(de->name, 0,
+ * rec_len - 4)` cleared four bytes PAST the entry — off the end of the whole
+ * block buffer whenever the entry was the last one in its block, which is the
+ * common case, because the last entry's rec_len runs to the end of the block.
+ * That is a heap overflow on the write path of the only filesystem whose damage
+ * survives a reboot. */
 static int add_dirent_to_parent(uint32_t parent_ino, const char* name,
                                  uint32_t new_ino, uint8_t file_type)
 {
@@ -689,8 +841,13 @@ static int add_dirent_to_parent(uint32_t parent_ino, const char* name,
     if (ext2_read_inode(parent_ino, &parent_inode) < 0) return -1;
     if (!(parent_inode.mode & EXT2_S_IFDIR)) return -1;
 
+    /* Bounded to what ext2_readdir can hand back. ext2 itself permits 255, but
+     * dirent_t.name is MAX_FILENAME, so a longer name would be created and then
+     * be invisible in every listing — a file you cannot see is worse than a name
+     * you cannot use. Refuse it here instead. */
     uint32_t name_len = strlen(name);
-    uint32_t entry_size = sizeof(ext2_dirent_t) - 255 + name_len;
+    if (name_len == 0 || name_len >= MAX_FILENAME) return -1;
+    uint32_t entry_size = EXT2_DIRENT_HDR + name_len;
     entry_size = (entry_size + 3) & ~3;
 
     uint32_t iblock = 0;
@@ -702,32 +859,39 @@ static int add_dirent_to_parent(uint32_t parent_ino, const char* name,
         if (parent_inode.block[iblock] == 0) break;
         ext2_read_block(parent_inode.block[iblock], buf);
         uint32_t off = 0;
-        while (off < ext2_fs.block_size) {
+        while (off + EXT2_DIRENT_HDR <= ext2_fs.block_size) {
             ext2_dirent_t* de = (ext2_dirent_t*)(buf + off);
+            /* A rec_len under the header size makes `off += rec_len` stand still
+             * or walk backwards; one that overruns the block puts every write
+             * below outside the buffer. Either way the block is corrupt — stop
+             * reading it rather than trusting the arithmetic. */
+            if (de->rec_len < EXT2_DIRENT_HDR) break;
+            if (off + de->rec_len > ext2_fs.block_size) break;
             uint32_t de_name_len = de->name_len & 0xFF;
+
             if (de->inode == 0) {
-                if (de->rec_len >= entry_size + 4) {
+                if (de->rec_len >= entry_size) {
                     de->inode = new_ino;
-                    de->name_len = name_len;
+                    de->name_len = (uint8_t)name_len;
                     de->file_type = file_type;
-                    __builtin_memset(de->name, 0, de->rec_len - 4);
+                    __builtin_memset(de->name, 0, de->rec_len - EXT2_DIRENT_HDR);
                     __builtin_memcpy(de->name, name, name_len);
                     ext2_write_block(parent_inode.block[iblock], buf);
                     found_space = 1;
                     break;
                 }
             } else {
-                uint32_t min_size = sizeof(ext2_dirent_t) - 255 + de_name_len;
+                uint32_t min_size = EXT2_DIRENT_HDR + de_name_len;
                 min_size = (min_size + 3) & ~3;
-                if (de->rec_len > min_size + entry_size) {
+                if (de->rec_len >= min_size + entry_size) {
                     uint32_t remaining = de->rec_len - min_size;
                     de->rec_len = min_size;
                     ext2_dirent_t* new_de = (ext2_dirent_t*)(buf + off + min_size);
                     new_de->inode = new_ino;
                     new_de->rec_len = remaining;
-                    new_de->name_len = name_len;
+                    new_de->name_len = (uint8_t)name_len;
                     new_de->file_type = file_type;
-                    __builtin_memset(new_de->name, 0, remaining - 4);
+                    __builtin_memset(new_de->name, 0, remaining - EXT2_DIRENT_HDR);
                     __builtin_memcpy(new_de->name, name, name_len);
                     ext2_write_block(parent_inode.block[iblock], buf);
                     found_space = 1;
@@ -741,21 +905,21 @@ static int add_dirent_to_parent(uint32_t parent_ino, const char* name,
     }
 
     if (!found_space) {
+        /* Checked BEFORE allocating: the old order allocated and wrote the block,
+         * then discovered there was no direct slot to hang it off and returned,
+         * leaking that block on the disk with no way to ever reclaim it. */
+        if (iblock >= 12) return -1;
         uint32_t new_block = ext2_alloc_block();
         if (!new_block) return -1;
         __builtin_memset(buf, 0, ext2_fs.block_size);
         ext2_dirent_t* de = (ext2_dirent_t*)buf;
         de->inode = new_ino;
         de->rec_len = ext2_fs.block_size;
-        de->name_len = name_len;
+        de->name_len = (uint8_t)name_len;
         de->file_type = file_type;
         __builtin_memcpy(de->name, name, name_len);
         ext2_write_block(new_block, buf);
-        if (iblock < 12) {
-            parent_inode.block[iblock] = new_block;
-        } else {
-            return -1;
-        }
+        parent_inode.block[iblock] = new_block;
         parent_inode.size += ext2_fs.block_size;
     }
 
@@ -767,19 +931,10 @@ int ext2_mkdir(const char* path) {
     if (!path || path[0] != '/') return -1;
     if (ext2_resolve(path)) return -1;
 
-    char parent_path[256];
-    char dirname[256];
-    int last_slash = -1;
-    for (int i = 0; path[i]; i++)
-        if (path[i] == '/') last_slash = i;
-
-    if (last_slash <= 0) {
-        parent_path[0] = '/'; parent_path[1] = '\0';
-    } else {
-        __builtin_memcpy(parent_path, path, last_slash);
-        parent_path[last_slash] = '\0';
-    }
-    strcpy(dirname, path + last_slash + 1);
+    char parent_path[MAX_PATH];
+    char dirname[MAX_FILENAME];
+    if (split_parent_child(path, parent_path, sizeof(parent_path),
+                                 dirname,     sizeof(dirname)) < 0) return -1;
 
     uint32_t parent_ino = ext2_resolve(parent_path);
     if (!parent_ino) return -1;
@@ -795,6 +950,7 @@ int ext2_mkdir(const char* path) {
     new_inode.size = ext2_fs.block_size;
     new_inode.links_count = 2; // . and ..
     new_inode.blocks_512 = ext2_fs.block_size / 512;
+    new_inode.atime = new_inode.ctime = new_inode.mtime = ext2_now();
 
     // Allocate first block for . and .. entries
     uint32_t first_block = ext2_alloc_block();
@@ -843,6 +999,8 @@ int ext2_mkdir(const char* path) {
         ext2_write_inode(parent_ino, &pinode);
     }
 
+    bgd_adjust_dir_count(+1);
+    ext2_sync_superblock();
     return 0;
 }
 
@@ -860,35 +1018,40 @@ int ext2_unlink(const char* path) {
         uint32_t count = 0;
         uint32_t bytes_left = dir_inode.size;
         uint32_t iblock = 0;
-        while (bytes_left > 0) {
+        while (bytes_left > 0 && count == 0) {
             uint8_t* dbuf = get_block_buf();
             if (ext2_read_inode_block(&dir_inode, iblock, dbuf) < 0) break;
             uint32_t off = 0;
-            while (off < ext2_fs.block_size && off < bytes_left) {
+            while (off + EXT2_DIRENT_HDR <= ext2_fs.block_size && off < bytes_left) {
                 ext2_dirent_t* de = (ext2_dirent_t*)(dbuf + off);
-                if (de->inode && (de->name_len & 0xFF) > 2) count++;
-                if (de->inode && (de->name_len & 0xFF) > 2) break;
+                if (de->rec_len < EXT2_DIRENT_HDR) break;          /* would not advance */
+                if (off + de->rec_len > ext2_fs.block_size) break;
+                uint32_t nl = de->name_len & 0xFF;
+                if (off + EXT2_DIRENT_HDR + nl > ext2_fs.block_size) break;
+                /* "Empty" used to mean "no entry whose name is longer than two
+                 * characters", which quietly counts a real file called `ab` as
+                 * absent — rmdir then deleted a directory that still had a child,
+                 * orphaning that inode and its blocks on disk. Compare the actual
+                 * name against "." and ".." instead of its length. */
+                if (de->inode &&
+                    !(nl == 1 && de->name[0] == '.') &&
+                    !(nl == 2 && de->name[0] == '.' && de->name[1] == '.')) {
+                    count++;
+                    break;
+                }
                 off += de->rec_len;
             }
+            if (bytes_left < ext2_fs.block_size) break;
             bytes_left -= ext2_fs.block_size;
             iblock++;
         }
         if (count > 0) return -1; // directory not empty
     }
 
-    char parent_path[256];
-    char child_name[256];
-    int last_slash = -1;
-    for (int i = 0; path[i]; i++)
-        if (path[i] == '/') last_slash = i;
-
-    if (last_slash <= 0) {
-        parent_path[0] = '/'; parent_path[1] = '\0';
-    } else {
-        __builtin_memcpy(parent_path, path, last_slash);
-        parent_path[last_slash] = '\0';
-    }
-    strcpy(child_name, path + last_slash + 1);
+    char parent_path[MAX_PATH];
+    char child_name[MAX_FILENAME];
+    if (split_parent_child(path, parent_path, sizeof(parent_path),
+                                 child_name,  sizeof(child_name)) < 0) return -1;
 
     uint32_t parent_ino = ext2_resolve(parent_path);
     if (!parent_ino) return -1;
@@ -902,15 +1065,27 @@ int ext2_unlink(const char* path) {
     uint32_t piblock = 0;
     uint32_t pbytes_left = parent_inode.size;
 
-    while (pbytes_left > 0 && !removed) {
+    /* Only direct blocks: the write-back below stores through
+     * parent_inode.block[piblock], and past 11 that slot is not a data block at
+     * all — block[12] is the singly-indirect POINTER, so a directory big enough
+     * to reach it would have had its indirect block overwritten with directory
+     * data, and block[15] and beyond is off the end of the inode struct.
+     * add_dirent_to_parent never grows a directory past 12 blocks anyway. */
+    while (pbytes_left > 0 && !removed && piblock < 12) {
+        if (parent_inode.block[piblock] == 0) break;
         uint8_t* pbuf = get_block_buf();
         if (ext2_read_inode_block(&parent_inode, piblock, pbuf) < 0) break;
         uint32_t off = 0;
-        while (off < ext2_fs.block_size && off < pbytes_left) {
+        while (off + EXT2_DIRENT_HDR <= ext2_fs.block_size && off < pbytes_left) {
             ext2_dirent_t* de = (ext2_dirent_t*)(pbuf + off);
+            if (de->rec_len < EXT2_DIRENT_HDR) break;
+            if (off + de->rec_len > ext2_fs.block_size) break;
             uint32_t de_name_len = de->name_len & 0xFF;
-            if (de->inode && de_name_len == child_name_len) {
-                char dname[256];
+            if (off + EXT2_DIRENT_HDR + de_name_len > ext2_fs.block_size) break;
+
+            if (de->inode && de_name_len == child_name_len &&
+                de_name_len < sizeof(child_name)) {
+                char dname[MAX_FILENAME];
                 __builtin_memcpy(dname, de->name, de_name_len);
                 dname[de_name_len] = '\0';
                 if (strcmp(dname, child_name) == 0) {
@@ -922,6 +1097,7 @@ int ext2_unlink(const char* path) {
             }
             off += de->rec_len;
         }
+        if (pbytes_left < ext2_fs.block_size) break;
         pbytes_left -= ext2_fs.block_size;
         piblock++;
     }
@@ -939,6 +1115,11 @@ int ext2_unlink(const char* path) {
         if (inode.links_count == 0) {
             // Free all blocks and inode
             free_inode_blocks(&inode);
+            /* ext2 marks an inode dead by its dtime, not by its link count
+             * alone. Leaving it zero is what made e2fsck say "deleted inode has
+             * zero dtime" for every file NyxOS had ever removed. */
+            inode.dtime = ext2_now();
+            inode.size = 0;
             ext2_write_inode(ino, &inode);
             ext2_free_inode(ino);
         } else {
@@ -947,5 +1128,7 @@ int ext2_unlink(const char* path) {
     }
 
     ext2_write_inode(parent_ino, &parent_inode);
+    if (inode.mode & EXT2_S_IFDIR) bgd_adjust_dir_count(-1);
+    ext2_sync_superblock();
     return 0;
 }

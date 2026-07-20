@@ -35,7 +35,20 @@ void fb_init(uint32_t width, uint32_t height, uint32_t bpp, void* addr) {
 // drawing direct). After this, drawing is invisible until fb_present().
 int fb_enable_backbuffer(void) {
     fb_back_wanted = 1;
-    if (fb_back) return 1;
+    if (fb_back) {
+        // Re-arming with a buffer that already exists. This used to `return 1`
+        // and nothing else — leaving fb_addr wherever it happened to point.
+        // After a logout that is the HARDWARE framebuffer (fb_use_lfb_direct
+        // sent the login screen there), so the second desktop of a session
+        // drew every element straight onto the visible screen — the flicker
+        // double buffering exists to prevent — while fb_present kept blitting
+        // this buffer, still holding the PREVIOUS user's frozen desktop, on
+        // top of it every frame. Repoint, and clear it: nothing from the
+        // session that just logged out may survive into the next one.
+        fb_addr = fb_back;
+        memset_asm(fb_back, 0, (size_t)fb_width * fb_height * 4);
+        return 1;
+    }
     if (!fb_hw || fb_bpp != 32) return 0;
     size_t bytes = (size_t)fb_width * fb_height * 4;
     void* buf = kmalloc(bytes);
@@ -52,6 +65,13 @@ int fb_enable_backbuffer(void) {
 // when double buffering isn't enabled (drawing already went straight to the LFB).
 void fb_present(void) {
     if (!fb_back || !fb_hw) return;
+    // Publishing only makes sense while drawing is actually GOING to the back
+    // buffer. Once fb_use_lfb_direct() has repointed drawing at the hardware
+    // (logout, panic), the back buffer holds nothing but a stale frame from
+    // before — and a present from a straggling caller would paint it over the
+    // login screen or the panic report. Tie the publish to the invariant that
+    // makes it meaningful rather than trusting every caller to know.
+    if (fb_addr != fb_back) return;
     memcpy_asm(fb_hw, fb_back, (size_t)fb_width * fb_height * 4);
 }
 
@@ -104,13 +124,27 @@ void fb_blit(const void* src, uint32_t sx, uint32_t sy, uint32_t w, uint32_t h,
              uint32_t dx, uint32_t dy) {
     if (!fb_addr || !src) return;
     if (fb_bpp == 32) {
+        // Clip to the framebuffer. This function had NO bounds check at all, so
+        // any caller blitting near the right or bottom edge — a window dragged
+        // there, or Paint's 512x384 canvas — wrote straight past the end of the
+        // buffer into whatever the allocator had placed after it.
+        //
+        // dx/dy are unsigned, so an off-screen negative coordinate arrives here
+        // as a huge value and is caught by the same test.
+        if (dx >= fb_width || dy >= fb_height) return;   // entirely off-screen
+        uint32_t src_stride = w;                         // rows are ORIGINAL w apart
+        uint32_t max_w = fb_width - dx;
+        uint32_t max_h = fb_height - dy;
+        if (w > max_w) w = max_w;                        // narrow the copy...
+        if (h > max_h) h = max_h;                        // ...but not the stride
+
         uint32_t* dst = (uint32_t*)fb_addr + dy * fb_width + dx;
-        uint32_t* src32 = (uint32_t*)src + sy * w + sx;
+        uint32_t* src32 = (uint32_t*)src + sy * src_stride + sx;
         for (uint32_t row = 0; row < h; row++) {
             for (uint32_t col = 0; col < w; col++)
                 dst[col] = src32[col];
             dst += fb_width;
-            src32 += w;
+            src32 += src_stride;
         }
     }
 }

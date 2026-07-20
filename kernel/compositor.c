@@ -255,14 +255,37 @@ static int start_menu_hit(int mx, int my) {
     return mx >= sm_x && mx < sm_x + START_W && my >= sm_y && my < sm_y + START_H;
 }
 
+/* THE start-menu geometry. draw_start_menu() lays the entries out from these and
+ * so does the hit test — they used to derive it separately and disagreed on
+ * every one of the three numbers:
+ *
+ *   - the first entry starts START_ITEM_Y (28) below the menu top, under the
+ *     green header, but the hit test subtracted 8. Twenty pixels of skew means
+ *     the lower two thirds of every entry selected the one BELOW it: clicking
+ *     "Terminal" opened Settings.
+ *   - the menu has START_ITEM_N entries and the test rejected `>= 12`, so the
+ *     thirteenth — Minesweeper — could not be launched from the menu at all.
+ *   - C integer division truncates toward ZERO, so a click on the header gave
+ *     (my - sm_y - 8) / 28 == 0 rather than something negative, and the `< 0`
+ *     guard never fired: clicking the "NyxOS Menu" title launched File Manager.
+ *
+ * Same lesson as the TITLE_H family in compositor.h — the fix is one definition
+ * both sides read, not two derivations that have to be kept in agreement. */
+#define START_HDR_H   24    /* green header band */
+#define START_ITEM_Y  28    /* first entry's top, relative to the menu top */
+#define START_ITEM_H  28    /* entry pitch: 26 px body + 1 px separator + 1 */
+#define START_ITEM_N  13    /* entries in the menu (indices 0..12) */
+
 static int start_menu_item_hit(int mx, int my, int* idx) {
     if (!start_menu_open) return 0;
     uint32_t fh = fb_get_height();
     int sm_x = 2;
     int sm_y = (int)fh - TASKBAR_H - START_H;
     if (mx < sm_x || mx >= sm_x + START_W || my < sm_y || my >= sm_y + START_H) return 0;
-    *idx = (my - sm_y - 8) / 28;
-    if (*idx < 0 || *idx >= 12) return 0;
+    int rel = my - sm_y - START_ITEM_Y;
+    if (rel < 0) return 0;                 // the header, not an entry
+    *idx = rel / START_ITEM_H;
+    if (*idx >= START_ITEM_N) return 0;    // below the last entry
     return 1;
 }
 
@@ -327,21 +350,24 @@ static void draw_start_menu(void) {
     fb_fill_rect(sm_x, sm_y, 1, START_H, fb_rgb(100,100,100));
     fb_fill_rect(sm_x + START_W - 1, sm_y, 1, START_H, fb_rgb(100,100,100));
 
-    fb_fill_rect(sm_x, sm_y, START_W, 24, fb_rgb(60,120,60));
+    fb_fill_rect(sm_x, sm_y, START_W, START_HDR_H, fb_rgb(60,120,60));
     font_draw_string(sm_x + 8, sm_y + 4, "NyxOS Menu", fb_rgb(255,255,255), fb_rgb(60,120,60));
 
-    const char* items[] = {
+    // Index order here IS the argument do_start_menu_action() switches on, and
+    // start_menu_item_hit() computes that index from the same START_ITEM_*
+    // constants this loop lays the entries out with.
+    static const char* items[START_ITEM_N] = {
         "File Manager", "Text Editor", "Image Viewer", "Terminal",
         "Settings", "Task Manager", "Desktop Demo",
         "Paint", "Sound Test", "About", "Shutdown", "Calculator",
         "Minesweeper",
     };
-    for (int i = 0; i < 13; i++) {
-        int iy = sm_y + 28 + i * 28;
-        if ((uint32_t)(iy + 28) > fh - TASKBAR_H) break;
-        fb_fill_rect(sm_x + 4, iy, START_W - 8, 26, fb_rgb(45,45,50));
+    for (int i = 0; i < START_ITEM_N; i++) {
+        int iy = sm_y + START_ITEM_Y + i * START_ITEM_H;
+        if ((uint32_t)(iy + START_ITEM_H) > fh - TASKBAR_H) break;
+        fb_fill_rect(sm_x + 4, iy, START_W - 8, START_ITEM_H - 2, fb_rgb(45,45,50));
         font_draw_string(sm_x + 12, iy + 5, items[i], fb_rgb(220,220,220), fb_rgb(45,45,50));
-        fb_fill_rect(sm_x + 4, iy + 27, START_W - 8, 1, fb_rgb(55,55,60));
+        fb_fill_rect(sm_x + 4, iy + START_ITEM_H - 1, START_W - 8, 1, fb_rgb(55,55,60));
     }
 }
 
@@ -794,6 +820,12 @@ window_t* window_create(int x, int y, uint32_t w, uint32_t h, const char* title,
 
     window_t* win = (window_t*)kmalloc(sizeof(window_t));
     if (!win) return NULL;
+    // kmalloc does not zero. Every field this function does NOT assign was heap
+    // garbage — including the on_pressed / on_key callback pointers, which the
+    // compositor guards with `if (win->on_pressed)` before calling. A non-NULL
+    // garbage value passes that guard and is then CALLED, so opening a window
+    // could jump to an arbitrary address. Zero first, assign after.
+    memset_asm(win, 0, sizeof(window_t));
     win->x = x; win->y = y; win->w = w < MIN_WIN_W ? MIN_WIN_W : w;
     win->h = h < MIN_WIN_H ? MIN_WIN_H : h;
     win->normal_x = x; win->normal_y = y; win->normal_w = win->w; win->normal_h = win->h;
@@ -1415,13 +1447,35 @@ void compositor_run(void) {
                     }
                 }
 
+                /* This whole left-button block runs under `if (btns & 1)`, which
+                 * is LEVEL-triggered: it re-runs on every compositor iteration
+                 * for as long as the button is down. That is right for dragging
+                 * and resizing, which must keep acting while held. It is wrong
+                 * for every menu transition below, and the two combined made the
+                 * Start menu impossible to open with a normal click:
+                 *
+                 *   iteration 1  press on "Menu"  -> start_hit toggles it OPEN
+                 *   iteration 2  button still down, pointer still on the taskbar
+                 *                at y=750, which is OUTSIDE the menu rect
+                 *                (y 332..732) -> the click-outside branch runs
+                 *                and closes it again.
+                 *
+                 * So the menu opened and shut inside a single press, and whether
+                 * anything survived came down to how long the button was held.
+                 * Opening, closing and selecting are all EDGE events; only the
+                 * drag paths are level events. Found by driving the real mouse —
+                 * the headless keyboard-only suite could never have seen it. */
+                int pressed = !(prev_btns & 1);
+
                 if (user_menu_open) {
                     int idx;
                     if (user_menu_item_hit(mx, my, &idx)) {
-                        do_user_menu_action(idx);
-                        user_menu_open = 0;
-                        redraw = 1;
-                    } else if (!user_menu_area_hit(mx, my)) {
+                        if (pressed) {
+                            do_user_menu_action(idx);
+                            user_menu_open = 0;
+                            redraw = 1;
+                        }
+                    } else if (pressed && !user_menu_area_hit(mx, my)) {
                         user_menu_open = 0;
                         redraw = 1;
                     }
@@ -1429,18 +1483,22 @@ void compositor_run(void) {
                 }
 
                 if (badge_hit(mx, my)) {
-                    user_menu_open = !user_menu_open;
-                    start_menu_open = 0;
-                    redraw = 1;
+                    if (pressed) {
+                        user_menu_open = !user_menu_open;
+                        start_menu_open = 0;
+                        redraw = 1;
+                    }
                     goto done_click;
                 }
 
                 if (start_menu_open) {
                     int idx;
                     if (start_menu_item_hit(mx, my, &idx)) {
-                        do_start_menu_action(idx);
-                        redraw = 1;
-                    } else if (!start_menu_hit(mx, my)) {
+                        if (pressed) {
+                            do_start_menu_action(idx);
+                            redraw = 1;
+                        }
+                    } else if (pressed && !start_menu_hit(mx, my)) {
                         start_menu_open = 0;
                         redraw = 1;
                     }
@@ -1448,8 +1506,10 @@ void compositor_run(void) {
                 }
 
                 if (start_hit(mx, my)) {
-                    start_menu_open = !start_menu_open;
-                    redraw = 1;
+                    if (pressed) {
+                        start_menu_open = !start_menu_open;
+                        redraw = 1;
+                    }
                     goto done_click;
                 }
 

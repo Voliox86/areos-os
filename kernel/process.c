@@ -253,8 +253,8 @@ int do_fork(void) {
     child->ppid = parent->pid;
     child->state = PROC_RUN;
     child->page_directory = child_pml4;
-    child->program_break = parent->program_break;   // heap inherited (COW-shared)
     child->heap_start    = parent->heap_start;       // ...same lazy-sbrk window
+    child->program_break = parent->program_break;   // heap inherited (COW-shared)
     strncpy(child->comm, parent->comm, 31);
     child->comm[31] = '\0';
     // Inherit signal dispositions + trampoline (POSIX fork); the child starts with
@@ -378,8 +378,15 @@ static void tg_reassign_leader(process_t* dying) {
         if (p && p != dying && p->tgid == dying->pid) { heir = p; break; }
     }
     if (!heir) return;                       // no surviving threads: nothing to hand over
-    heir->program_break = dying->program_break;
+    // heap_start FIRST — same reason as elf.c, and this is the worst site for it:
+    // the heir is a LIVE thread, already running and already resolvable through
+    // tg_leader(), and this runs precisely while a thread group is churning. The
+    // heir's own heap_start may still be 0, so publishing program_break first
+    // exposes the window [0, brk) — which spans the program's .text — to every
+    // sibling that faults in that instant. Hardening only; see the HONEST SCOPE
+    // note in elf.c. The intermittent [fault] survived this change.
     heir->heap_start    = dying->heap_start;
+    heir->program_break = dying->program_break;
     for (int i = 0; i < PROC_MAX_VMAS; i++) {
         heir->mmap_vmas[i] = dying->mmap_vmas[i];   // heir takes the buffers...
         dying->mmap_vmas[i].file_buf  = 0;          // ...so mmap_free_bufs must skip them
@@ -631,8 +638,12 @@ int do_execve(const uint8_t* data, uint32_t size, char* const* kargv, int argc,
     // anything still shared with a relative survives).
     uint64_t* old_pd = (uint64_t*)self->page_directory;
     self->page_directory = pd;
-    self->program_break = brk;
+    // heap_start BEFORE program_break — see elf.c, including its HONEST SCOPE
+    // note: the reverse order briefly publishes the window [0, brk), which spans
+    // the new image's own .text. Hardening only; it did not fix the intermittent
+    // [fault] and that fault remains unexplained.
     self->heap_start = brk;      // fresh image -> fresh lazy heap window
+    self->program_break = brk;
     // Reset signal state: the new image invalidates every handler address, so all
     // caught signals revert to SIG_DFL (POSIX). Clear pending/in-flight state too.
     for (int i = 0; i < NSIG; i++) self->sig_handlers[i] = SIG_DFL;
@@ -746,6 +757,7 @@ void reap_user_process(process_t* proc) {
     if (proc->page_directory && !addr_space_shared(proc->page_directory, proc))
         free_page_directory((uint64_t*)proc->page_directory);
     if (proc->kernel_stack) kfree((void*)((uintptr_t)proc->kernel_stack - 4096));
+    sched_forget(proc);            // no core may keep a pointer to freed memory
     kfree(proc);
 }
 
@@ -838,6 +850,21 @@ void preempt_enable(void)  {
     if (me->preempt_count > 0) me->preempt_count--;
 }
 
+// Forget a process that is about to be freed. sched_cur is a RAW POINTER held by
+// every core, and irq_scheduler_tick dereferences it to choose the resume CR3 —
+// so a freed process_t left in any core's slot is a use-after-free. The reap
+// paths guard `i == current_idx` (an index) and that does not cover this.
+//
+// Both callers already hold off preemption on THIS core, and a core whose slot
+// still names a dying process is by definition not running it any more, so
+// nulling remote slots is safe: the owner re-fills its slot the next time it
+// picks, and irq_scheduler_tick treats NULL as "fall back to current_idx".
+void sched_forget(process_t* p) {
+    if (!p) return;
+    for (int i = 0; i < MAX_CPUS; i++)
+        if (cpu_info[i].sched_cur == (void*)p) cpu_info[i].sched_cur = NULL;
+}
+
 // Point next_rsp/next_cr3 at process p (about to be resumed). Kernel threads run
 // in the kernel address space; user processes get their own CR3, and the TSS
 // RSP0 must be their kernel stack so their next ring3→ring0 entry lands safely.
@@ -864,6 +891,7 @@ void sched_target(process_t* p) {
         uint64_t kstk = (uint64_t)(uintptr_t)p->kernel_stack + KERNEL_BASE;
         tss_set_stack(kstk);
         kernel_rsp = kstk;
+
     } else {
         next_cr3 = (uint64_t)kernel_pml4_phys;
     }
@@ -905,8 +933,37 @@ void irq_scheduler_tick(void) {
     // Heisenbug fix: a userspace program busy-polling the network inside a syscall
     // used to resume on its user CR3 and #PF on the unmapped low kernel .text.
     uint64_t cur_cs = saved_rsp ? ((volatile uint64_t*)saved_rsp)[18] : 0x08;
-    next_cr3 = (cur && cur->page_directory && (cur_cs & 3) == 3)
-                   ? (uint64_t)cur->page_directory
+
+    // The CR3 must come from THIS core's own record of what it is running, never
+    // from process_table[current_idx].
+    //
+    // current_idx is an INDEX, and the reap paths (reap_zombies, do_waitpid)
+    // swap-remove from process_table — on any core, and in do_waitpid's case
+    // without even taking sched_lock. That compaction silently redirects the
+    // index at a different process. The comment 30 lines below already knew this
+    // ("current_idx can come to point at an AP-pinned task... which can hold
+    // anything") and guarded `cur->stack` against it — but the CR3 decision here
+    // used the same untrustworthy `cur` and was left unguarded.
+    //
+    // When the index lands on a KERNEL thread, page_directory is NULL, this
+    // ternary falls to kernel_pml4_phys, and irq_common iretq's the *interrupted*
+    // ring-3 frame (CS still 0x1b) onto the kernel's address space. The process
+    // then executes with a page table its code does not appear in, and the first
+    // instruction fetch dies with CR2 == RIP.
+    //
+    // HONEST SCOPE: that is a real hole and this closes it, but it is NOT the fix
+    // for P0.1 — the intermittent ring-3 [fault] reproduced on the FIRST round
+    // with this change in place. P0.1 still shows a ring-3 task on the kernel
+    // CR3, so some OTHER path produces the same end state. Do not read this
+    // comment as "the CR3 bug is solved"; see the P0.1 entry in the blockers.
+    //
+    // sched_cur is a raw pointer, which cannot be invalidated by table compaction
+    // the way an index can — but it CAN dangle if the process is freed, which is
+    // why every free path calls sched_forget() above.
+    process_t* run = (process_t*)cpu_self()->sched_cur;
+    if (!run) run = cur;                 // first tick after boot, before we ever picked
+    next_cr3 = (run && run->page_directory && (cur_cs & 3) == 3)
+                   ? (uint64_t)run->page_directory
                    : (uint64_t)kernel_pml4_phys;   // ring-0 (mid-syscall) -> kernel CR3
 
     // Dormant, in a heap/critical section, or nothing else to schedule.
@@ -949,6 +1006,12 @@ void irq_scheduler_tick(void) {
         if (p->sched_cpu != 0) continue;      // pinned to an AP — that core's job
         if (p->page_directory != NULL && !p->sched_managed) continue;
         current_idx = idx;
+        // current_idx stays as the round-robin SCAN CURSOR (a stale cursor only
+        // costs a skipped turn). sched_cur is the separate, per-core record of
+        // WHICH PROCESS IS RUNNING — the job the index was quietly doing as well
+        // and could not do safely. The APs have kept it since stage 3a; the BSP
+        // never did, which is why get_current_process() had to special-case cpu 0.
+        cpu_self()->sched_cur = p;
         p->sched_quantum = p->sched_weight ? p->sched_weight : 1;   // start its turn
         sched_target(p);
         return;
@@ -994,6 +1057,7 @@ void reap_zombies(void) {
         process_table[i] = process_table[last];
         process_table[last] = NULL;
         if (current_idx == last) current_idx = i;
+        sched_forget(p);           // no core may keep a pointer to freed memory
         spin_unlock_irqrestore(&sched_lock, sfl);
         kfree(p);
         i--;                                            // re-examine the swapped-in slot

@@ -30,7 +30,15 @@ int elf_load_image(const uint8_t* data, uint32_t size, uint64_t** out_pd,
     // the 64-bit comparison, which could sneak a too-large table past this bound
     // check (CodeQL cpp/integer-multiplication-cast-to-long). Do the math in
     // 64-bit so the size is exact.
-    if (hdr->e_phoff + (uint64_t)hdr->e_phnum * hdr->e_phentsize > size) return -1;
+    // e_phentsize must be EXACTLY our struct size: the bound below is computed
+    // from e_phentsize, but the phdr[i] indexing further down strides by
+    // sizeof(elf64_phdr_t). Any other value makes the two disagree — e_phentsize
+    // of 1 with e_phnum of 1000 passes a 1000-byte check and then reads 56000.
+    if (hdr->e_phentsize != sizeof(elf64_phdr_t)) return -1;
+    // Subtraction-first: the multiply was already widened to 64-bit, but the
+    // ADDITION still wrapped, so a huge e_phoff sailed past this.
+    if (hdr->e_phoff > size) return -1;
+    if ((uint64_t)hdr->e_phnum * sizeof(elf64_phdr_t) > size - hdr->e_phoff) return -1;
 
     uint64_t* pd = alloc_page_directory();
     if (!pd) return -1;
@@ -61,7 +69,12 @@ int elf_load_image(const uint8_t* data, uint32_t size, uint64_t** out_pd,
     stk[2] = 0;                  // envp terminator
     stk[3] = 0;                  // padding (16-byte alignment)
 
+    // The entry point ends up in an iretq frame. A non-canonical or higher-half
+    // e_entry therefore does not kill the process — it makes the RETURN TO USER
+    // fault in ring 0, i.e. a kernel panic triggered by running a crafted file.
     uint64_t entry = hdr->e_entry;
+    if (entry < USER_SPACE_MIN || entry >= USER_SPACE_END) { free_page_directory(pd); return -1; }
+
     elf64_phdr_t* phdr = (elf64_phdr_t*)(data + hdr->e_phoff);
 
     for (uint32_t i = 0; i < hdr->e_phnum; i++) {
@@ -71,7 +84,32 @@ int elf_load_image(const uint8_t* data, uint32_t size, uint64_t** out_pd,
         uint64_t filesz = phdr[i].p_filesz;
         uint64_t offset = phdr[i].p_offset;
 
-        if (offset + filesz > size) { free_page_directory(pd); return -1; }
+        // Overflow-safe file-extent check: `offset + filesz` alone wraps, so a
+        // crafted p_offset near 2^64 passed it and then copied from far outside
+        // the image buffer.
+        if (offset > size || filesz > size - offset) { free_page_directory(pd); return -1; }
+
+        // The segment must land in USER space. Without this, a PT_LOAD with a
+        // higher-half p_vaddr walked into PML4[511] — which alloc_page_directory
+        // copies BY VALUE from the kernel's own PML4 — and installed mappings
+        // into the page tables the kernel itself runs on: either grafting a
+        // ring-3-accessible page at a fixed kernel VA in every address space
+        // (never reclaimed, since free_page_directory stops below PML4[511]), or
+        // writing a PTE straight into identity-mapped kernel RAM. A user program
+        // only had to write a file and execve it.
+        if (memsz > USER_SPACE_END ||
+            vaddr < USER_SPACE_MIN || vaddr > USER_SPACE_END - memsz) {
+            free_page_directory(pd);
+            return -1;
+        }
+
+        // A practical ceiling on one segment. The user-space bound above still
+        // permits a p_memsz of terabytes, and the loop below allocates a frame
+        // per page with no way out — so a single crafted PT_LOAD would walk off
+        // with every free page in the system before failing. 256 MB is far more
+        // than any NyxOS binary needs and bounds the loop at 65536 iterations.
+        if (memsz > ELF_MAX_SEGMENT) { free_page_directory(pd); return -1; }
+
         uint64_t start_page = vaddr & ~0xFFFULL;
         uint64_t end_page = (vaddr + memsz + 0xFFF) & ~0xFFFULL;
 
@@ -137,8 +175,22 @@ int elf_load_args(const uint8_t* data, uint32_t size, char* const* argv, int arg
 
     process_t* proc = create_user_process("elf", (void*)entry, (void*)rsp, pd);
     if (!proc) { free_page_directory(pd); return -1; }
-    proc->program_break = brk;
+    // heap_start before program_break. These are two plain stores to a struct
+    // another CPU can read at any instant — vm_handle_fault reaches this process
+    // through tg_leader() -> find_process(), which walks the process table with no
+    // lock at all — and a fresh process_t is zeroed. Publishing program_break
+    // first therefore exposes the window [0, brk) for an instant, and brk for a
+    // small binary is around 0x11000, so that window spans the program's own
+    // .text at 0x10000. This order makes the intermediate window [brk, 0), empty.
+    //
+    // HONEST SCOPE: this is hardening, NOT a fix for the intermittent [fault]
+    // hunted at v5.9.0. That fault (`pid N (threads): Page Fault #14 at RIP
+    // 0x102b3 err 0x15`, an NX violation on the process's own text) REPRODUCED
+    // with this ordering and with the paging.c window guard both in place —
+    // 1 hit in 23 rounds, statistically identical to the 1 in 19 before them.
+    // Whatever maps a non-executable page over live user text, it is not this.
     proc->heap_start = brk;      // heap grows lazily from here (see vm_handle_fault)
+    proc->program_break = brk;
 
     *out_proc = proc;
     return 0;

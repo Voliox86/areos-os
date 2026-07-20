@@ -5,6 +5,18 @@
 
 #define MAX_WINDOWS        32
 #define TITLE_H            22
+
+/* THE client-area origin. A window's (x, y) is the top-left of its TITLE BAR,
+ * and its content starts TITLE_H below that. The draw callbacks are handed the
+ * client origin already computed, but every hit-test handler worked it out for
+ * itself from win->y — and simply forgot the title bar. That is why clicks in
+ * Paint, the Text Editor and Sound Test all landed exactly TITLE_H = 22 px above
+ * what was drawn: four separate symptoms of one missing term.
+ *
+ * Exported here so there is ONE definition of where a window's content begins,
+ * rather than each module re-deriving it and being right or wrong on its own. */
+#define WIN_CLIENT_X(w) ((int)(w)->x)
+#define WIN_CLIENT_Y(w) ((int)(w)->y + TITLE_H)
 #define CLOSE_W            16
 #define MAX_TITLE          48
 #define MIN_WIN_W          120
