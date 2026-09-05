@@ -164,5 +164,21 @@ int join_selftest(void) {
       o.delim = 0; o.jf1 = 2; o.jf2 = 1; o.a1 = 0; o.a2 = 0; r.len = 0; out[0] = '\0';
       join_run(t1, (uint32_t)strlen(t1), t2, (uint32_t)strlen(t2), &o, join_rec_emit, &r);
       if (!join_seq(out, "1 apple red\n2 banana yellow\n")) return 5; }
+    { const char* t1 = "1 red\n2 yellow\n"; const char* t2 = "1 apple\n2 banana\n3 cherry\n"; // 6) -a2 unpaired pass-through
+      o.delim = 0; o.jf1 = 1; o.jf2 = 1; o.a1 = 0; o.a2 = 1; r.len = 0; out[0] = '\0';
+      join_run(t1, (uint32_t)strlen(t1), t2, (uint32_t)strlen(t2), &o, join_rec_emit, &r);
+      if (!join_seq(out, "1 red apple\n2 yellow banana\n3 cherry\n")) return 6; }
+    { const char* t1 = "  1   apple\n2 banana\n"; const char* t2 = "1 red\n2 yellow\n"; // 7) leading/multiple blanks collapse to one output space
+      o.delim = 0; o.jf1 = 1; o.jf2 = 1; o.a1 = 0; o.a2 = 0; r.len = 0; out[0] = '\0';
+      join_run(t1, (uint32_t)strlen(t1), t2, (uint32_t)strlen(t2), &o, join_rec_emit, &r);
+      if (!join_seq(out, "1 apple red\n2 banana yellow\n")) return 7; }
+    { const char* t1 = "1 a b\n2 c d\n"; const char* t2 = "1 x\n2 y\n"; // 8) several remaining fields keep their order
+      o.delim = 0; o.jf1 = 1; o.jf2 = 1; o.a1 = 0; o.a2 = 0; r.len = 0; out[0] = '\0';
+      join_run(t1, (uint32_t)strlen(t1), t2, (uint32_t)strlen(t2), &o, join_rec_emit, &r);
+      if (!join_seq(out, "1 a b x\n2 c d y\n")) return 8; }
+    { const char* t1 = "1\tapple\n2\tbanana\n3\tcherry\n"; const char* t2 = "1\tred\n2\tyellow\n"; // 9) tab delimiter (osep=tab) + -a1
+      o.delim = '\t'; o.jf1 = 1; o.jf2 = 1; o.a1 = 1; o.a2 = 0; r.len = 0; out[0] = '\0';
+      join_run(t1, (uint32_t)strlen(t1), t2, (uint32_t)strlen(t2), &o, join_rec_emit, &r);
+      if (!join_seq(out, "1\tapple\tred\n2\tbanana\tyellow\n3\tcherry\n")) return 9; }
     return 0;
 }

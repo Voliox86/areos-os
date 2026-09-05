@@ -24,7 +24,8 @@ typedef void (*join_emit_fn)(void* ctx, const char* out, uint32_t len);
 void join_run(const char* t1, uint32_t l1, const char* t2, uint32_t l2,
               const join_opts_t* o, join_emit_fn emit, void* ctx);
 
-// KAT: inner join + -a1 unpaired + cartesian product + custom delimiter + differing key fields. 0=pass.
+// KAT: inner join + -a1/-a2 unpaired + cartesian product + custom/tab delimiter + differing key
+// fields + leading/multiple-blank collapse + multi-field remainder order (all byte-checked vs GNU). 0=pass.
 int join_selftest(void);
 
 #endif
