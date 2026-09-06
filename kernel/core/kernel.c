@@ -9916,6 +9916,7 @@ extern int utf8_selftest(void);
 extern int totp_selftest(void);
 extern int ipv4_parse_selftest(void);
 extern int ipv6_parse_selftest(void);
+extern int ipv6_format_selftest(void);
 extern int numparse_selftest(void);
 extern int hkdf_selftest(void);
 extern int chacha20_selftest(void);
@@ -10418,7 +10419,7 @@ static void run_selftests(void) {
         {"fletcher",     fletcher_selftest},
         {"murmur",       murmur3_selftest},
         {"totp",         totp_selftest},          {"ipv4",          ipv4_parse_selftest},
-        {"ipv6",         ipv6_parse_selftest},
+        {"ipv6",         ipv6_parse_selftest},     {"ipv6fmt",       ipv6_format_selftest},
         {"ipcalc",       ipcalc_selftest},
         {"calc",         calc_selftest},
         {"json",         json_selftest},

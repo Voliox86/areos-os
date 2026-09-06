@@ -212,3 +212,109 @@ int ipv6_parse_selftest(void) {
     if (ipv6_parse("::1", (uint8_t*)0) != -1) return 5;        // NULL output
     return 0;
 }
+
+// ============================================================
+// ipv6_format - 16-byte IPv6 address -> canonical RFC 5952 text (the inverse of ipv6_parse)
+// ============================================================
+// RFC 5952 §4: lower-case hex, no leading zeros per hextet, and the LONGEST run of two or
+// more all-zero hextets collapsed to "::" (leftmost run on a tie; a single zero is never
+// collapsed). §5: the IPv4-mapped prefix ::ffff:0:0/96 is written with a dotted-quad tail
+// (e.g. ::ffff:192.168.1.1). Output matches Python ipaddress .compressed / glibc
+// getnameinfo byte-for-byte. Writes a NUL-terminated string and returns its length, or -1
+// on a NULL pointer or a buffer smaller than 40 bytes (the longest form needs 39 + NUL).
+// Pinned by ipv6_format_selftest().
+static uint32_t ip6_emit_hextet(char* p, unsigned v) {         // lower-case hex, no leading zeros
+    static const char hx[] = "0123456789abcdef";
+    char t[4]; int n = 0;
+    if (v == 0) { p[0] = '0'; return 1; }
+    while (v) { t[n++] = hx[v & 0xF]; v >>= 4; }
+    for (int i = 0; i < n; i++) p[i] = t[n - 1 - i];
+    return (uint32_t)n;
+}
+static uint32_t ip6_emit_u8(char* p, unsigned v) {             // decimal 0..255
+    char t[3]; int n = 0;
+    if (v == 0) { p[0] = '0'; return 1; }
+    while (v) { t[n++] = (char)('0' + v % 10); v /= 10; }
+    for (int i = 0; i < n; i++) p[i] = t[n - 1 - i];
+    return (uint32_t)n;
+}
+
+int ipv6_format(const uint8_t in[16], char* out, uint32_t cap) {
+    if (!in || !out || cap < 40) return -1;
+    uint16_t g[8];
+    for (int i = 0; i < 8; i++) g[i] = (uint16_t)(((unsigned)in[i * 2] << 8) | in[i * 2 + 1]);
+
+    // IPv4-mapped ::ffff:0:0/96 -> "::ffff:" + dotted-quad of the low 32 bits
+    if (g[0] == 0 && g[1] == 0 && g[2] == 0 && g[3] == 0 && g[4] == 0 && g[5] == 0xffff) {
+        char* p = out;
+        *p++ = ':'; *p++ = ':'; *p++ = 'f'; *p++ = 'f'; *p++ = 'f'; *p++ = 'f'; *p++ = ':';
+        p += ip6_emit_u8(p, in[12]); *p++ = '.';
+        p += ip6_emit_u8(p, in[13]); *p++ = '.';
+        p += ip6_emit_u8(p, in[14]); *p++ = '.';
+        p += ip6_emit_u8(p, in[15]);
+        *p = '\0';
+        return (int)(p - out);
+    }
+
+    // longest run of >= 2 zero hextets, leftmost on a tie
+    int best_start = -1, best_len = 0, i = 0;
+    while (i < 8) {
+        if (g[i] == 0) { int j = i; while (j < 8 && g[j] == 0) j++;
+                         if (j - i > best_len) { best_len = j - i; best_start = i; } i = j; }
+        else i++;
+    }
+    if (best_len < 2) best_start = -1;
+
+    char* p = out;
+    for (i = 0; i < 8; i++) {
+        if (best_start != -1 && i >= best_start && i < best_start + best_len) {
+            if (i == best_start) *p++ = ':';        // one colon of the "::"; the next group adds the other
+            continue;
+        }
+        if (i != 0) *p++ = ':';
+        p += ip6_emit_hextet(p, g[i]);
+    }
+    if (best_start != -1 && best_start + best_len == 8) *p++ = ':';   // trailing "::"
+    *p = '\0';
+    return (int)(p - out);
+}
+
+// KAT (`ipv6fmt`): canonical output for the all-zeros/loopback extremes, an uncompressible
+// eight-group form, upper-case input lowered, the longest-run and leftmost-tie compression
+// rules, a trailing "::", and the IPv4-mapped dotted tail; plus the NULL / too-small-buffer
+// contracts. Each expected string was cross-checked against Python ipaddress .compressed.
+int ipv6_format_selftest(void) {
+    struct { const char* in; const char* want; } t[] = {
+        { "::",                                     "::" },
+        { "0:0:0:0:0:0:0:0",                        "::" },
+        { "::1",                                    "::1" },
+        { "2001:db8::1",                            "2001:db8::1" },
+        { "1:2:3:4:5:6:7:8",                        "1:2:3:4:5:6:7:8" },
+        { "FFFF:ffff:ffff:ffff:ffff:ffff:ffff:ffff","ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff" },
+        { "::ffff:192.168.1.1",                     "::ffff:192.168.1.1" },
+        { "1:0:0:1:0:0:0:1",                        "1:0:0:1::1" },
+        { "1:0:0:0:1:0:0:0",                        "1::1:0:0:0" },
+        { "a:b:c:d:e:f:0:0",                        "a:b:c:d:e:f::" },
+        { "fe80::1",                                "fe80::1" },
+        { "1::",                                    "1::" },
+        { "0:0:1:0:0:0:0:1",                        "0:0:1::1" },
+        { "2001:0:0:1:0:0:0:1",                     "2001:0:0:1::1" },
+    };
+    char buf[48];
+    for (int i = 0; i < (int)(sizeof(t) / sizeof(t[0])); i++) {
+        uint8_t b[16];
+        if (ipv6_parse(t[i].in, b) != 0) return 1;
+        int n = ipv6_format(b, buf, sizeof buf);
+        if (n < 0) return 2;
+        int j = 0; while (t[i].want[j] && buf[j] == t[i].want[j]) j++;
+        if (t[i].want[j] != buf[j]) return 10 + i;
+        int wl = 0; while (t[i].want[wl]) wl++;
+        if (n != wl) return 40 + i;
+    }
+    uint8_t z[16]; for (int i = 0; i < 16; i++) z[i] = 0;
+    char small[8];
+    if (ipv6_format(z, small, sizeof small) != -1) return 6;   // cap < 40 rejected
+    if (ipv6_format((const uint8_t*)0, buf, sizeof buf) != -1) return 7;
+    if (ipv6_format(z, (char*)0, 48) != -1) return 8;
+    return 0;
+}

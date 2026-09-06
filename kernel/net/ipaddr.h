@@ -21,4 +21,13 @@ int ipv6_parse(const char* s, uint8_t out[16]);
 
 int ipv6_parse_selftest(void);   // KAT: canonical forms (byte-checked) + malformed rejections
 
+// Canonical RFC 5952 formatter: the 16 address bytes (network order) -> lower-case text with
+// no leading zeros, the longest run of >=2 zero hextets collapsed to "::" (leftmost on a tie),
+// and the IPv4-mapped ::ffff:0:0/96 prefix written with a dotted-quad tail. Writes a
+// NUL-terminated string and returns its length, or -1 on a NULL pointer or a buffer < 40 bytes.
+// Byte-for-byte with Python ipaddress .compressed. The inverse of ipv6_parse().
+int ipv6_format(const uint8_t in[16], char* out, uint32_t cap);
+
+int ipv6_format_selftest(void);  // KAT: canonical forms cross-checked against Python ipaddress
+
 #endif
