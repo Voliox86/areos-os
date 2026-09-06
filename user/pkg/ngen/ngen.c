@@ -73,6 +73,8 @@ void cmove(nyx_u8* p, nyx_i64* st, nyx_i64 i, nyx_i64 ln);
 nyx_i64 brret(nyx_i64* st, nyx_i64 b);
 nyx_i64 sguar(nyx_u8* p, nyx_i64* st, nyx_i64 i);
 nyx_i64 bguar(nyx_u8* p, nyx_i64* st, nyx_i64 b);
+nyx_bool hasdrop(nyx_u8* p, nyx_i64* st, T t);
+void cheld(nyx_u8* p, nyx_i64* st, nyx_i64 ln);
 void cdrops(nyx_u8* p, nyx_i64* st, nyx_i64 from);
 void cleak(nyx_u8* p, nyx_i64* st, nyx_i64 from, nyx_i64 ln, nyx_i64 w);
 T t_i64(nyx_i64* st);
@@ -156,6 +158,10 @@ void gpre(nyx_u8* p, nyx_i64* st, nyx_i64 i, nyx_i64 d);
 void gexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i);
 void gtry(nyx_u8* p, nyx_i64* st, nyx_i64 i, nyx_i64 d, nyx_i64 form);
 void gmove(nyx_u8* p, nyx_i64* st, nyx_i64 i);
+void gpath(nyx_u8* p, nyx_i64* st);
+void gfdrops(nyx_u8* p, nyx_i64* st, nyx_i64 si, nyx_i64 d);
+void gheld(nyx_u8* p, nyx_i64* st, nyx_i64 d);
+nyx_i64 gheldpend(nyx_u8* p, nyx_i64* st);
 nyx_i64 gpend(nyx_u8* p, nyx_i64* st, nyx_i64 from);
 void gdrops(nyx_u8* p, nyx_i64* st, nyx_i64 from, nyx_i64 d);
 void gdefs(nyx_u8* p, nyx_i64* st, nyx_i64 d);
@@ -1045,6 +1051,35 @@ void cmove(nyx_u8* p, nyx_i64* st, nyx_i64 i, nyx_i64 ln) {
         return;
     }
     nyx_i64* nd = (nyx_i64*)(st[33]);
+    if ((nd[(i * 8)] == 7)) {
+        T ft = cinfer(p, st, i);
+        if (tyown(p, st, ft)) {
+            nyx_i64 b = nd[((i * 8) + 1)];
+            char __b0[256];
+            nyx_str __s0 = __nyx_fmt_begin(__b0, 256);
+            __nyx_fmt_i64(&__s0, __b0, 256, (nyx_i64)(ln));
+            __nyx_fmt_str(&__s0, __b0, 256, (nyx_str){": cannot move field '", 21});
+            put(__s0);
+            put_span(p, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
+            put(((nyx_str){"' out of own value '", 20}));
+            if ((nd[(b * 8)] == 5)) {
+                put_span(p, nd[((b * 8) + 5)], nd[((b * 8) + 6)]);
+            }
+            if ((nd[(b * 8)] != 5)) {
+                put(((nyx_str){"an own value", 12}));
+            }
+            put(((nyx_str){"' \342\200\224 consume '", 15}));
+            if ((nd[(b * 8)] == 5)) {
+                put_span(p, nd[((b * 8) + 5)], nd[((b * 8) + 6)]);
+            }
+            if ((nd[(b * 8)] != 5)) {
+                put(((nyx_str){"an own value", 12}));
+            }
+            put(((nyx_str){"' as a whole (v0.25)\n", 21}));
+            st[41] = 1;
+        }
+        return;
+    }
     if ((nd[(i * 8)] != 5)) {
         return;
     }
@@ -1058,33 +1093,33 @@ void cmove(nyx_u8* p, nyx_i64* st, nyx_i64 i, nyx_i64 ln) {
         return;
     }
     if ((o == 2)) {
-        char __b0[256];
-        nyx_str __s0 = __nyx_fmt_begin(__b0, 256);
-        __nyx_fmt_i64(&__s0, __b0, 256, (nyx_i64)(ln));
-        __nyx_fmt_str(&__s0, __b0, 256, (nyx_str){": use of '", 10});
-        put(__s0);
+        char __b1[256];
+        nyx_str __s1 = __nyx_fmt_begin(__b1, 256);
+        __nyx_fmt_i64(&__s1, __b1, 256, (nyx_i64)(ln));
+        __nyx_fmt_str(&__s1, __b1, 256, (nyx_str){": use of '", 10});
+        put(__s1);
         put_span(p, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
         put(((nyx_str){"' after move\n", 13}));
         st[41] = 1;
         return;
     }
     if ((st[55] > 0)) {
-        char __b1[256];
-        nyx_str __s1 = __nyx_fmt_begin(__b1, 256);
-        __nyx_fmt_i64(&__s1, __b1, 256, (nyx_i64)(ln));
-        __nyx_fmt_str(&__s1, __b1, 256, (nyx_str){": own value '", 13});
-        put(__s1);
+        char __b2[256];
+        nyx_str __s2 = __nyx_fmt_begin(__b2, 256);
+        __nyx_fmt_i64(&__s2, __b2, 256, (nyx_i64)(ln));
+        __nyx_fmt_str(&__s2, __b2, 256, (nyx_str){": own value '", 13});
+        put(__s2);
         put_span(p, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
         put(((nyx_str){"' cannot move inside a loop \342\200\224 the move could run zero or many times (v0.18)\n", 78}));
         st[41] = 1;
         return;
     }
     if ((st[56] > 0)) {
-        char __b2[256];
-        nyx_str __s2 = __nyx_fmt_begin(__b2, 256);
-        __nyx_fmt_i64(&__s2, __b2, 256, (nyx_i64)(ln));
-        __nyx_fmt_str(&__s2, __b2, 256, (nyx_str){": own value '", 13});
-        put(__s2);
+        char __b3[256];
+        nyx_str __s3 = __nyx_fmt_begin(__b3, 256);
+        __nyx_fmt_i64(&__s3, __b3, 256, (nyx_i64)(ln));
+        __nyx_fmt_str(&__s3, __b3, 256, (nyx_str){": own value '", 13});
+        put(__s3);
         put_span(p, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
         put(((nyx_str){"' cannot move inside a match arm \342\200\224 consume it with if/else instead (v0.18)\n", 77}));
         st[41] = 1;
@@ -1187,21 +1222,91 @@ nyx_i64 bguar(nyx_u8* p, nyx_i64* st, nyx_i64 b) {
     return 0;
 }
 
-void cdrops(nyx_u8* p, nyx_i64* st, nyx_i64 from) {
+nyx_bool hasdrop(nyx_u8* p, nyx_i64* st, T t) {
+    if (((t.pt != 0) || (t.l == 0))) {
+        return 0;
+    }
+    nyx_i64 si = sfind(p, st, t.s, t.l);
+    if ((si < 0)) {
+        return 0;
+    }
+    nyx_i64* sa = (nyx_i64*)(st[49]);
+    if ((sa[((si * 8) + 4)] != 1)) {
+        return 0;
+    }
+    if ((sa[((si * 8) + 6)] > 0)) {
+        return 1;
+    }
+    nyx_i64 any = 0;
+    nyx_i64 q = 0;
+    while ((q < sa[((si * 8) + 2)])) {
+        T ft = sfty(st, si, q);
+        if (tyown(p, st, ft)) {
+            if (!(hasdrop(p, st, ft))) {
+                return 0;
+            }
+            any = 1;
+        }
+        q = (q + 1);
+    }
+    return (any == 1);
+}
+
+void cheld(nyx_u8* p, nyx_i64* st, nyx_i64 ln) {
     if ((st[41] == 1)) {
         return;
     }
     nyx_i64* va = (nyx_i64*)(st[39]);
     nyx_i64* sa = (nyx_i64*)(st[49]);
+    nyx_i64* al = (nyx_i64*)(st[35]);
+    nyx_i64 j = 0;
+    while ((j < st[40])) {
+        if ((va[((j * 10) + 8)] == 3)) {
+            T t = vty(st, j);
+            if (((t.pt == 0) && (t.l > 0))) {
+                nyx_i64 si = sfind(p, st, t.s, t.l);
+                if ((si >= 0)) {
+                    nyx_i64 q = 0;
+                    while ((q < sa[((si * 8) + 2)])) {
+                        T ft = sfty(st, si, q);
+                        if ((tyown(p, st, ft) && !(hasdrop(p, st, ft)))) {
+                            nyx_i64 r = (sa[((si * 8) + 3)] + (q * 6));
+                            char __b0[256];
+                            nyx_str __s0 = __nyx_fmt_begin(__b0, 256);
+                            __nyx_fmt_i64(&__s0, __b0, 256, (nyx_i64)(ln));
+                            __nyx_fmt_str(&__s0, __b0, 256, (nyx_str){": held own value '", 18});
+                            put(__s0);
+                            put_span(p, va[(j * 10)], va[((j * 10) + 1)]);
+                            put(((nyx_str){"' ends here with field '", 24}));
+                            put_span(p, al[r], al[(r + 1)]);
+                            put(((nyx_str){"' unconsumed \342\200\224 '", 18}));
+                            put_span(p, ft.s, ft.l);
+                            put(((nyx_str){"' has no #[drop] destructor; move '", 35}));
+                            put_span(p, va[(j * 10)], va[((j * 10) + 1)]);
+                            put(((nyx_str){"' on instead (v0.25)\n", 21}));
+                            st[41] = 1;
+                            return;
+                        }
+                        q = (q + 1);
+                    }
+                }
+            }
+        }
+        j = (j + 1);
+    }
+}
+
+void cdrops(nyx_u8* p, nyx_i64* st, nyx_i64 from) {
+    if ((st[41] == 1)) {
+        return;
+    }
+    nyx_i64* va = (nyx_i64*)(st[39]);
     nyx_i64 j = (st[40] - 1);
     while ((j >= from)) {
         if ((va[((j * 10) + 8)] == 1)) {
             T t = vty(st, j);
-            if (((t.pt == 0) && (t.l > 0))) {
-                nyx_i64 si = sfind(p, st, t.s, t.l);
-                if ((((si >= 0) && (sa[((si * 8) + 4)] == 1)) && (sa[((si * 8) + 6)] > 0))) {
-                    va[((j * 10) + 8)] = 2;
-                }
+            if (hasdrop(p, st, t)) {
+                va[((j * 10) + 8)] = 2;
             }
         }
         j = (j - 1);
@@ -4075,6 +4180,12 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
                 st[41] = 1;
                 return;
             }
+            if (tyown(p, st, dt)) {
+                cmove(p, st, vv, ln3);
+                if ((st[41] == 1)) {
+                    return;
+                }
+            }
             j2 = (j2 + 1);
         }
         return;
@@ -4586,6 +4697,7 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             }
             cmove(p, st, nd[((i * 8) + 1)], nd[((i * 8) + 4)]);
             cdrops(p, st, 0);
+            cheld(p, st, nd[((i * 8) + 4)]);
             cleak(p, st, 0, nd[((i * 8) + 4)], 0);
             return;
         }
@@ -4601,6 +4713,7 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             st[41] = 1;
         }
         cdrops(p, st, 0);
+        cheld(p, st, nd[((i * 8) + 4)]);
         cleak(p, st, 0, nd[((i * 8) + 4)], 0);
         return;
     }
@@ -5027,6 +5140,9 @@ void cblock(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
     if ((lst2 > 0)) {
         ln9 = nd[((lst2 * 8) + 4)];
     }
+    if ((st[43] == 1)) {
+        cheld(p, st, ln9);
+    }
     cleak(p, st, vsave, ln9, 1);
     st[43] = (st[43] - 1);
     st[40] = vsave;
@@ -5163,7 +5279,7 @@ void cdecls(nyx_u8* p, nyx_i64* st) {
     while ((si2 < st[50])) {
         nyx_i64 q = 0;
         while ((q < sa[((si2 * 8) + 2)])) {
-            if (tyown(p, st, sfty(st, si2, q))) {
+            if ((tyown(p, st, sfty(st, si2, q)) && (sa[((si2 * 8) + 4)] != 1))) {
                 nyx_i64 r = (sa[((si2 * 8) + 3)] + (q * 6));
                 put(((nyx_str){" own type in field '", 20}));
                 put_span(p, sa[(si2 * 8)], sa[((si2 * 8) + 1)]);
@@ -6137,6 +6253,7 @@ void gexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             put_span(p, al[r4], al[(r4 + 1)]);
             put(((nyx_str){" = ", 3}));
             gexpr(p, st, al[(r4 + 2)]);
+            gmove(p, st, al[(r4 + 2)]);
             q4 = (q4 + 1);
         }
         put(((nyx_str){"})", 2}));
@@ -6363,17 +6480,87 @@ void gmove(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
     }
 }
 
-nyx_i64 gpend(nyx_u8* p, nyx_i64* st, nyx_i64 from) {
-    nyx_i64* va = (nyx_i64*)(st[39]);
+void gpath(nyx_u8* p, nyx_i64* st) {
+    nyx_i64* ps = (nyx_i64*)(st[70]);
+    nyx_i64 k = 0;
+    while ((k < st[71])) {
+        if ((k > 0)) {
+            put(((nyx_str){".", 1}));
+        }
+        put_span(p, ps[(k * 2)], ps[((k * 2) + 1)]);
+        k = (k + 1);
+    }
+}
+
+void gfdrops(nyx_u8* p, nyx_i64* st, nyx_i64 si, nyx_i64 d) {
     nyx_i64* sa = (nyx_i64*)(st[49]);
-    nyx_i64 j = from;
+    nyx_i64* al = (nyx_i64*)(st[35]);
+    nyx_i64* ps = (nyx_i64*)(st[70]);
+    nyx_i64 q = (sa[((si * 8) + 2)] - 1);
+    while ((q >= 0)) {
+        T ft = sfty(st, si, q);
+        if (tyown(p, st, ft)) {
+            nyx_i64 r = (sa[((si * 8) + 3)] + (q * 6));
+            nyx_i64 k = st[71];
+            ps[(k * 2)] = al[r];
+            ps[((k * 2) + 1)] = al[(r + 1)];
+            st[71] = (k + 1);
+            nyx_i64 fsi = sfind(p, st, ft.s, ft.l);
+            if ((sa[((fsi * 8) + 6)] > 0)) {
+                eind(d);
+                put_span(p, sa[((fsi * 8) + 5)], sa[((fsi * 8) + 6)]);
+                put(((nyx_str){"(", 1}));
+                gpath(p, st);
+                put(((nyx_str){");\n", 3}));
+            }
+            if ((sa[((fsi * 8) + 6)] == 0)) {
+                gfdrops(p, st, fsi, d);
+            }
+            st[71] = k;
+        }
+        q = (q - 1);
+    }
+}
+
+void gheld(nyx_u8* p, nyx_i64* st, nyx_i64 d) {
+    nyx_i64* va = (nyx_i64*)(st[39]);
+    nyx_i64* ps = (nyx_i64*)(st[70]);
+    nyx_i64 j = 0;
     while ((j < st[40])) {
-        if ((va[((j * 10) + 8)] == 1)) {
+        if ((va[((j * 10) + 8)] == 3)) {
             T t = vty(st, j);
             if (((t.pt == 0) && (t.l > 0))) {
                 nyx_i64 si = sfind(p, st, t.s, t.l);
-                if ((((si >= 0) && (sa[((si * 8) + 4)] == 1)) && (sa[((si * 8) + 6)] > 0))) {
-                    return 1;
+                if ((si >= 0)) {
+                    ps[0] = va[(j * 10)];
+                    ps[1] = va[((j * 10) + 1)];
+                    st[71] = 1;
+                    gfdrops(p, st, si, d);
+                    st[71] = 0;
+                }
+            }
+        }
+        j = (j + 1);
+    }
+}
+
+nyx_i64 gheldpend(nyx_u8* p, nyx_i64* st) {
+    nyx_i64* va = (nyx_i64*)(st[39]);
+    nyx_i64* sa = (nyx_i64*)(st[49]);
+    nyx_i64 j = 0;
+    while ((j < st[40])) {
+        if ((va[((j * 10) + 8)] == 3)) {
+            T t = vty(st, j);
+            if (((t.pt == 0) && (t.l > 0))) {
+                nyx_i64 si = sfind(p, st, t.s, t.l);
+                if ((si >= 0)) {
+                    nyx_i64 q = 0;
+                    while ((q < sa[((si * 8) + 2)])) {
+                        if (tyown(p, st, sfty(st, si, q))) {
+                            return 1;
+                        }
+                        q = (q + 1);
+                    }
                 }
             }
         }
@@ -6382,9 +6569,27 @@ nyx_i64 gpend(nyx_u8* p, nyx_i64* st, nyx_i64 from) {
     return 0;
 }
 
+nyx_i64 gpend(nyx_u8* p, nyx_i64* st, nyx_i64 from) {
+    nyx_i64* va = (nyx_i64*)(st[39]);
+    nyx_i64 j = from;
+    while ((j < st[40])) {
+        if ((va[((j * 10) + 8)] == 1)) {
+            if (hasdrop(p, st, vty(st, j))) {
+                return 1;
+            }
+        }
+        j = (j + 1);
+    }
+    if ((from == 0)) {
+        return gheldpend(p, st);
+    }
+    return 0;
+}
+
 void gdrops(nyx_u8* p, nyx_i64* st, nyx_i64 from, nyx_i64 d) {
     nyx_i64* va = (nyx_i64*)(st[39]);
     nyx_i64* sa = (nyx_i64*)(st[49]);
+    nyx_i64* ps = (nyx_i64*)(st[70]);
     nyx_i64 j = (st[40] - 1);
     while ((j >= from)) {
         if ((va[((j * 10) + 8)] == 1)) {
@@ -6397,6 +6602,14 @@ void gdrops(nyx_u8* p, nyx_i64* st, nyx_i64 from, nyx_i64 d) {
                     put(((nyx_str){"(", 1}));
                     put_span(p, va[(j * 10)], va[((j * 10) + 1)]);
                     put(((nyx_str){");\n", 3}));
+                    va[((j * 10) + 8)] = 2;
+                }
+                if (((((si >= 0) && (sa[((si * 8) + 4)] == 1)) && (sa[((si * 8) + 6)] == 0)) && hasdrop(p, st, t))) {
+                    ps[0] = va[(j * 10)];
+                    ps[1] = va[((j * 10) + 1)];
+                    st[71] = 1;
+                    gfdrops(p, st, si, d);
+                    st[71] = 0;
                     va[((j * 10) + 8)] = 2;
                 }
             }
@@ -6489,6 +6702,7 @@ void gstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i, nyx_i64 d) {
             put(((nyx_str){";\n", 2}));
             gdefs(p, st, (d + 1));
             gdrops(p, st, 0, (d + 1));
+            gheld(p, st, (d + 1));
             eind((d + 1));
             put(((nyx_str){"return __ret;\n", 14}));
             eind(d);
@@ -6498,6 +6712,7 @@ void gstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i, nyx_i64 d) {
         if (((st[59] > 0) || (pnd == 1))) {
             gdefs(p, st, d);
             gdrops(p, st, 0, d);
+            gheld(p, st, d);
             eind(d);
             put(((nyx_str){"return;\n", 8}));
             return;
@@ -6887,6 +7102,7 @@ void gblock(nyx_u8* p, nyx_i64* st, nyx_i64 b, nyx_i64 d, nyx_i64 ftail) {
         s = nd[((s * 8) + 7)];
     }
     nyx_i64 t = nd[((b * 8) + 2)];
+    nyx_i64 tailret = 0;
     if ((t > 0)) {
         T rt = ((T){.pt = st[45], .us = st[46], .s = st[47], .l = st[48]});
         nyx_bool nvr = ((rt.l == 5) && eq5(p, rt.s, 110, 101, 118, 101, 114));
@@ -6906,6 +7122,8 @@ void gblock(nyx_u8* p, nyx_i64* st, nyx_i64 b, nyx_i64 d, nyx_i64 ftail) {
             put(((nyx_str){";\n", 2}));
             gdefs(p, st, (d + 1));
             gdrops(p, st, 0, (d + 1));
+            gheld(p, st, (d + 1));
+            tailret = 1;
             eind((d + 1));
             put(((nyx_str){"return __ret;\n", 14}));
         }
@@ -6938,6 +7156,9 @@ void gblock(nyx_u8* p, nyx_i64* st, nyx_i64 b, nyx_i64 d, nyx_i64 ftail) {
         fr0 = 0;
     }
     gdrops(p, st, fr0, (d + 1));
+    if (((ftail == 1) && (tailret == 0))) {
+        gheld(p, st, (d + 1));
+    }
     eind(d);
     put(((nyx_str){"}", 1}));
     st[40] = vsave;
@@ -7165,6 +7386,8 @@ nyx_i64 main(nyx_i64 __argc, nyx_u8** __argv) {
     st[67] = 0;
     st[68] = (total + 37);
     st[69] = 0;
+    st[70] = sys_sbrk(1024);
+    st[71] = 0;
     nyx_i64* nil0 = (nyx_i64*)(st[33]);
     nyx_i64 z = 0;
     while ((z < 8)) {
