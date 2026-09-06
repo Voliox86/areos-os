@@ -82,6 +82,7 @@ typedef struct vfs_node {
 #define PROC_MOUNTS      9   // /proc/mounts        (mounted filesystems)
 #define PROC_STAT        10  // /proc/stat          (ctxt / processes / procs_running / btime)
 #define PROC_CMDLINE     11  // /proc/cmdline       (retained multiboot boot command line)
+#define PROC_FILESYSTEMS 12  // /proc/filesystems   (the fs types the kernel supports)
 
 /* /dev/random and /dev/urandom are served by the kernel CSPRNG (an HMAC-DRBG seeded from
  * RDSEED/RDRAND hardware entropy) — the same source uuid/mktemp/shuf/encrypt already use.
@@ -486,6 +487,12 @@ static int proc_generate(vfs_node_t* ino, char* buf, int bufsz) {
             snprintf(buf, bufsz, "%s\n", g_boot_cmdline);
             break;
         }
+        case PROC_FILESYSTEMS:
+            // The fs types the kernel actually supports, Linux /proc/filesystems layout:
+            // "nodev\t<name>" for a pseudo/in-memory fs, "\t<name>" for a block-backed one.
+            // NyxOS = nyxfs (the in-memory rootfs, no device) + ext2 (the only mountable type).
+            snprintf(buf, bufsz, "nodev\tnyxfs\n\text2\n");
+            break;
         case PROC_CPUINFO:
             snprintf(buf, bufsz, "arch\t: x86_64\nvendor\t: NyxOS\n");
             break;
@@ -739,7 +746,7 @@ void init_vfs(void) {
         {"meminfo", PROC_MEMINFO}, {"uptime", PROC_UPTIME},
         {"version", PROC_VERSION}, {"cpuinfo", PROC_CPUINFO},
         {"mounts",  PROC_MOUNTS},  {"stat",   PROC_STAT},
-        {"cmdline", PROC_CMDLINE},
+        {"cmdline", PROC_CMDLINE}, {"filesystems", PROC_FILESYSTEMS},
     };
     for (unsigned i = 0; i < sizeof(procf) / sizeof(procf[0]); i++)
         proc_make(proc_node, procf[i].name, 0, procf[i].pt, 0);
