@@ -1,0 +1,46 @@
+// owncap.npp — own captures as call-once closures (M6.4c4).
+//
+// A lambda bound with `:=` may capture an `own` local. Such a closure is
+// built BY VALUE — its environment is an own struct holding the captured
+// value (N v0.25 lets an own container hold own fields), and the closure
+// value is an own struct around it — and it is CALL-ONCE: the call
+// consumes the closure, the lifted function holds it, and when the body
+// ends the captured owns drop through the environment, exactly as the
+// design promised ("the environment inherits must-consume"). What N
+// polices for free: a second call is a use after move; a closure never
+// called drops at scope end through its captures. Inside the body an own
+// capture is peeked, never moved out (v0.25's rule on fields). An own
+// capture in an `Fn(...)` slot stays refused — that environment lives
+// behind a pointer.
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+#[drop(close_file)]
+own struct File { fd: i64 }
+
+fn close_file(f: File) {
+    put("closing {f.fd}\n");
+}
+
+fn open_file(fd: i64) -> File {
+    File{ fd: fd }
+}
+
+fn main() -> i64 {
+    f := open_file(3);
+    tag := "boot";
+    report := fn(n: i64) -> i64 { put("{tag}: fd {f.fd} + {n}\n"); f.fd + n };
+    put("closure built\n");
+    r := report(39);
+    put("r = {r}\n");
+    g := open_file(4);
+    unused := fn() { put("never called, fd {g.fd}\n"); };
+    put("done\n");
+    0
+}

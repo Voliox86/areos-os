@@ -166,10 +166,14 @@ The rules at this rung (M6.4a):
   function, a struct literal, or a name so typed; anything else is
   refused: `cannot capture 'n': its type is not evident — bind it with a
   literal, a call or a struct literal, or pass it as a parameter`. An
-  `own` value captured is moved, as N's rules say.
+  `own` local cannot be captured here — this environment lives behind a
+  pointer, which N refuses for own values; it can be captured by a
+  `:=`-bound lambda, the call-once closure below (M6.4c4).
 - **elsewhere, lambdas capture nothing.** In a plain `fn(...)` slot or a
-  `:=` binding there is no environment to keep a capture in: naming a
-  local of the enclosing function there is refused with the fix named.
+  `:=` binding there is no environment to keep a capture in — the one
+  exception being a `:=`-bound lambda that captures an `own` local
+  (M6.4c4, below): naming any other local of the enclosing function
+  there is refused with the fix named.
   (A local a token scan cannot see, such as a `match` arm's bind, is
   refused by N instead, as an undeclared variable in the lifted
   function.) Inside a generic template a capture works the same way: the
@@ -271,6 +275,31 @@ struct. A use with the wrong arity, or of a name that is not generic, is
 refused as anywhere else.
 [`../examples/gstructnest.npp`](../examples/gstructnest.npp) is the
 worked example, held by stage [10u].
+
+**Own captures — call-once closures (M6.4c4).** A capture by value puts
+its copy behind the environment's pointer, and N lets no `own` value
+sit behind a pointer: an own handle captured that way would have two
+owners. So an own capture takes the other shape N v0.25 allows — an own
+container by value — and pays for it with a call count. A lambda bound
+with `:=` that captures an `own` local becomes a **call-once closure**:
+its environment is `own struct __E_N { f: File, … }`, holding every
+capture (own fields included) by value; the closure value is `own
+struct __O_N { env: __E_N }`; the lifted function holds the closure,
+`fn __c_N(__self: __O_N, n: i64) -> i64`, and reads its captures as
+`__self.env.f`; the binding is the struct literal `h := __O_N{ env:
+__E_N{ f: f } }` — which moves `f` in — and every later call `h(39)` in
+that function becomes `__c_N(h, 39)`, which moves `h` in. Everything
+else N polices for free: when the lifted function's body ends, its held
+closure drops through its fields, so the captured owns are consumed
+right after the call ("the environment inherits must-consume"); a
+second `h(…)` is a use after move; a closure never called drops at
+scope end through its captures; the body may peek at an own capture but
+not move it out (v0.25's rule on fields). The limits: such a closure
+cannot be passed where an `Fn(…)` is expected (that slot's environment
+is by address, non-owning — the capture is refused with the fix named),
+and it cannot be born inside a generic template yet.
+[`../examples/owncap.npp`](../examples/owncap.npp) is the worked
+example, held by stage [10v].
 
 [`../examples/closure.npp`](../examples/closure.npp) is the worked
 example: four lambdas — an argument, a struct field, another argument,

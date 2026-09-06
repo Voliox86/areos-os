@@ -2030,6 +2030,70 @@ static char* env_text(int itemfirst, int lam, int* caps, int ncap, int lamno, ch
     return b;
 }
 
+/* Is the type text an `own struct` of this program? (M6.4c4: an own
+ * capture cannot live behind the heap environment's pointer.) */
+static int is_own_type(const char* ty) {
+    size_t n = strlen(ty);
+    for (int t = 0; t + 2 < NTOK; t++)
+        if (TOKS[t].k == T_KW_OWN && TOKS[t + 1].k == T_KW_STRUCT && TOKS[t + 2].k == T_IDENT &&
+            (size_t)TOKS[t + 2].slen == n && !memcmp(TOKS[t + 2].s, ty, n))
+            return 1;
+    return 0;
+}
+
+/* The environment of a call-once closure (M6.4c4): an `own struct __E_N`
+ * over the captured names — own fields among them, which N v0.25 allows
+ * inside an own container — and the closure value's own struct
+ * `__O_N { env: __E_N }`. No maker: the closure is built by value, in
+ * place, and is consumed by its one call. */
+static char* once_text(int* caps, int ncap, int lamno, char** tys) {
+    char en[32], on[32];
+    sprintf(en, "__E_%d", lamno);
+    sprintf(on, "__O_%d", lamno);
+    size_t cap = 256, n = 0;
+    char* b = xmalloc(cap);
+    b[0] = 0;
+    apps(&b, &n, &cap, "own struct ");
+    apps(&b, &n, &cap, en);
+    apps(&b, &n, &cap, " {\n");
+    for (int c = 0; c < ncap; c++) {
+        apps(&b, &n, &cap, "    ");
+        app(&b, &n, &cap, TOKS[caps[c]].s, (size_t)TOKS[caps[c]].slen);
+        apps(&b, &n, &cap, ": ");
+        apps(&b, &n, &cap, tys[c]);
+        apps(&b, &n, &cap, ",\n");
+    }
+    apps(&b, &n, &cap, "}\n\nown struct ");
+    apps(&b, &n, &cap, on);
+    apps(&b, &n, &cap, " {\n    env: ");
+    apps(&b, &n, &cap, en);
+    apps(&b, &n, &cap, ",\n}");
+    return b;
+}
+
+/* Its birth: `__O_N{ env: __E_N{ a: a, b: b } }` — every captured own
+ * local moves in, as N's struct-literal rule says. */
+static char* once_birth(int* caps, int ncap, int lamno) {
+    size_t cap = 128, n = 0;
+    char* b = xmalloc(cap);
+    b[0] = 0;
+    char en[32], on[32];
+    sprintf(en, "__E_%d", lamno);
+    sprintf(on, "__O_%d", lamno);
+    apps(&b, &n, &cap, on);
+    apps(&b, &n, &cap, "{ env: ");
+    apps(&b, &n, &cap, en);
+    apps(&b, &n, &cap, "{ ");
+    for (int c = 0; c < ncap; c++) {
+        if (c) apps(&b, &n, &cap, ", ");
+        app(&b, &n, &cap, TOKS[caps[c]].s, (size_t)TOKS[caps[c]].slen);
+        apps(&b, &n, &cap, ": ");
+        app(&b, &n, &cap, TOKS[caps[c]].s, (size_t)TOKS[caps[c]].slen);
+    }
+    apps(&b, &n, &cap, " } }");
+    return b;
+}
+
 /* Does the program declare `sys_sbrk` (in an extern block)? */
 static int declares_sbrk(void) {
     for (int t = 1; t + 1 < NTOK; t++)
@@ -2129,6 +2193,9 @@ static char* lambda_pass(const char* prog) {
         }
         char* slot = fn_slot(i, end);     /* a closure slot (M6.4c1)? its type text */
         int closure = slot != NULL;
+        /* `h := fn(...) { ... }` (M6.4c4): a bound lambda may capture own
+         * locals — it becomes a call-once closure, consumed by its call. */
+        int bname = (i >= 2 && TOKS[i - 1].k == T_WALRUS && TOKS[i - 2].k == T_IDENT) ? i - 2 : -1;
         int used[MAXP], nused = 0;        /* the ones the lambda — or its closure type — mentions, in order */
         for (int q = 0; q < ntp; q++) {
             int m = closure && word_in(slot, tp[q]);
@@ -2136,13 +2203,40 @@ static char* lambda_pass(const char* prog) {
             if (m) used[nused++] = q;
         }
         int refs[256];                    /* references to enclosing locals (M6.4c2) */
-        int nref = scan_captures(itemfirst, i, body, end, refs, 256, !closure);
+        int nref = scan_captures(itemfirst, i, body, end, refs, 256, !closure && bname < 0);
         int caps[32], ncap = 0;           /* the distinct captured names, first use first */
         for (int r = 0; r < nref; r++) {
             int dup = 0;
             for (int c = 0; c < ncap && !dup; c++) if (tokspan_eq(caps[c], refs[r])) dup = 1;
             if (!dup && ncap < 32) caps[ncap++] = refs[r];
         }
+        int once = 0;                     /* M6.4c4: an own capture makes a call-once closure */
+        char* otys[32] = {0};
+        if (ncap && !closure) {           /* a bound lambda: only with an own capture */
+            int anyown = 0;
+            for (int c = 0; c < ncap; c++) {
+                otys[c] = local_type(itemfirst, i, caps[c], 0);
+                if (otys[c] && is_own_type(otys[c])) anyown = 1;
+            }
+            if (!anyown)
+                die("%s:%d: lambda captures '%.*s', a local of the enclosing function — only a lambda in a closure slot (an Fn type) can capture; pass it as a parameter",
+                    FILENAME, TOKS[caps[0]].line, TOKS[caps[0]].slen, TOKS[caps[0]].s);
+            if (gname >= 0)
+                die("%s:%d: an own capture inside generic '%.*s' is not supported yet — pass '%.*s' as a parameter",
+                    FILENAME, TOKS[i].line, TOKS[gname].slen, TOKS[gname].s, TOKS[caps[0]].slen, TOKS[caps[0]].s);
+            for (int c = 0; c < ncap; c++)
+                if (!otys[c])
+                    die("%s:%d: cannot capture '%.*s': its type is not evident — bind it with a literal, a call or a struct literal, or pass it as a parameter",
+                        FILENAME, TOKS[caps[c]].line, TOKS[caps[c]].slen, TOKS[caps[c]].s);
+            once = 1;
+        }
+        if (closure)                      /* an Fn slot keeps its environment behind a pointer */
+            for (int c = 0; c < ncap; c++) {
+                char* t = local_type(itemfirst, i, caps[c], 0);
+                if (t && is_own_type(t))
+                    die("%s:%d: lambda captures own value '%.*s' — an own capture needs a call-once closure: bind the lambda with := and call it once (M6.4c4)",
+                        FILENAME, TOKS[caps[c]].line, TOKS[caps[c]].slen, TOKS[caps[c]].s);
+            }
         int lamno = NLAMBDA++;
         char* targs = xmalloc(4 + (size_t)nused * 64);   /* `<A, B>`, or "" */
         int tn = 0;
@@ -2175,14 +2269,43 @@ static char* lambda_pass(const char* prog) {
         if (an) app(&acc, &an, &acap, "\n\n", 2);
         char* birth = "0";
         char* tys[32] = {0};
-        if (ncap) {                       /* the environment struct and its maker */
+        if (ncap && !once) {              /* the environment struct and its maker */
             apps(&acc, &an, &acap, env_text(itemfirst, i, caps, ncap, lamno, &birth, tys, targs));
             apps(&acc, &an, &acap, "\n\n");
             madeenv = 1;
         }
+        if (once) {                       /* the own environment and the closure's own struct */
+            apps(&acc, &an, &acap, once_text(caps, ncap, lamno, otys));
+            apps(&acc, &an, &acap, "\n\n");
+        }
         app(&acc, &an, &acap, "fn ", 3);
         app(&acc, &an, &acap, name, strlen(name));
-        if (closure) {                    /* the environment comes first */
+        if (once) {                       /* the closure itself comes first, held: its
+                                           * fields — the captured owns — drop at the end */
+            char on[32];
+            sprintf(on, "__O_%d", lamno);
+            apps(&acc, &an, &acap, "(__self: ");
+            apps(&acc, &an, &acap, on);
+            if (TOKS[i + 2].k != T_RP) app(&acc, &an, &acap, ", ", 2);
+            app(&acc, &an, &acap, SRC + TOKS[i + 2].start, (size_t)(TOKS[body].end - TOKS[i + 2].start));
+            int pos = TOKS[body].end;
+            for (int r = 0; r < nref; r++) {  /* the body reads its captures as __self.env.name */
+                int u = refs[r];
+                app(&acc, &an, &acap, SRC + pos, (size_t)(TOKS[u].start - pos));
+                apps(&acc, &an, &acap, "__self.env.");
+                app(&acc, &an, &acap, TOKS[u].s, (size_t)TOKS[u].slen);
+                pos = TOKS[u].end;
+                int c = 0;                /* a captured closure, called: through its call field */
+                while (c < ncap && !tokspan_eq(caps[c], u)) c++;
+                if (TOKS[u + 1].k == T_LP && c < ncap && !strncmp(otys[c], "__Fn_", 5)) {
+                    apps(&acc, &an, &acap, ".call(__self.env.");
+                    app(&acc, &an, &acap, TOKS[u].s, (size_t)TOKS[u].slen);
+                    apps(&acc, &an, &acap, TOKS[u + 2].k == T_RP ? ".env" : ".env, ");
+                    pos = TOKS[u + 1].end;
+                }
+            }
+            app(&acc, &an, &acap, SRC + pos, (size_t)(TOKS[end].end - pos));
+        } else if (closure) {             /* the environment comes first */
             app(&acc, &an, &acap, "(_env: addr", 11);
             if (TOKS[i + 2].k != T_RP) app(&acc, &an, &acap, ", ", 2);
             if (ncap) {                   /* the body reads its captures as __e.name */
@@ -2216,8 +2339,28 @@ static char* lambda_pass(const char* prog) {
         if (ne >= MAXI) die("%s: too many lambdas", FILENAME);
         led[ne].start = TOKS[i].start;
         led[ne].end = TOKS[end].end;
-        led[ne].repl = closure ? closure_value(slot, birth, name) : name;
+        led[ne].repl = closure ? closure_value(slot, birth, name) : once ? once_birth(caps, ncap, lamno) : name;
         ne++;
+        if (once) {                       /* every call `h(args)` after the binding, in this
+                                           * function: `__c_N(h, args)` — the call consumes h */
+            int depth2 = 0;
+            for (int u = end + 1; u + 1 < NTOK; u++) {
+                if (TOKS[u].k == T_LB) depth2++;
+                else if (TOKS[u].k == T_RB) { if (--depth2 < 0) break; }
+                int lb = lambda_body(u);  /* a nested lambda's text is its own edit */
+                if (lb >= 0) { u = match_brace(lb); continue; }
+                if (TOKS[u].k != T_IDENT || TOKS[u + 1].k != T_LP || !tokspan_eq(u, bname)) continue;
+                if (u > 0 && TOKS[u - 1].k == T_DOT) continue;
+                if (ne >= MAXI) die("%s: too many lambdas", FILENAME);
+                char* r = xmalloc(48 + (size_t)TOKS[u].slen);
+                sprintf(r, "__c_%d(%.*s%s", lamno, TOKS[u].slen, TOKS[u].s, TOKS[u + 2].k == T_RP ? "" : ", ");
+                led[ne].start = TOKS[u].start;
+                led[ne].end = TOKS[u + 1].end;
+                led[ne].repl = r;
+                ne++;
+                u++;
+            }
+        }
         i = end;                          /* the body's braces are balanced */
     }
     if (accitem >= 0) {
