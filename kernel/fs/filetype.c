@@ -53,6 +53,9 @@ const char* filetype_identify(const char* name, const uint8_t* data, uint32_t le
     if (ft_starts(data, len, "PK\x03\x04", 4) ||
         ft_starts(data, len, "PK\x05\x06", 4))                    return "Zip archive data";
     if (ft_starts(data, len, "\x1f\x8b", 2))                      return "gzip compressed data";
+    if (ft_starts(data, len, "BZh", 3))                          return "bzip2 compressed data";
+    if (ft_starts(data, len, "\xfd" "7zXZ\x00", 6))              return "XZ compressed data";
+    if (ft_starts(data, len, "!<arch>\n", 8))                    return "current ar archive";
     if (len >= 12 && ft_starts(data, len, "RIFF", 4) &&
         data[8]=='W' && data[9]=='A' && data[10]=='V' && data[11]=='E') return "WAV audio";
     if (len >= 2 && data[0]=='B' && data[1]=='M')                 return "PC bitmap (BMP)";
@@ -107,6 +110,8 @@ const char* filetype_label(const char* name, int is_dir) {
     if (ft_ext(name, ".wav"))                          return "WAV audio";
     if (ft_ext(name, ".zip"))                          return "ZIP";
     if (ft_ext(name, ".gz"))                           return "Gzip";
+    if (ft_ext(name, ".xz"))                           return "XZ";
+    if (ft_ext(name, ".bz2"))                          return "Bzip2";
     if (ft_ext(name, ".tar"))                          return "Tar";
     if (ft_ext(name, ".iso") || ft_ext(name, ".img"))  return "Disk image";
     if (ft_ext(name, ".pdf"))                          return "PDF";
@@ -136,6 +141,9 @@ int filetype_selftest(void) {
         { "x.pdf",     "%PDF-1.7\n",                    9,  "PDF document" },
         { "x.gz",      "\x1f\x8b\x08\x00",              4,  "gzip compressed data" },
         { "x.zip",     "PK\x03\x04\x14",                5,  "Zip archive data" },
+        { "x.bz2",     "BZh91AY&SY",                   10, "bzip2 compressed data" },
+        { "x.xz",      "\xfd" "7zXZ\x00" "\x00",       7,  "XZ compressed data" },
+        { "libc.a",    "!<arch>\n" "/ ",               10, "current ar archive" },
         { "run.sh",    "#!/bin/sh\necho hi\n",          18, "script text executable" }, // #! beats .sh
         { "readme.md", "# Title\nbody\n",               13, "Markdown document, text" },
         { "main.c",    "int main(void){return 0;}\n",   26, "C source, text" },
@@ -159,6 +167,8 @@ int filetype_selftest(void) {
         { "photo.PNG", 0, "PNG image" },     // case-insensitive extension
         { "run.sh",    0, "Shell" },
         { "pkg.zip",   0, "ZIP" },
+        { "arch.xz",   0, "XZ" },
+        { "data.bz2",  0, "Bzip2" },
         { "readme.md", 0, "Markdown" },
         { "a.out",     0, "File" },          // no known extension
     };
