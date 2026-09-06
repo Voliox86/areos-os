@@ -10636,7 +10636,11 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
     printf("[INIT] CPU protections (SMEP/SMAP)...\n"); enable_smep_smap();
 
     nyxfetch();
-    for (volatile long i = 0; i < 200000000; i++);
+    // Cosmetic pause so a human can read the nyxfetch boot splash before it is cleared.
+    // Measured (v6.5.143) at ~43% of the pre-login boot, so skip it for the "selftest" CI
+    // battery boot — nobody watches it and it halts after the tests — shaving that idle spin
+    // off every CI run. Normal and real-hardware boots keep the splash unchanged.
+    if (!selftest_mode) { for (volatile long i = 0; i < 200000000; i++); }
     clear_screen();
     printf("[INIT] APIC...\n"); init_apic();
     printf("[INIT] Kernel Heap...\n"); init_heap();
