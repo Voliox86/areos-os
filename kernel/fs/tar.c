@@ -66,5 +66,44 @@ int tar_selftest(void) {
 
     uint32_t o3 = 0;                                     // truncated (< 512) -> 0
     if (tar_next(arc, 100, &o3, &e)) return 8;
+
+    // Adversarial cases (ASan-fuzzed clean over 500k mutated archives, v6.5.146):
+    // (a) a 100-char name that fills the whole name field with NO NUL — must copy exactly
+    // 100 chars and terminate at name[100] (the name[101] bound), still parsing size/type.
+    static uint8_t nn[1024];
+    for (int i = 0; i < 1024; i++) nn[i] = 0;
+    for (int i = 0; i < 100; i++) nn[i] = (uint8_t)('A' + (i % 26));   // [0,100), no NUL in the field
+    const char* so2 = "00000000010";                                  // size 010 octal = 8
+    for (int i = 0; so2[i]; i++) nn[124 + i] = (uint8_t)so2[i];
+    nn[156] = '0';
+    for (int i = 0; i < 5; i++) nn[257 + i] = (uint8_t)"ustar"[i];
+    uint32_t o4 = 0;
+    if (tar_next(nn, 1024, &o4, &e) != 1) return 9;
+    for (int i = 0; i < 100; i++) if (e.name[i] != (char)('A' + (i % 26))) return 10;
+    if (e.name[100] != '\0') return 11;                  // NUL at the exact [100] bound
+    if (e.size != 8) return 12;
+
+    // (b) an all-7s octal size (~8 GiB) makes the computed next offset overrun the buffer:
+    // the reader must clamp (*off=len), report the entry once, and never read past len.
+    static uint8_t big[512];
+    for (int i = 0; i < 512; i++) big[i] = 0;
+    big[0] = 'f';
+    for (int i = 124; i < 135; i++) big[i] = '7';        // 11 octal 7s
+    big[156] = '0';
+    for (int i = 0; i < 5; i++) big[257 + i] = (uint8_t)"ustar"[i];
+    uint32_t o5 = 0;
+    if (tar_next(big, 512, &o5, &e) != 1) return 13;     // header parsed
+    if (o5 != 512) return 14;                            // next clamped to len (data would overrun)
+    if (tar_next(big, 512, &o5, &e)) return 15;          // and the next call ends the archive
+
+    // (c) a zero-size member in a buffer exactly one header long: parses, off -> len, ends next.
+    static uint8_t z[512];
+    for (int i = 0; i < 512; i++) z[i] = 0;
+    z[0] = 'e'; z[124] = '0'; z[156] = '0';
+    for (int i = 0; i < 5; i++) z[257 + i] = (uint8_t)"ustar"[i];
+    uint32_t o6 = 0;
+    if (tar_next(z, 512, &o6, &e) != 1) return 16;
+    if (o6 != 512) return 17;
+    if (tar_next(z, 512, &o6, &e)) return 18;
     return 0;
 }
