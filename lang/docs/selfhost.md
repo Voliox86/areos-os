@@ -604,7 +604,16 @@ differential). One mirror gap is on record: a pointer to an own type
 in a signature or field — *pointers to own type 'Env' are not allowed
 (in peek)*, a file-level ncc error — is not yet refused by check.n or
 gen.n's checker half; the corpus row and the mirror are the next
-selfhost rung.
+selfhost rung. A second, latent one surfaced while lowering N++'s
+`FnOnce` (M6.4c6): ncc checks a block's tail expression before it
+judges whether any auto-drop is pending (`check_expr(b->tail)` marks
+the moves of call arguments inside the tail), while gen.n marks those
+moves as it emits the tail — so a live own local moved as a call
+argument *inside the tail expression* (`h := File{ fd: 1 }; make(h)`)
+still counts as pending in gen.n and gets the braced `__ret` form
+where ncc returns directly. No example does this yet (the
+differentials are green); the fix is a pre-walk in `gblock` mirroring
+ncc's order, with an example that pins it.
 
 `gen.n` then emits the field drops the way `ncc` does — the same
 helpers under the same names: a container's own fields in reverse

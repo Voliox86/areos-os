@@ -224,7 +224,8 @@ name (`Fn()` is `__Fn__`, `Fn(*u8, Box<i64>) -> bool` is
 `Fn` type, a local bound from a call returning one, the `Fn` field of
 a struct-typed parameter or local, or that field of the element a
 pointer-to-struct name indexes, `bs[i].f(a)` (M6.4c5) — becomes
-`f.call(f.env, a)`. A lambda
+`f.call(f.env, a)`; on a `FnOnce` name it becomes `__call_once_…(f, a)`,
+which consumes the closure (M6.4c6, below). A lambda
 written where a closure is expected takes the environment as its first
 parameter and the expression becomes the closure value
 `__Fn_i64__i64{ env: 0, call: __c_N }`; a named function passed there is
@@ -346,6 +347,40 @@ the token scan the other shapes use: it types nothing it cannot see
 (an index on a `*i64`, a field chain before the index, `ui.buttons[i]`)
 and leaves those calls alone for N to judge. nwinui.npp's `dispatch`
 is the worked case, held by stage [10w].
+
+**Owning closures — `FnOnce` (M6.4c6).** `FnOnce(A…) -> R` is the
+closure type that owns: a lambda in a FnOnce slot (a parameter, a
+local bound from a call, a return type) may capture `own` locals, the
+closure value is itself an own value — must-consume, one owner — and
+its one call consumes it. It lowers to the shape
+[`../examples/ownbox.n`](../examples/ownbox.n) writes by hand, on N
+v0.26's "own values behind a raw pointer": one own struct per
+signature, `#[drop(__fo_drop_FnOnce_i64__i64)] own struct
+__FnOnce_i64__i64 { env: addr, call: fn(addr, i64) -> i64, fin: fn(addr) }`,
+its drop function calling the finaliser, and
+`__call_once_FnOnce_i64__i64(f, a0)` running `f.call(f.env, a0)` and
+then the drop — all declared with the `__Fn_` block. A capturing lambda
+there gets an **own environment**, `own struct __E_N` (the own
+captures moved in by `__mk_E_N` at the closure's birth, as the maker's
+arguments), a finaliser `__fin_E_N(_env: addr)` that takes the
+environment back out of the heap — `__p := _env as *__E_N; __e :=
+__p[0];` — so its captures drop as `__e` ends, and a lifted body that
+only **peeks** through the pointer (`__p[0].f.fd`, never a take: a take
+would end the captures after the first call). A lambda capturing
+nothing gets `env: 0` and a no-op finaliser; so does a named function
+passed where a FnOnce is expected, through the usual adapter. Every
+call `f(x)` on a FnOnce parameter or local becomes
+`__call_once_…(f, x)`, which moves `f` in: N then supplies the rest —
+a second call is *use of 'f' after move*, a FnOnce never called drops
+at scope end through its finaliser, and a FnOnce handed to an `Fn`
+slot is a type mismatch. The limit at this rung: a `FnOnce` **field**
+is refused (*a FnOnce field needs an own struct holding it (N v0.25) —
+pass the closure as a parameter instead (M6.4c6)*), and a FnOnce
+lambda inside a generic template is not supported yet. The own-capture
+refusal in an `Fn` slot now names both fixes: *bind the lambda with :=
+and call it once, or make the slot FnOnce(...)*.
+[`../examples/fnonce.npp`](../examples/fnonce.npp) is the worked
+example, held by stage [10x].
 
 [`../examples/closure.npp`](../examples/closure.npp) is the worked
 example: four lambdas — an argument, a struct field, another argument,

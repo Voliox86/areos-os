@@ -873,6 +873,17 @@ static char* concrete_struct(Inst* it) {
  * (N v0.24)? Walk back over what a parameter list holds (types, commas,
  * nested fn types with their own parentheses and arrows, generic
  * arguments) to the `(` that opens the list, and require `fn` before it. */
+/* The IDENT opening a closure type: `Fn(` (M6.4c1) or the owning
+ * `FnOnce(` (M6.4c6) — the same signature shape, two structs. */
+static int fn_word(int t) {
+    return TOKS[t].k == T_IDENT && TOKS[t + 1].k == T_LP &&
+           ((TOKS[t].slen == 2 && !memcmp(TOKS[t].s, "Fn", 2)) ||
+            (TOKS[t].slen == 6 && !memcmp(TOKS[t].s, "FnOnce", 6)));
+}
+static int is_once(int t) {
+    return TOKS[t].k == T_IDENT && TOKS[t].slen == 6 && !memcmp(TOKS[t].s, "FnOnce", 6);
+}
+
 static int in_fn_type(int t) {
     int depth = 0;
     for (int j = t - 1; j > 0; j--) {
@@ -880,8 +891,7 @@ static int in_fn_type(int t) {
         if (k == T_RP) depth++;
         else if (k == T_LP) {
             if (depth == 0)               /* `fn (` — or the closure type `Fn (` (M6.4c3) */
-                return TOKS[j - 1].k == T_KW_FN ||
-                       (TOKS[j - 1].k == T_IDENT && TOKS[j - 1].slen == 2 && !memcmp(TOKS[j - 1].s, "Fn", 2));
+                return TOKS[j - 1].k == T_KW_FN || fn_word(j - 1);
             depth--;
         } else if (k != T_IDENT && k != T_COMMA && k != T_STAR && k != T_KW_RAW &&
                    k != T_ATTR_USER && k != T_ARROW && k != T_KW_FN && k != T_LT && k != T_GT)
@@ -1557,8 +1567,8 @@ static int skip_type(int t) {
         return t;
     }
     if (TOKS[t].k != T_IDENT) return -1;
-    if (TOKS[t].slen == 2 && !memcmp(TOKS[t].s, "Fn", 2) && TOKS[t + 1].k == T_LP) {
-        int depth = 0;                    /* Fn(A, B) -> R: the closure type (M6.4c) */
+    if (fn_word(t)) {
+        int depth = 0;                    /* Fn(A, B) -> R / FnOnce(A, B) -> R: the closure types (M6.4c) */
         for (t++; TOKS[t].k != T_EOF; t++) {
             if (TOKS[t].k == T_LP) depth++;
             else if (TOKS[t].k == T_RP && --depth == 0) { t++; break; }
@@ -1679,9 +1689,8 @@ static int generic_item_name(int itemfirst) {
 /* lambdas still capture nothing (M6.4c2 fills the env). The struct name  */
 /* is the signature's spelling with its punctuation as underscores.       */
 
-static int is_Fn(int t) {                 /* the IDENT `Fn` opening a closure type */
-    return TOKS[t].k == T_IDENT && TOKS[t].slen == 2 && !memcmp(TOKS[t].s, "Fn", 2) &&
-           TOKS[t + 1].k == T_LP;
+static int is_Fn(int t) {                 /* the IDENT `Fn` or `FnOnce` opening a closure type */
+    return fn_word(t);
 }
 
 /* The program's named functions and structs, by token scan: each with its
@@ -1872,6 +1881,23 @@ static char* closure_value(const char* ty, const char* env, const char* fname) {
     return b;
 }
 
+/* The owning closure value (M6.4c6): the same, plus the finaliser that
+ * ends its environment when the closure drops. */
+static char* once_value(const char* ty, const char* env, const char* fname, const char* fin) {
+    size_t cap = 256, n = 0;
+    char* b = xmalloc(cap);
+    b[0] = 0;
+    apps(&b, &n, &cap, ty);
+    apps(&b, &n, &cap, "{ env: ");
+    apps(&b, &n, &cap, env);
+    apps(&b, &n, &cap, ", call: ");
+    apps(&b, &n, &cap, fname);
+    apps(&b, &n, &cap, ", fin: ");
+    apps(&b, &n, &cap, fin);
+    apps(&b, &n, &cap, " }");
+    return b;
+}
+
 /* The name before the `(` of a call or the `{` of a struct literal at
  * token open — `NAME(`, `NAME<A, B>(`, `S{`, `S<A>{` — as its IDENT token,
  * or -1. */
@@ -1979,7 +2005,7 @@ static char* local_type(int itemfirst, int lam, int name, int depth) {
  * (16 bytes per field, `str` being the widest value — a bump allocation,
  * never freed), and the birth expression `__mk_E_N(a, b)`. */
 static char* env_text(int itemfirst, int lam, int* caps, int ncap, int lamno, char** birth, char** tys,
-                      const char* targs) {
+                      const char* targs, int own) {
     for (int c = 0; c < ncap; c++) {
         tys[c] = local_type(itemfirst, lam, caps[c], 0);
         if (!tys[c])
@@ -1993,6 +2019,7 @@ static char* env_text(int itemfirst, int lam, int* caps, int ncap, int lamno, ch
     size_t cap = 256, n = 0;
     char* b = xmalloc(cap);
     b[0] = 0;
+    if (own) apps(&b, &n, &cap, "own ");  /* M6.4c6: an own capture makes the environment own */
     apps(&b, &n, &cap, "struct ");
     apps(&b, &n, &cap, en);
     apps(&b, &n, &cap, " {\n");
@@ -2203,6 +2230,9 @@ static char* lambda_pass(const char* prog) {
         }
         char* slot = fn_slot(i, end);     /* a closure slot (M6.4c1)? its type text */
         int closure = slot != NULL;
+        int oslot = closure && !strncmp(slot, "FnOnce", 6);   /* an owning slot (M6.4c6) */
+        char fin[48];                     /* its finaliser's name */
+        fin[0] = 0;
         /* `h := fn(...) { ... }` (M6.4c4): a bound lambda may capture own
          * locals — it becomes a call-once closure, consumed by its call. */
         int bname = (i >= 2 && TOKS[i - 1].k == T_WALRUS && TOKS[i - 2].k == T_IDENT) ? i - 2 : -1;
@@ -2240,13 +2270,18 @@ static char* lambda_pass(const char* prog) {
                         FILENAME, TOKS[caps[c]].line, TOKS[caps[c]].slen, TOKS[caps[c]].s);
             once = 1;
         }
+        int ownenv = 0;                   /* M6.4c6: an own capture in a FnOnce slot makes its environment own */
         if (closure)                      /* an Fn slot keeps its environment behind a pointer */
             for (int c = 0; c < ncap; c++) {
                 char* t = local_type(itemfirst, i, caps[c], 0);
-                if (t && is_own_type(t))
-                    die("%s:%d: lambda captures own value '%.*s' — an own capture needs a call-once closure: bind the lambda with := and call it once (M6.4c4)",
+                if (t && is_own_type(t) && oslot) ownenv = 1;
+                else if (t && is_own_type(t))
+                    die("%s:%d: lambda captures own value '%.*s' — an own capture needs a call-once closure: bind the lambda with := and call it once, or make the slot FnOnce(...) (M6.4c6)",
                         FILENAME, TOKS[caps[c]].line, TOKS[caps[c]].slen, TOKS[caps[c]].s);
             }
+        if (oslot && ncap && gname >= 0)
+            die("%s:%d: a FnOnce lambda inside generic '%.*s' is not supported yet — pass its captures as parameters",
+                FILENAME, TOKS[i].line, TOKS[gname].slen, TOKS[gname].s);
         int lamno = NLAMBDA++;
         char* targs = xmalloc(4 + (size_t)nused * 64);   /* `<A, B>`, or "" */
         int tn = 0;
@@ -2280,9 +2315,21 @@ static char* lambda_pass(const char* prog) {
         char* birth = "0";
         char* tys[32] = {0};
         if (ncap && !once) {              /* the environment struct and its maker */
-            apps(&acc, &an, &acap, env_text(itemfirst, i, caps, ncap, lamno, &birth, tys, targs));
+            apps(&acc, &an, &acap, env_text(itemfirst, i, caps, ncap, lamno, &birth, tys, targs, ownenv));
             apps(&acc, &an, &acap, "\n\n");
             madeenv = 1;
+        }
+        if (oslot) {                      /* M6.4c6: the finaliser — takes an own environment
+                                           * out so its captures drop; a no-op otherwise */
+            char ft[160];
+            if (ownenv) {
+                sprintf(fin, "__fin_E_%d", lamno);
+                sprintf(ft, "fn %s(_env: addr) {\n    __p := _env as *__E_%d;\n    __e := __p[0];\n}\n\n", fin, lamno);
+            } else {
+                sprintf(fin, "__nop_fin_%d", lamno);
+                sprintf(ft, "fn %s(_env: addr) { }\n\n", fin);
+            }
+            apps(&acc, &an, &acap, ft);
         }
         if (once) {                       /* the own environment and the closure's own struct */
             apps(&acc, &an, &acap, once_text(caps, ncap, lamno, otys));
@@ -2324,18 +2371,19 @@ static char* lambda_pass(const char* prog) {
                 app(&acc, &an, &acap, SRC + TOKS[i + 2].start, (size_t)(TOKS[body].end - TOKS[i + 2].start));
                 apps(&acc, &an, &acap, " __p := _env as *");
                 apps(&acc, &an, &acap, en);
-                apps(&acc, &an, &acap, "; __e := __p[0];");
+                apps(&acc, &an, &acap, oslot ? ";" : "; __e := __p[0];");   /* a FnOnce body only PEEKS
+                                                                             * (a take would end the captures) */
                 int pos = TOKS[body].end;
                 for (int r = 0; r < nref; r++) {
                     int u = refs[r];
                     app(&acc, &an, &acap, SRC + pos, (size_t)(TOKS[u].start - pos));
-                    apps(&acc, &an, &acap, "__e.");
+                    apps(&acc, &an, &acap, oslot ? "__p[0]." : "__e.");
                     app(&acc, &an, &acap, TOKS[u].s, (size_t)TOKS[u].slen);
                     pos = TOKS[u].end;
                     int c = 0;            /* a captured closure, called: through its call field */
                     while (c < ncap && !tokspan_eq(caps[c], u)) c++;
                     if (TOKS[u + 1].k == T_LP && c < ncap && !strncmp(tys[c], "__Fn_", 5)) {
-                        apps(&acc, &an, &acap, ".call(__e.");
+                        apps(&acc, &an, &acap, oslot ? ".call(__p[0]." : ".call(__e.");
                         app(&acc, &an, &acap, TOKS[u].s, (size_t)TOKS[u].slen);
                         apps(&acc, &an, &acap, TOKS[u + 2].k == T_RP ? ".env" : ".env, ");
                         pos = TOKS[u + 1].end;
@@ -2349,7 +2397,9 @@ static char* lambda_pass(const char* prog) {
         if (ne >= MAXI) die("%s: too many lambdas", FILENAME);
         led[ne].start = TOKS[i].start;
         led[ne].end = TOKS[end].end;
-        led[ne].repl = closure ? closure_value(slot, birth, name) : once ? once_birth(caps, ncap, lamno) : name;
+        led[ne].repl = oslot ? once_value(slot, birth, name, fin)
+                     : closure ? closure_value(slot, birth, name)
+                     : once ? once_birth(caps, ncap, lamno) : name;
         ne++;
         if (once) {                       /* every call `h(args)` after the binding, in this
                                            * function: `__c_N(h, args)` — the call consumes h */
@@ -2444,13 +2494,47 @@ static void reg_sigs(int t, int e, char** nm, char** tx, int* n) {
     size_t cap = 256, len = 0;
     char* b = xmalloc(cap);
     b[0] = 0;
+    if (is_once(t)) {                     /* M6.4c6: the owning closure — an own struct that
+                                           * drops through its finaliser, and its one call */
+        apps(&b, &len, &cap, "#[drop(__fo_drop_");
+        apps(&b, &len, &cap, name + 2);
+        apps(&b, &len, &cap, ")]\nown ");
+    }
     apps(&b, &len, &cap, "struct ");
     apps(&b, &len, &cap, name);
     apps(&b, &len, &cap, " {\n    env: addr,\n    call: fn(addr");
     for (int p = 0; p < np; p++) { apps(&b, &len, &cap, ", "); render_type(pts[p], pte[p], &b, &len, &cap); }
     apps(&b, &len, &cap, ")");
     if (rts >= 0) { apps(&b, &len, &cap, " -> "); render_type(rts, rte, &b, &len, &cap); }
-    apps(&b, &len, &cap, ",\n}\n\n");
+    apps(&b, &len, &cap, ",\n");
+    if (is_once(t)) {
+        apps(&b, &len, &cap, "    fin: fn(addr),\n}\n\nfn __fo_drop_");
+        apps(&b, &len, &cap, name + 2);
+        apps(&b, &len, &cap, "(f: ");
+        apps(&b, &len, &cap, name);
+        apps(&b, &len, &cap, ") {\n    f.fin(f.env);\n}\n\nfn __call_once_");
+        apps(&b, &len, &cap, name + 2);
+        apps(&b, &len, &cap, "(f: ");
+        apps(&b, &len, &cap, name);
+        for (int p = 0; p < np; p++) {
+            char pn[16];
+            sprintf(pn, ", a%d: ", p);
+            apps(&b, &len, &cap, pn);
+            render_type(pts[p], pte[p], &b, &len, &cap);
+        }
+        apps(&b, &len, &cap, ")");
+        if (rts >= 0) { apps(&b, &len, &cap, " -> "); render_type(rts, rte, &b, &len, &cap); }
+        apps(&b, &len, &cap, rts >= 0 ? " {\n    r := f.call(f.env" : " {\n    f.call(f.env");
+        for (int p = 0; p < np; p++) {
+            char pn[16];
+            sprintf(pn, ", a%d", p);
+            apps(&b, &len, &cap, pn);
+        }
+        apps(&b, &len, &cap, ");\n    __fo_drop_");
+        apps(&b, &len, &cap, name + 2);
+        apps(&b, &len, &cap, rts >= 0 ? "(f);\n    r\n}\n\n" : "(f);\n}\n\n");
+    } else
+        apps(&b, &len, &cap, "}\n\n");
     nm[*n] = name; tx[*n] = b; (*n)++;
 }
 
@@ -2507,8 +2591,9 @@ static char* closure_pass(const char* prog) {
             (k == T_KW_STRUCT || k == T_KW_FN || k == T_KW_ENUM || k == T_KW_IMPL)) {
             firstitem = itemfirst; firstprev = prevclose;
         }
-        if (depth == 0 && k == T_KW_STRUCT && TOKS[t + 1].k == T_IDENT && TOKS[t + 1].slen > 5 &&
-            !memcmp(TOKS[t + 1].s, "__Fn_", 5)) {
+        if (depth == 0 && k == T_KW_STRUCT && TOKS[t + 1].k == T_IDENT &&
+            ((TOKS[t + 1].slen > 5 && !memcmp(TOKS[t + 1].s, "__Fn_", 5)) ||
+             (TOKS[t + 1].slen > 9 && !memcmp(TOKS[t + 1].s, "__FnOnce_", 9)))) {
             int b = t + 2;
             while (TOKS[b].k != T_LB && TOKS[b].k != T_EOF) b++;
             if (TOKS[b].k == T_LB) lastfn = match_brace(b);
@@ -2526,6 +2611,15 @@ static char* closure_pass(const char* prog) {
                 if (TOKS[q + 1].k != T_COMMA) break;
             }
         if (generic) { t = e - 1; continue; }
+        if (is_once(t)) {                 /* M6.4c6: a FnOnce field would be an own value inside
+                                           * its holder — a parameter, a local or a return only */
+            int q = itemfirst;
+            while (q < t && TOKS[q].k != T_KW_STRUCT && TOKS[q].k != T_KW_FN && TOKS[q].k != T_KW_ENUM &&
+                   TOKS[q].k != T_KW_IMPL) q++;
+            if (TOKS[q].k == T_KW_STRUCT)
+                die("%s:%d: a FnOnce field needs an own struct holding it (N v0.25) — pass the closure as a parameter instead (M6.4c6)",
+                    FILENAME, TOKS[t].line);
+        }
         reg_sigs(t, e, signm, sigtx, &nsig);
         /* A struct or enum the signature names by value must be laid out
          * first (N emits layouts in declaration order, and a struct field
@@ -2547,9 +2641,11 @@ static char* closure_pass(const char* prog) {
     for (int f = 0; f < NFNT; f++) {
         Item* fi = &FNT[f];
         int cl[128], ncl = 0, sn[128], sv[128], nsn = 0, pn[128], pv[128], npn = 0;
+        char* cls[128];                   /* M6.4c6: a FnOnce name's signature, else NULL */
         for (int p = 0; p < fi->np; p++) {
-            if (range_is_Fn(fi->pts[p], fi->pte[p])) { if (ncl < 128) cl[ncl++] = fi->pname[p]; }
-            else if (fi->pte[p] == fi->pts[p] + 1) {
+            if (range_is_Fn(fi->pts[p], fi->pte[p])) {
+                if (ncl < 128) { cls[ncl] = is_once(fi->pts[p]) ? sig_name(fi->pts[p], fi->pte[p]) : NULL; cl[ncl++] = fi->pname[p]; }
+            } else if (fi->pte[p] == fi->pts[p] + 1) {
                 int s = stt_find(fi->pts[p]);
                 if (s >= 0 && nsn < 128) { sn[nsn] = fi->pname[p]; sv[nsn] = s; nsn++; }
             } else {                      /* bs: *S (M6.4c5) */
@@ -2591,8 +2687,9 @@ static char* closure_pass(const char* prog) {
                 if (lp < 0) continue;
                 int g = fnt_find(r);
                 if (g < 0) continue;
-                if (range_is_Fn(FNT[g].rts, FNT[g].rte)) { if (ncl < 128) cl[ncl++] = u; }
-                else if (FNT[g].rts >= 0 && FNT[g].rte == FNT[g].rts + 1) {
+                if (range_is_Fn(FNT[g].rts, FNT[g].rte)) {
+                    if (ncl < 128) { cls[ncl] = is_once(FNT[g].rts) ? sig_name(FNT[g].rts, FNT[g].rte) : NULL; cl[ncl++] = u; }
+                } else if (FNT[g].rts >= 0 && FNT[g].rte == FNT[g].rts + 1) {
                     int s = stt_find(FNT[g].rts);
                     if (s >= 0 && nsn < 128) { sn[nsn] = u; sv[nsn] = s; nsn++; }
                 }
@@ -2602,12 +2699,16 @@ static char* closure_pass(const char* prog) {
         for (int u = fi->body + 1; u + 1 < fi->end; u++) {
             if (TOKS[u].k != T_IDENT || TOKS[u - 1].k == T_DOT || TOKS[u - 1].k == T_KW_FN) continue;
             if (TOKS[u + 1].k == T_LP) {  /* f(a) -> f.call(f.env, a) */
-                int isc = 0;
-                for (int c = 0; c < ncl && !isc; c++) if (tokspan_eq(cl[c], u)) isc = 1;
-                if (!isc) continue;
-                char* r = xmalloc((size_t)TOKS[u].slen * 2 + 24);
-                sprintf(r, "%.*s.call(%.*s.env%s", TOKS[u].slen, TOKS[u].s, TOKS[u].slen, TOKS[u].s,
-                        TOKS[u + 2].k == T_RP ? "" : ", ");
+                int ci = -1;
+                for (int c = 0; c < ncl && ci < 0; c++) if (tokspan_eq(cl[c], u)) ci = c;
+                if (ci < 0) continue;
+                char* r = xmalloc((size_t)TOKS[u].slen * 2 + 48 + (cls[ci] ? strlen(cls[ci]) : 0));
+                if (cls[ci])              /* a FnOnce: the call consumes it (M6.4c6) */
+                    sprintf(r, "__call_once_%s(%.*s%s", cls[ci] + 2, TOKS[u].slen, TOKS[u].s,
+                            TOKS[u + 2].k == T_RP ? "" : ", ");
+                else
+                    sprintf(r, "%.*s.call(%.*s.env%s", TOKS[u].slen, TOKS[u].s, TOKS[u].slen, TOKS[u].s,
+                            TOKS[u + 2].k == T_RP ? "" : ", ");
                 if (ne >= MAXI) die("%s: too many rewrites", FILENAME);
                 ced[ne].start = TOKS[u].start; ced[ne].end = TOKS[u + 1].end; ced[ne].repl = r; ne++;
                 continue;
@@ -2704,10 +2805,21 @@ static char* closure_pass(const char* prog) {
                     apps(&b, &len, &cap, pn);
                 }
                 apps(&b, &len, &cap, rts >= 0 ? ") }" : "); }");
+                if (is_once(ts)) {        /* M6.4c6: nothing to finalise */
+                    apps(&b, &len, &cap, "\n\nfn __nop_fin_");
+                    apps(&b, &len, &cap, name + 4);
+                    apps(&b, &len, &cap, "(_env: addr) { }");
+                }
                 acc_add(&ad, itemfirst, prevclose, b, ced, &ne);
                 if (ne >= MAXI) die("%s: too many rewrites", FILENAME);
                 ced[ne].start = TOKS[as].start; ced[ne].end = TOKS[as].end;
-                ced[ne].repl = closure_value(sig_name(ts, te), "0", name); ne++;
+                if (is_once(ts)) {
+                    char fin[32];
+                    sprintf(fin, "__nop_fin_%s", name + 4);
+                    ced[ne].repl = once_value(sig_name(ts, te), "0", name, fin);
+                } else
+                    ced[ne].repl = closure_value(sig_name(ts, te), "0", name);
+                ne++;
             }
             if (close) break;
             ai++; as = v + 1;

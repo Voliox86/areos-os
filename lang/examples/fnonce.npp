@@ -1,0 +1,63 @@
+// fnonce.npp — owning closures: the FnOnce slot type (M6.4c6).
+//
+// An `Fn(…)` closure keeps its environment behind a pointer, so it may be
+// copied and called any number of times — and N refuses an `own` value in
+// it, because an owner has exactly one binding. `FnOnce(A) -> R` is the
+// closure that owns: a lambda in a FnOnce slot may capture `own` locals
+// (they MOVE into its environment at its birth), the closure value is
+// itself an own value — must-consume, one owner — and its ONE call
+// consumes it: the body runs, then the closure drops, its finaliser takes
+// the environment out of the heap (N v0.26, "Behind a raw pointer") and
+// the captures drop with it. A FnOnce never called drops the same way at
+// scope end; a second call is "use of 'v' after move", said by N.
+//
+// The lowering is the closure ownbox.n wrote by hand: one own struct per
+// signature, `#[drop(__fo_drop_FnOnce_i64__i64)] own struct
+// __FnOnce_i64__i64 { env: addr, call: fn(addr, i64) -> i64, fin: fn(addr) }`,
+// its drop calling the finaliser, `__call_once_FnOnce_i64__i64(f, x)`
+// running the body and then the drop; each lambda's environment is an
+// `own struct __E_N` filled by `__mk_E_N` (the own capture moved in), its
+// finaliser `__fin_E_N` takes it back out, and the lifted body reads its
+// captures through the pointer — a peek, never a take. Every `f(x)` on a
+// FnOnce name becomes `__call_once_…(f, x)`. Below: `with_file` consumes
+// the closure it is handed; `make` returns one that owns a File; `u` is
+// never called and closes its File when main ends; `v` is called once.
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+#[drop(close_file)]
+own struct File { fd: i64 }
+
+fn close_file(f: File) {
+    put("closing {f.fd}\n");
+}
+
+// The closure parameter is held here and consumed by its one call.
+fn with_file(f: FnOnce(i64) -> i64, x: i64) -> i64 {
+    put("calling\n");
+    f(x)
+}
+
+// A closure that owns the File it is handed: the parameter moves into the
+// environment at the closure's birth, and travels out with it.
+fn make(h: File) -> FnOnce(i64) -> i64 {
+    fn(x: i64) -> i64 { x + h.fd }
+}
+
+fn main() -> i64 {
+    f := File{ fd: 3 };
+    k := 2;
+    r := with_file(fn(x: i64) -> i64 { put("body: fd {f.fd}\n"); x + f.fd * k }, 36);
+    put("r = {r}\n");
+    u := make(File{ fd: 4 });
+    v := make(File{ fd: 5 });
+    s := v(1);
+    put("s = {s}\n");
+    0
+}
