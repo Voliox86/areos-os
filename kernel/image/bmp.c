@@ -145,12 +145,34 @@ static int bmp_case(const char* name, const uint8_t* file, uint32_t flen,
     return ok;
 }
 
+// A malformed file must be REFUSED (nonzero rc), never decoded — returns 1 if it was.
+static int bmp_rejects(const uint8_t* file, uint32_t flen) {
+    image_t im; int r = bmp_decode(file, flen, &im);
+    if (r == 0 && im.pixels) kfree(im.pixels);
+    return r != 0;
+}
+
 int bmp_selftest(void) {
     int pass = 0, total = 0;
     total++; pass += bmp_case("24-bit",   BMP24,   sizeof(BMP24),   BMP24_W,   BMP24_H,   BMP24_RGBA);
     total++; pass += bmp_case("32-bit",   BMP32,   sizeof(BMP32),   BMP32_W,   BMP32_H,   BMP32_RGBA);
     total++; pass += bmp_case("8-bit-pal",BMP8,    sizeof(BMP8),    BMP8_W,    BMP8_H,    BMP8_RGBA);
     total++; pass += bmp_case("top-down", BMP24TD, sizeof(BMP24TD), BMP24TD_W, BMP24TD_H, BMP24TD_RGBA);
+
+    // Malformed inputs MUST be rejected (exercises the -1..-9 guard paths, which the
+    // positive vectors never touch). Each is the valid 24-bit vector with one corrupted
+    // field, or a truncation. Cross-checked on the host that decode refuses every one.
+    { int neg = 0, negtot = 0; uint8_t bad[sizeof(BMP24)];
+      negtot++; neg += bmp_rejects(BMP24, 53);                                                        // truncated below the header
+      negtot++; __builtin_memcpy(bad, BMP24, sizeof bad); bad[0]  = 'X';               neg += bmp_rejects(bad, sizeof bad); // bad magic
+      negtot++; __builtin_memcpy(bad, BMP24, sizeof bad); bad[28] = 16;                 neg += bmp_rejects(bad, sizeof bad); // unsupported bpp
+      negtot++; __builtin_memcpy(bad, BMP24, sizeof bad); bad[30] = 1;                  neg += bmp_rejects(bad, sizeof bad); // BI_RLE (compressed)
+      negtot++; __builtin_memcpy(bad, BMP24, sizeof bad); bad[18]=0xa0; bad[19]=0x86; bad[20]=1; neg += bmp_rejects(bad, sizeof bad); // width 100000 > cap
+      negtot++; __builtin_memcpy(bad, BMP24, sizeof bad); bad[10]=0xff; bad[11]=0xff;   neg += bmp_rejects(bad, sizeof bad); // pixel offset past EOF
+      total++; pass += (neg == negtot);
+      printf("bmp: reject %d/%d malformed inputs rejected\n", neg, negtot);
+    }
+
     printf("bmp: self-test %d/%d passed\n", pass, total);
     return (pass == total) ? 0 : -1;
 }
