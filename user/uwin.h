@@ -176,6 +176,22 @@ static inline int uwin_text_right(unsigned int* buf, int w, int h, int xr, int y
     return uwin_text(buf, w, h, xr - uwin_text_width(s), y, s, fg);
 }
 
+/* True iff the point (px,py) lies inside the half-open rect [x,x+rw) x [y,y+rh) — the
+ * hit-test every clickable widget needs to route a click to the right control. A zero or
+ * negative rw/rh is empty (never a hit). Pure integer compare, no clipping needed. */
+static inline int uwin_point_in_rect(int px, int py, int x, int y, int rw, int rh) {
+    return px >= x && px < x + rw && py >= y && py < y + rh;
+}
+
+/* Draw a button: a rounded-rect body in `fill` with `label` centred both ways (radius<=0 gives
+ * square corners), clipped to the buffer. Pair it with uwin_point_in_rect over the SAME
+ * (x,y,bw,bh) to route clicks — the first reusable widget for ring-3 window apps. */
+static inline void uwin_button(unsigned int* buf, int w, int h, int x, int y, int bw, int bh,
+                               int radius, const char* label, unsigned int fill, unsigned int fg) {
+    uwin_rounded_rect(buf, w, h, x, y, bw, bh, radius, fill);
+    if (label) uwin_text_center(buf, w, h, x + bw / 2, y + (bh - 16) / 2, label, fg);  /* 16 = glyph height */
+}
+
 /* --- ring-3 window input state (ergonomic wrapper over win_poll_event) -------
  * A window app usually wants the CURRENT input state per frame, not a raw event
  * stream. Zero-init a uwin_input_t, then uwin_input_pump() it once per frame and

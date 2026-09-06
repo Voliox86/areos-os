@@ -42,6 +42,10 @@ int main(void) {
         if (input.last_key)  printf("wintest: KEY code=%d\n", input.last_key);
         if (input.closed)    { printf("wintest: CLOSE requested\n"); goto done; }
 
+        int bx = 10, by = H - 30, bw = 80, bh = 24;      /* a "Close" button hugging the bottom-left */
+        if (input.got_click && uwin_point_in_rect(input.click_x, input.click_y, bx, by, bw, bh))
+            printf("wintest: BUTTON clicked\n");          /* draw + hit-test share the SAME rect */
+
         int span = W - 40; if (span < 1) span = 1;      /* keep the marker on-window at any size */
         int sqx = (i * 3) % span;                        /* the square marches right */
         for (int y = 0; y < H; y++) {                    /* purple: R + B ramp, low G */
@@ -54,6 +58,7 @@ int main(void) {
         uwin_text_center(buf, W, H, W / 2, 8, "wintest ring-3", 0x00FFFFFF); /* centered title (re-centers on resize) */
         uwin_rect_outline(buf, W, H, 0, 0, W, H, 0x00FFFFFF);             /* 1px window frame */
         uwin_fill_circle(buf, W, H, W - 12, 12, 4, 0x0000FF00);           /* green status dot (top-right) */
+        uwin_button(buf, W, H, bx, by, bw, bh, 6, "Close", 0x00553333, 0x00FFFFFF);  /* rounded button + centered label */
         if (win_present(id, buf, W, H) != 0) { printf("wintest: present FAILED at frame %d\n", i); break; }
         if (i == 0) printf("wintest: first present OK\n");
         frames++;
