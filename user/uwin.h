@@ -76,6 +76,25 @@ static inline void uwin_line(unsigned int* buf, int w, int h,
     }
 }
 
+/* Fill a disc of radius r centred at (cx,cy) with `color`: every pixel whose distance from
+ * the centre is <= r, clipped to the buffer. Integer-only (no sqrt/FP) — tests dx*dx+dy*dy
+ * <= r*r over the bounding box. For status dots, indicator LEDs, and live-widget markers. */
+static inline void uwin_fill_circle(unsigned int* buf, int w, int h,
+                                    int cx, int cy, int r, unsigned int color) {
+    if (r < 0) return;
+    int r2 = r * r;
+    for (int dy = -r; dy <= r; dy++) {
+        int py = cy + dy;
+        if (py < 0 || py >= h) continue;
+        int dy2 = dy * dy;
+        for (int dx = -r; dx <= r; dx++) {
+            if (dx * dx + dy2 > r2) continue;
+            int px = cx + dx;
+            if (px >= 0 && px < w) buf[py * w + px] = color;
+        }
+    }
+}
+
 /* Blit one 8x16 glyph bitmap `g` (16 bytes; row 0 = top, MSB = leftmost pixel) at
  * (x,y): only set bits are written, in `fg` (transparent background), clipped. */
 static inline void uwin_glyph(unsigned int* buf, int w, int h, int x, int y,

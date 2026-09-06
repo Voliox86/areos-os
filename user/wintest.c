@@ -53,6 +53,7 @@ int main(void) {
         uwin_line(buf, W, H, sqx, H / 2 - 20, sqx + 39, H / 2 + 19, 0);   /* diagonal across it */
         uwin_text_center(buf, W, H, W / 2, 8, "wintest ring-3", 0x00FFFFFF); /* centered title (re-centers on resize) */
         uwin_rect_outline(buf, W, H, 0, 0, W, H, 0x00FFFFFF);             /* 1px window frame */
+        uwin_fill_circle(buf, W, H, W - 12, 12, 4, 0x0000FF00);           /* green status dot (top-right) */
         if (win_present(id, buf, W, H) != 0) { printf("wintest: present FAILED at frame %d\n", i); break; }
         if (i == 0) printf("wintest: first present OK\n");
         frames++;
