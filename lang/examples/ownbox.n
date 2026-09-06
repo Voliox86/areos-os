@@ -1,0 +1,102 @@
+// ownbox.n — own values behind a raw pointer (v0.26): store, peek, take.
+//
+// v0.25 let an own value hold own fields; what it still refused was an own
+// value BEHIND A POINTER — the shape a heap-allocated closure environment
+// needs. v0.26 opens exactly one door: a pointer to an own type may exist
+// as a local born from a cast (`sys_sbrk(16) as *Env`), never in a
+// signature or a field — what crosses a function boundary is the `addr`.
+// Through that local three things are allowed. STORE: `m[0] = Env{ f: f,
+// tag: 7 }` moves the value in, as any construction does. PEEK: `p[0].f.fd`
+// reads through the pointer and moves nothing. TAKE: `e := p[0]` binds an
+// own value born live, with a fresh owner that must be consumed or dropped
+// like any other — and the cell is dead afterwards. N does not track the
+// cell: a second take, or a store never taken, is the program's
+// responsibility, the way every raw pointer's contents are. What stays
+// checked is every binding the take produces.
+//
+// That is enough for an OWNING CLOSURE with no new type in N: an own
+// struct with a #[drop] holding the environment's address, the call, and a
+// finaliser that takes the environment out. FnOnce_i64_i64 below is that
+// struct written by hand — the very shape N++ lowers `FnOnce(i64) -> i64`
+// to (design-npp §6.2, M6.4c6): `call_once(h, 39)` runs the body, then
+// drops the closure, whose finaliser takes the environment and lets its
+// File close; a closure never called (`g`) drops at scope end the same way;
+// a second call is a use after move, refused by N.
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+    fn sys_sbrk(incr: i64) -> i64 = 7
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+#[drop(close_file)]
+own struct File { fd: i64 }
+
+fn close_file(f: File) {
+    put("closing {f.fd}\n");
+}
+
+// The boxed value: an own container with an own field (v0.25).
+own struct Env { f: File, tag: i64 }
+
+// STORE: the cell is a local born from a cast; construction moves f in.
+// The address is what leaves — no signature ever says "*Env".
+fn box_env(f: File, tag: i64) -> addr {
+    m := sys_sbrk(16) as *Env;
+    m[0] = Env{ f: f, tag: tag };
+    m as addr
+}
+
+// PEEK: field reads through the pointer move nothing.
+fn peek_fd(a: addr) -> i64 {
+    p := a as *Env;
+    p[0].f.fd
+}
+
+// TAKE: the value comes out with a fresh owner, `e`, which ends here — its
+// File closes after the message, as any live container's would.
+fn unbox(a: addr) {
+    p := a as *Env;
+    e := p[0];
+    put("unboxed {e.tag}\n");
+}
+
+// The owning closure: an own struct that drops through its finaliser.
+#[drop(fo_drop)]
+own struct FnOnce_i64_i64 { env: addr, call: fn(addr, i64) -> i64, fin: fn(addr) }
+
+fn fo_drop(f: FnOnce_i64_i64) {
+    f.fin(f.env);
+}
+
+// One call consumes the closure: the body runs, then the drop.
+fn call_once(f: FnOnce_i64_i64, x: i64) -> i64 {
+    r := f.call(f.env, x);
+    fo_drop(f);
+    r
+}
+
+fn body(a: addr, x: i64) -> i64 {
+    fd := peek_fd(a);
+    put("body: fd {fd} + {x}\n");
+    fd + x
+}
+
+fn make(f: File, tag: i64) -> FnOnce_i64_i64 {
+    FnOnce_i64_i64{ env: box_env(f, tag), call: body, fin: unbox }
+}
+
+fn main() -> i64 {
+    a := box_env(File{ fd: 1 }, 7);
+    fd := peek_fd(a);
+    put("peek {fd}\n");
+    unbox(a);
+    h := make(File{ fd: 3 }, 1);
+    g := make(File{ fd: 4 }, 2);
+    r := call_once(h, 39);
+    put("r = {r}\n");
+    0
+}

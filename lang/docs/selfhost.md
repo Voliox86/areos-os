@@ -595,6 +595,17 @@ its opening brace instead of line 0 (the block node's own line, which
 ncc now keeps as `Block.line`). The corpus is **seventy-six rows** with
 `bad_own_field_move2.n`, the nested-base case.
 
+N v0.26 ("Behind a raw pointer", spec §4.6) changed no compiler code:
+the cast local, the indexed store, the peek and the take were already
+what ncc, check.n and gen.n did, and
+[`ownbox.n`](../examples/ownbox.n) now holds them under every
+differential (the host output, the check.n silent set, the gen
+differential). One mirror gap is on record: a pointer to an own type
+in a signature or field — *pointers to own type 'Env' are not allowed
+(in peek)*, a file-level ncc error — is not yet refused by check.n or
+gen.n's checker half; the corpus row and the mirror are the next
+selfhost rung.
+
 `gen.n` then emits the field drops the way `ncc` does — the same
 helpers under the same names: a container's own fields in reverse
 declaration order, each through its type's destructor, a field that is

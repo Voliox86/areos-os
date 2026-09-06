@@ -1,6 +1,6 @@
 # The N Language — Specification
 
-**Version:** v0.25 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
+**Version:** v0.26 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
 
 This document specifies N exactly as implemented by the bootstrap compiler
 `ncc`. It is a *descriptive* spec: everything here compiles today. Planned
@@ -505,8 +505,10 @@ confidence — each remaining restriction is a compile error, not a gap:
 - Own bindings are **immutable** (`mut own` is refused); ownership
   changes hands by move, not by overwrite.
 - Own values cannot **nest** in structs or enum payloads, be pointed to
-  (`*File` is refused everywhere), cross into **syscalls**, flow through
-  a **match expression**, or appear in a **defer**.
+  from a signature or a field (`*File` is refused there — a local born
+  from a cast is the one door, *Behind a raw pointer* below), cross into
+  **syscalls**, flow through a **match expression**, or appear in a
+  **defer**.
 
 #### Destructors — `#[drop(fn)]` (since v0.19)
 
@@ -610,17 +612,64 @@ fn close_log(l: Log) { put("closing {l.name}\n"); }   // then l.file drops
   returned or bound elsewhere takes its fields with it; nothing is
   dropped at that point.
 - **Unchanged:** own bindings stay immutable, so a field cannot be
-  reassigned; own values still cannot be pointed to (`*Log` is refused),
+  reassigned; own values still cannot be pointed to from a signature or
+  a field (`*Log` is refused there; v0.26 opens the local cast, below),
   cross into syscalls, flow through a match expression, or appear in a
   defer; `impl` on an own type stays refused.
 
 Everything a program can observe is the drop order: in the example,
 `close_log(l)` prints `closing boot`, then `closing 3`
 ([`ownnest.n`](../examples/ownnest.n) walks every case). What the rule
-does not give is a way to keep an own value **behind a pointer** — the
-shape a heap-allocated closure environment needs — and that stays an
-open question for the N++ closure work, recorded in
-[design-npp.md](design-npp.md) §6.2.
+does not give by itself is a way to keep an own value **behind a
+pointer** — the shape a heap-allocated closure environment needs; that
+is the next rule.
+
+#### Behind a raw pointer — store, peek, take (since v0.26)
+
+```n
+own struct Env { f: File, tag: i64 }
+
+fn box_env(f: File, tag: i64) -> addr {
+    m := sys_sbrk(16) as *Env;       // the cell: a local born from a cast
+    m[0] = Env{ f: f, tag: tag };    // STORE — construction moves f in
+    m as addr                        // what leaves is the address
+}
+fn peek_fd(a: addr) -> i64 { p := a as *Env; p[0].f.fd }   // PEEK
+fn unbox(a: addr) { p := a as *Env; e := p[0]; }           // TAKE: e owns, and ends here
+```
+
+An own value may live in memory the program addresses itself. The door
+is narrow and explicit:
+
+- **A pointer to an own type exists only as a local born from a cast.**
+  `*Env` stays refused in every signature and field (*pointers to own
+  type 'Env' are not allowed (in peek)*); `a as *Env` inside a function
+  is the escape hatch, and what crosses a boundary is the `addr`. No
+  parameter, field or return ever says "this points at an owner", so
+  the one-binding rule holds everywhere the checker looks.
+- **Store moves in.** `m[0] = Env{ f: f, tag: 7 }` consumes `f` exactly
+  as any construction does; `m[0] = e` consumes `e`.
+- **Peek moves nothing.** `p[0].f.fd` and `p[0].tag` read through the
+  pointer as field reads always have.
+- **Take gives a fresh owner.** `e := p[0]` binds an own value born
+  LIVE: it must be consumed or dropped like any other, and its field
+  drops run at its scope end (v0.25). The cell is dead afterwards, and
+  **N does not track the cell**: a second take, or a store never taken,
+  is the program's responsibility, the way every raw pointer's contents
+  are. The rule is as raw as the pointer it rides on; what stays checked
+  is every binding a take produces.
+- **A field never moves out of a pointee alone.** `close_file(p[0].f)`
+  is the v0.25 refusal (*cannot move field 'f' out of own value 'an own
+  value'*): take the value, then consume it.
+
+That is enough for an **owning closure** with no new type: an own struct
+with a `#[drop]` holding the environment's address, the call, and a
+finaliser that takes the environment out — `#[drop(fo_drop)] own struct
+FnOnce_i64_i64 { env: addr, call: fn(addr, i64) -> i64, fin: fn(addr) }`,
+consumed by its one call, dropped through its finaliser when never
+called, a second call a use after move.
+[`ownbox.n`](../examples/ownbox.n) writes one by hand; N++ lowers
+`FnOnce(…)` to exactly that shape ([design-npp.md](design-npp.md) §6.2).
 
 Everything above is erased at codegen: an own struct lowers to the same
 plain C struct as any other, and every drop is a visible, statically
@@ -1114,6 +1163,7 @@ This section specifies what C the compiler is *required* to emit, because N's
 | `struct` / `enum` layouts (§4.3, §4.4; v0.24) | one `typedef struct { … } Name;` per declaration, **in declaration order** — a struct holding an enum by value compiles when the enum was declared first (before v0.24 every struct layout preceded every enum layout) |
 | `fn(A, B) -> R` (§3.4, v0.24) | `typedef R' (*__nyx_fnN)(A', B');` once per distinct signature, after the layouts; a struct field of function type is the declarator `R' (*name)(A', B');`; a function named as a value is the C function designator; a call through a value is the plain C call |
 | own fields inside own structs (§4.6, v0.25) | nothing at the type level — the container is the same plain C struct; where a held container parameter ends its body, `drop_fn(param.field);` per own field in reverse declaration order, after the defers and the local auto-drops (at every `return`, inside the braced `__ret` form, and at the function's end); a live container without a `#[drop]` of its own gets the same calls at its scope end |
+| own values behind a raw pointer (§4.6, v0.26) | nothing — the cast, the indexed store and the indexed read are the C they always were; a taken value is a live own binding and its drops are placed as for any other |
 
 ### 7.2 The runtime
 
