@@ -260,7 +260,8 @@ uint32_t dns_resolve(const char* hostname, int iface_idx) {
 
 // Known-answer + adversarial test for the DNS response parser, which consumes
 // UNTRUSTED network data. Asserts a well-formed A-record reply (with a compressed
-// answer name) is parsed to the right address, and that a battery of malformed
+// answer name) is parsed to the right address — including an A record that follows a
+// CNAME answer (ancount=2), the common alias case — and that a battery of malformed
 // packets — too short, not a response, wrong transaction ID, no answers, oversized
 // labels that walk off the end, a huge RDLENGTH, a non-A record — is rejected with
 // no spurious answer and (since we return at all) without reading out of bounds or
@@ -287,6 +288,23 @@ int dns_response_selftest(void) {
         dns_response_handler(p, sizeof(p), 0, 0);
         uint32_t want = (uint32_t)93 | (184u << 8) | (216u << 16) | (34u << 24);
         if (!dns_response_ready || dns_response_ip != want) { rc = 1; goto done; }
+    }
+
+    // Positive #2: a CNAME answer (type 5) FOLLOWED by the A record (ancount=2). The parser
+    // must skip the non-A answer (off += rdlength) and return the A from the second record —
+    // the common real-world CDN/alias case, where the wanted A is not the first answer.
+    {
+        uint8_t p[] = {
+            0x12,0x34, 0x81,0x80, 0x00,0x01, 0x00,0x02, 0x00,0x00, 0x00,0x00,  // qd=1, an=2
+            0x03,'w','w','w', 0x03,'x','y','z', 0x00, 0x00,0x01, 0x00,0x01,     // question www.xyz
+            0xC0,0x0C, 0x00,0x05, 0x00,0x01, 0,0,0,0x3C, 0x00,0x02, 0xC0,0x0C, // ans1: CNAME, rdlen 2 (a pointer)
+            0xC0,0x0C, 0x00,0x01, 0x00,0x01, 0,0,0,0x3C, 0x00,0x04, 5,6,7,8    // ans2: A = 5.6.7.8
+        };
+        dns_query_id = 0x1234;
+        dns_response_ready = 0; dns_response_ip = 0;
+        dns_response_handler(p, sizeof(p), 0, 0);
+        uint32_t want = (uint32_t)5 | (6u << 8) | (7u << 16) | (8u << 24);
+        if (!dns_response_ready || dns_response_ip != want) { rc = 8; goto done; }
     }
 
     dns_query_id = 0x1234;   // negatives: none of these may set dns_response_ready
