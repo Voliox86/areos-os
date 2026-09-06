@@ -765,6 +765,31 @@ fn vfind(p: *u8, st: *i64, ss: i64, sl: i64) -> i64 {
 
 // v0.17 move point (ncc's own_move_expr): expression i is consumed
 // as a VALUE (bound, passed, returned, assigned, or a block tail).
+// v0.25: the PLACE a refused field move names — a binding, or a field
+// chain rooted in one, spelled as written (`o.p`, `__self.env`);
+// anything else (a call's result, an index) stays "an own value".
+// root = 1 prints only the binding the chain hangs from: the value
+// to consume as a whole (ncc: expr_place).
+fn mpathok(st: *i64, b: i64) -> bool {
+    nd := st[33] as *i64;
+    if nd[b * 8] == 5 { return true; }
+    if nd[b * 8] == 7 { return mpathok(st, nd[b * 8 + 1]); }
+    return false;
+}
+fn mpath(p: *u8, st: *i64, b: i64, root: i64) {
+    nd := st[33] as *i64;
+    if nd[b * 8] == 7 {
+        mpath(p, st, nd[b * 8 + 1], root);
+        if root == 1 { return; }
+        put(".");
+    }
+    put_span(p, nd[b * 8 + 5], nd[b * 8 + 6]);
+}
+fn mplace(p: *u8, st: *i64, b: i64, root: i64) {
+    if mpathok(st, b) { mpath(p, st, b, root); }
+    if !mpathok(st, b) { put("an own value"); }
+}
+
 // A bare path naming an own binding transfers ownership here — the
 // binding becomes MOVED. Field reads are NOT moves: `f.fd` peeks,
 // `f` transfers. The v0.18 gates refuse moves where the statement
@@ -782,11 +807,9 @@ fn cmove(p: *u8, st: *i64, i: i64, ln: i64) {
             put("{ln}: cannot move field '");
             put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
             put("' out of own value '");
-            if nd[b * 8] == 5 { put_span(p, nd[b * 8 + 5], nd[b * 8 + 6]); }
-            if nd[b * 8] != 5 { put("an own value"); }
+            mplace(p, st, b, 0);
             put("' — consume '");
-            if nd[b * 8] == 5 { put_span(p, nd[b * 8 + 5], nd[b * 8 + 6]); }
-            if nd[b * 8] != 5 { put("an own value"); }
+            mplace(p, st, b, 1);
             put("' as a whole (v0.25)\n");
             st[41] = 1;
         }
@@ -3771,10 +3794,10 @@ fn cblock(p: *u8, st: *i64, i: i64) {
     mut s2 := nd[i * 8 + 1];               // scope, THEN nothing may leak
     mut lst2 := 0;                         // out of it — the scan reports
     while s2 > 0 {                         // at the LAST statement's line
-        lst2 = s2;                         // (ncc: b->st[n-1]->line, 0
-        s2 = nd[s2 * 8 + 7];               // for an empty block)
+        lst2 = s2;                         // (ncc: b->st[n-1]->line, the
+        s2 = nd[s2 * 8 + 7];               // `{` line for an empty block)
     }
-    mut ln9 := 0;
+    mut ln9 := nd[i * 8 + 4];
     if lst2 > 0 { ln9 = nd[lst2 * 8 + 4]; }
     if st[43] == 1 { cheld(p, st, ln9); }  // v0.25: the function's end
     cleak(p, st, vsave, ln9, 1);

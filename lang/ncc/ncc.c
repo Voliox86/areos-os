@@ -496,7 +496,8 @@ struct Stmt {
     /* S_FOR (v0.11): name = loop variable, e = range start, cond = range
      * end (half-open [start, end)), body = loop body */
 };
-struct Block { Stmt** st; int n; Expr* tail; };
+struct Block { Stmt** st; int n; Expr* tail; int line; };   /* line: its `{` — where an
+                                                             * empty body reports (v0.25) */
 
 /* caps (v0.14, closing N++ P4): bit 0 = the `syscall` capability. On an
  * XFn it means "calling me is a kernel crossing and needs the capability";
@@ -1034,8 +1035,9 @@ static Stmt* parse_match(int expr_arms) {
 }
 
 static Block* parse_block(void) {
-    pexp(T_LB, "'{'");
+    Tok lb = pexp(T_LB, "'{'");
     Block* b = xmalloc(sizeof(Block));
+    b->line = lb.line;                    /* an empty block reports at its brace */
     Stmt** st = xmalloc(sizeof(Stmt*) * 256);
     int n = 0;
     while (!pchk(T_RB)) {
@@ -1477,14 +1479,31 @@ static int ty_is_own(Ty t) {
  * the value again on the second test), and inside match arms (reserved;
  * consume conditionally with if/else in v0.18). */
 static Ty infer_type(Expr* e);
+
+/* v0.25: the PLACE a refused field move names — a binding, or a field
+ * chain rooted in one, spelled as written (`o.p`, `__self.env`); anything
+ * else (a call's result, an index) stays "an own value". `*root` receives
+ * the binding the chain hangs from: the value to consume as a whole. */
+static const char* expr_place(Expr* e, const char** root) {
+    if (e->k == E_PATH) { *root = e->name; return e->name; }
+    if (e->k != E_FIELD) return NULL;
+    const char* b = expr_place(e->base, root);
+    if (!b) return NULL;
+    char* s = xmalloc(strlen(b) + strlen(e->field) + 2);
+    sprintf(s, "%s.%s", b, e->field);
+    return s;
+}
+
 static void own_move_expr(Expr* e, int line) {
     if (!e) return;
     if (e->k == E_FIELD) {                /* v0.25: a field never moves out alone —
                                            * the container is consumed as a whole */
         if (ty_is_own(infer_type(e))) {
-            const char* base = e->base->k == E_PATH ? e->base->name : "an own value";
+            const char* root = "an own value";
+            const char* base = expr_place(e->base, &root);
+            if (!base) base = root;
             die("%s:%d: cannot move field '%s' out of own value '%s' — consume '%s' as a whole (v0.25)",
-                FILENAME, line, e->field, base, base);
+                FILENAME, line, e->field, base, root);
         }
         return;
     }
@@ -3059,7 +3078,7 @@ static void gen_block(Block* b, int ind, int fn_tail) {
             fputs(";\n", OUT);
             gen_defers(ind + 1);
             own_drops_emit(0, ind + 1);
-            own_held_drops_emit(ind + 1, b->n ? b->st[b->n - 1]->line : 0);   /* v0.25 */
+            own_held_drops_emit(ind + 1, b->n ? b->st[b->n - 1]->line : b->line);   /* v0.25 */
             tail_returned = 1;
             indentf(ind + 1); fputs("return __ret;\n", OUT);
         } else {
@@ -3080,10 +3099,10 @@ static void gen_block(Block* b, int ind, int fn_tail) {
     own_drops_emit(fn_tail ? 0 : vsave, ind + 1);
     if (fn_tail && !tail_returned)                /* v0.25: a held container's fields
                                                    * (a returning tail drained them above) */
-        own_held_drops_emit(ind + 1, b->n ? b->st[b->n - 1]->line : 0);
+        own_held_drops_emit(ind + 1, b->n ? b->st[b->n - 1]->line : b->line);
     indentf(ind);
     fputs("}", OUT);
-    own_leak_scan(vsave, b->n ? b->st[b->n - 1]->line : 0,   /* v0.17: nothing
+    own_leak_scan(vsave, b->n ? b->st[b->n - 1]->line : b->line,   /* v0.17: nothing
         * may leak out of any scope — undropped, unconsumed = error */
         BLOCK_DEPTH == 1 ? "the end of the function" : "the end of this block");
     BLOCK_DEPTH--;

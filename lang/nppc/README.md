@@ -163,7 +163,9 @@ The rules at this rung (M6.4a):
   so the closure may outlive its frame: `adder(5)` returns one. A
   captured local's type must be evident to a token scan — a declared
   parameter, a literal (`i64`, `str`, `bool`), a call to a known
-  function, a struct literal, or a name so typed; anything else is
+  function, a struct literal (a generic one too: `b := Box<i64>{ … }`
+  types `b` as `Box<i64>`, which the generic pass then concretes), or a
+  name so typed; anything else is
   refused: `cannot capture 'n': its type is not evident — bind it with a
   literal, a call or a struct literal, or pass it as a parameter`. An
   `own` local cannot be captured here — this environment lives behind a

@@ -69,6 +69,9 @@ void mseed(nyx_u8* p, nyx_i64* st, nyx_i64 ei, nyx_i64 vi, nyx_i64 bst, nyx_i64 
 void vadd(nyx_i64* st, nyx_i64 ss, nyx_i64 sl, nyx_i64 m, T t);
 T vty(nyx_i64* st, nyx_i64 v);
 nyx_i64 vfind(nyx_u8* p, nyx_i64* st, nyx_i64 ss, nyx_i64 sl);
+nyx_bool mpathok(nyx_i64* st, nyx_i64 b);
+void mpath(nyx_u8* p, nyx_i64* st, nyx_i64 b, nyx_i64 root);
+void mplace(nyx_u8* p, nyx_i64* st, nyx_i64 b, nyx_i64 root);
 void cmove(nyx_u8* p, nyx_i64* st, nyx_i64 i, nyx_i64 ln);
 nyx_i64 brret(nyx_i64* st, nyx_i64 b);
 nyx_i64 sguar(nyx_u8* p, nyx_i64* st, nyx_i64 i);
@@ -1043,6 +1046,38 @@ nyx_i64 vfind(nyx_u8* p, nyx_i64* st, nyx_i64 ss, nyx_i64 sl) {
     return -(1);
 }
 
+nyx_bool mpathok(nyx_i64* st, nyx_i64 b) {
+    nyx_i64* nd = (nyx_i64*)(st[33]);
+    if ((nd[(b * 8)] == 5)) {
+        return 1;
+    }
+    if ((nd[(b * 8)] == 7)) {
+        return mpathok(st, nd[((b * 8) + 1)]);
+    }
+    return 0;
+}
+
+void mpath(nyx_u8* p, nyx_i64* st, nyx_i64 b, nyx_i64 root) {
+    nyx_i64* nd = (nyx_i64*)(st[33]);
+    if ((nd[(b * 8)] == 7)) {
+        mpath(p, st, nd[((b * 8) + 1)], root);
+        if ((root == 1)) {
+            return;
+        }
+        put(((nyx_str){".", 1}));
+    }
+    put_span(p, nd[((b * 8) + 5)], nd[((b * 8) + 6)]);
+}
+
+void mplace(nyx_u8* p, nyx_i64* st, nyx_i64 b, nyx_i64 root) {
+    if (mpathok(st, b)) {
+        mpath(p, st, b, root);
+    }
+    if (!(mpathok(st, b))) {
+        put(((nyx_str){"an own value", 12}));
+    }
+}
+
 void cmove(nyx_u8* p, nyx_i64* st, nyx_i64 i, nyx_i64 ln) {
     if ((st[41] == 1)) {
         return;
@@ -1062,19 +1097,9 @@ void cmove(nyx_u8* p, nyx_i64* st, nyx_i64 i, nyx_i64 ln) {
             put(__s0);
             put_span(p, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
             put(((nyx_str){"' out of own value '", 20}));
-            if ((nd[(b * 8)] == 5)) {
-                put_span(p, nd[((b * 8) + 5)], nd[((b * 8) + 6)]);
-            }
-            if ((nd[(b * 8)] != 5)) {
-                put(((nyx_str){"an own value", 12}));
-            }
+            mplace(p, st, b, 0);
             put(((nyx_str){"' \342\200\224 consume '", 15}));
-            if ((nd[(b * 8)] == 5)) {
-                put_span(p, nd[((b * 8) + 5)], nd[((b * 8) + 6)]);
-            }
-            if ((nd[(b * 8)] != 5)) {
-                put(((nyx_str){"an own value", 12}));
-            }
+            mplace(p, st, b, 1);
             put(((nyx_str){"' as a whole (v0.25)\n", 21}));
             st[41] = 1;
         }
@@ -5136,7 +5161,7 @@ void cblock(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
         lst2 = s2;
         s2 = nd[((s2 * 8) + 7)];
     }
-    nyx_i64 ln9 = 0;
+    nyx_i64 ln9 = nd[((i * 8) + 4)];
     if ((lst2 > 0)) {
         ln9 = nd[((lst2 * 8) + 4)];
     }

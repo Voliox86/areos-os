@@ -1,0 +1,11 @@
+#[drop(close_file)]
+own struct File { fd: i64 }
+fn close_file(f: File) { }
+own struct Pair { a: File, b: File }
+own struct Outer { tag: i64, p: Pair }
+fn main() -> i64 {
+    o := Outer{ tag: 1, p: Pair{ a: File{ fd: 1 }, b: File{ fd: 2 } } };
+    g := o.p.a;
+    close_file(g);
+    0
+}

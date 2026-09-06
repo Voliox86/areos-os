@@ -1956,6 +1956,16 @@ static char* local_type(int itemfirst, int lam, int name, int depth) {
             }
         } else if (k == T_IDENT && TOKS[r + 1].k == T_LB) {
             if (stt_find(r) >= 0) nt = xstrndup(TOKS[r].s, (size_t)TOKS[r].slen);
+        } else if (k == T_IDENT && TOKS[r + 1].k == T_LT && stt_find(r) >= 0) {
+            int te = skip_type(r);        /* `x := S<A>{ … }`: a generic struct literal
+                                           * types x as S<A> (the generic pass concretes it) */
+            if (te > 0 && TOKS[te].k == T_LB) {
+                size_t cap = 64, n = 0;
+                char* b = xmalloc(cap);
+                b[0] = 0;
+                render_type(r, te, &b, &n, &cap);
+                nt = b;
+            }
         } else if (k == T_IDENT && TOKS[r + 1].k == T_SEMI && depth < 4) {
             nt = local_type(itemfirst, t, r, depth + 1);
         }

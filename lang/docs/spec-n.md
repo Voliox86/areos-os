@@ -583,9 +583,13 @@ fn close_log(l: Log) { put("closing {l.name}\n"); }   // then l.file drops
 - **A field never moves out on its own.** `l.file` may be read
   through — `l.file.fd` peeks — but binding, passing or returning
   `l.file` is refused: *cannot move field 'file' out of own value 'l'
-  — consume 'l' as a whole (v0.25)*. Partial moves would need
-  per-field states the flat tracker does not keep, and the container's
-  one obligation stays one.
+  — consume 'l' as a whole (v0.25)*. The place is spelled as written
+  and the advice names the binding the chain hangs from: moving
+  `o.p.a` out of a nested container reads *cannot move field 'a' out
+  of own value 'o.p' — consume 'o' as a whole (v0.25)*; a place that
+  is neither a binding nor a field chain (a call's result) is "an own
+  value". Partial moves would need per-field states the flat tracker
+  does not keep, and the container's one obligation stays one.
 - **The container's consumption consumes its fields.** Wherever a
   held container ends its body — a sink such as `close_log`, the
   container's own `#[drop]` function included — the compiler drops
@@ -594,8 +598,10 @@ fn close_log(l: Log) { put("closing {l.name}\n"); }   // then l.file drops
   through its type's `#[drop]`; a field whose type cannot drop makes
   that end an error — *held own value 'b' ends here with field 'r'
   unconsumed — 'Raw' has no #[drop] destructor; move 'b' on instead
-  (v0.25)*. Held parameters still never re-run their own destructor,
-  so drop recursion stays impossible. A LIVE local container
+  (v0.25)* — located at the exit: the `return`, the body's last
+  statement, or the opening brace of an empty body. Held parameters
+  still never re-run their own destructor, so drop recursion stays
+  impossible. A LIVE local container
   auto-drops as any own value: through its `#[drop]` when it has one
   (whose body end then drops the fields), else — when every own field
   can drop — through the field drops alone; otherwise its scope end is
