@@ -221,8 +221,10 @@ struct's name is the signature's spelling with its punctuation as
 underscores and a generic type inside spelled as its instantiation's
 name (`Fn()` is `__Fn__`, `Fn(*u8, Box<i64>) -> bool` is
 `__Fn_pu8___g_Box_i64__bool` — the same name whichever pass meets it). A call through a closure — a parameter of
-`Fn` type, a local bound from a call returning one, or the `Fn` field of
-a struct-typed parameter or local — becomes `f.call(f.env, a)`. A lambda
+`Fn` type, a local bound from a call returning one, the `Fn` field of
+a struct-typed parameter or local, or that field of the element a
+pointer-to-struct name indexes, `bs[i].f(a)` (M6.4c5) — becomes
+`f.call(f.env, a)`. A lambda
 written where a closure is expected takes the environment as its first
 parameter and the expression becomes the closure value
 `__Fn_i64__i64{ env: 0, call: __c_N }`; a named function passed there is
@@ -321,15 +323,29 @@ shapes above: one struct per signature (`__Fn_i64_i64_`,
 lifted functions, and the field calls rewritten — `b.on_click(x, y)`
 becomes `b.on_click.call(b.on_click.env, x, y)`; the widget structs are
 plain N structs, and the same `dispatch` would sit in nwin.n's loop as
-`running = dispatch(ui, ev[0], ev[1], ev[2]);`. One shape to know: nppc
-types a struct-typed name from a parameter, a struct literal or a call,
-so a call through an indexed read (`bs[i].on_click(…)`) is not
-rewritten — `dispatch` hands each button to `inside(b: Button, …)` and
-`fire(b: Button, …)` instead. On the host, where the window syscalls do
+`running = dispatch(ui, ev[0], ev[1], ev[2]);`. The call reaches the
+widget where it lies: `dispatch` reads `bs := ui.buttons` and calls
+`bs[i].on_click(a, b)` on the button whose rectangle holds the click —
+nppc types `bs` as a pointer to Buttons from the `Ui` field it was read
+from (M6.4c5, below), so the indexed call is rewritten like any other.
+On the host, where the window syscalls do
 not exist, the program feeds dispatch a scripted table of events and
 prints the trace that stage [10w] checks; the natural mistake — a
 capturing lambda in a plain `fn(i64, i64)` field — is refused with the
 M6.4c2 text.
+
+**Closure calls through indexed reads (M6.4c5).** A name that points
+at a struct joins the names whose `Fn` fields are called through
+`.call`: a parameter `bs: *Button`, a local `bs := ui.buttons` whose
+type is the `*Button` field of a struct-typed name, or a local cast
+`bs := sys_sbrk(n) as *Button`. Where such a name is indexed and a
+closure field called — `bs[i].on_click(a, b)` — the call becomes
+`bs[i].on_click.call(bs[i].on_click.env, a, b)`, the index copied
+verbatim (brackets balanced, so `bs[idx[k]]` works too). The scan is
+the token scan the other shapes use: it types nothing it cannot see
+(an index on a `*i64`, a field chain before the index, `ui.buttons[i]`)
+and leaves those calls alone for N to judge. nwinui.npp's `dispatch`
+is the worked case, held by stage [10w].
 
 [`../examples/closure.npp`](../examples/closure.npp) is the worked
 example: four lambdas — an argument, a struct field, another argument,

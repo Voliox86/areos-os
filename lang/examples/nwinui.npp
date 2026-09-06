@@ -16,10 +16,12 @@
 // It lowers to nothing new: `Fn(i64, i64)` and `Fn(i64) -> bool` become
 // one struct per signature (an environment address plus a call), each
 // lambda lifts to a top-level `__c_N` reading its captures from an `__E_N`
-// environment built where the button is born, and `b.on_click(x, y)`
-// becomes `b.on_click.call(b.on_click.env, x, y)`. The widget structs
-// themselves are ordinary N structs, kept in sbrk'd memory the way nwin.n
-// keeps its pixels. Inside NyxOS the very same `dispatch` sits in nwin.n's
+// environment built where the button is born, and the call through the
+// handler field of the widget read out of the table, `bs[i].on_click(a,
+// b)`, becomes `bs[i].on_click.call(bs[i].on_click.env, a, b)` (nppc
+// knows `bs` points at Buttons from the `Ui` field it was read from). The
+// widget structs themselves are ordinary N structs, kept in sbrk'd memory
+// the way nwin.n keeps its pixels. Inside NyxOS the very same `dispatch` sits in nwin.n's
 // poll loop as `running = dispatch(ui, ev[0], ev[1], ev[2]);` — the window
 // syscalls do not exist on the host, so this program feeds dispatch from a
 // scripted table of events instead (exactly what win_poll_event would hand
@@ -85,10 +87,6 @@ fn inside(b: Button, x: i64, y: i64) -> bool {
     x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h
 }
 
-fn fire(b: Button, x: i64, y: i64) {
-    b.on_click(x, y);
-}
-
 // One event as nwin.n's poll loop sees it: kind 1 key (a = code), 2 click
 // (a = x, b = y), 3 move, 4 close. Returns whether the loop goes on.
 fn dispatch(ui: Ui, kind: i64, a: i64, b: i64) -> bool {
@@ -99,7 +97,7 @@ fn dispatch(ui: Ui, kind: i64, a: i64, b: i64) -> bool {
         bs := ui.buttons;
         for i in 0..ui.n {
             if inside(bs[i], a, b) {
-                fire(bs[i], a, b);
+                bs[i].on_click(a, b);
                 return true;
             }
         }

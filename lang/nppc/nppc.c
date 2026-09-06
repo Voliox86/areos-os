@@ -2454,6 +2454,26 @@ static void reg_sigs(int t, int e, char** nm, char** tx, int* n) {
     nm[*n] = name; tx[*n] = b; (*n)++;
 }
 
+/* M6.4c5: a type span that is a pointer to a known struct (`*S`) — the
+ * struct's table index, else -1. */
+static int ptr_struct(int ts, int te) {
+    if (te != ts + 2 || TOKS[ts].k != T_STAR || TOKS[ts + 1].k != T_IDENT) return -1;
+    return stt_find(ts + 1);
+}
+
+/* The `;` ending the statement that starts at t (brackets balanced), or
+ * -1 when the enclosing block closes first. */
+static int stmt_end(int t) {
+    for (int d = 0; TOKS[t].k != T_EOF; t++) {
+        TK k = TOKS[t].k;
+        if (k == T_LP || k == T_LB || k == T_LBRACK) d++;
+        else if (k == T_RP || k == T_RBRACK) d--;
+        else if (k == T_RB) { if (d == 0) return -1; d--; }
+        else if (k == T_SEMI && d == 0) return t;
+    }
+    return -1;
+}
+
 /* The closure pass (M6.4c1), after the lambdas are lifted: every `Fn(...)`
  * type slot becomes its struct name (the structs declared once, ahead of
  * the first struct or function), calls through closure-typed parameters,
@@ -2526,17 +2546,37 @@ static char* closure_pass(const char* prog) {
      * struct-typed parameter or local (bound from a literal or a call). */
     for (int f = 0; f < NFNT; f++) {
         Item* fi = &FNT[f];
-        int cl[128], ncl = 0, sn[128], sv[128], nsn = 0;
+        int cl[128], ncl = 0, sn[128], sv[128], nsn = 0, pn[128], pv[128], npn = 0;
         for (int p = 0; p < fi->np; p++) {
             if (range_is_Fn(fi->pts[p], fi->pte[p])) { if (ncl < 128) cl[ncl++] = fi->pname[p]; }
             else if (fi->pte[p] == fi->pts[p] + 1) {
                 int s = stt_find(fi->pts[p]);
                 if (s >= 0 && nsn < 128) { sn[nsn] = fi->pname[p]; sv[nsn] = s; nsn++; }
+            } else {                      /* bs: *S (M6.4c5) */
+                int s = ptr_struct(fi->pts[p], fi->pte[p]);
+                if (s >= 0 && npn < 128) { pn[npn] = fi->pname[p]; pv[npn] = s; npn++; }
             }
         }
         for (int u = fi->body + 1; u + 2 < fi->end; u++) {
             if (TOKS[u].k != T_IDENT || TOKS[u + 1].k != T_WALRUS || TOKS[u + 2].k != T_IDENT) continue;
             int r = u + 2;
+            int e = stmt_end(r);          /* x := ... as *S; (M6.4c5) */
+            if (e >= r + 4 && TOKS[e - 3].k == T_KW_AS && TOKS[e - 2].k == T_STAR && TOKS[e - 1].k == T_IDENT) {
+                int s = stt_find(e - 1);
+                if (s >= 0 && npn < 128) { pn[npn] = u; pv[npn] = s; npn++; }
+                continue;
+            }
+            if (TOKS[r + 1].k == T_DOT && TOKS[r + 2].k == T_IDENT && TOKS[r + 3].k == T_SEMI) {
+                int s = -1;               /* x := o.f; — o struct-typed, f a *S field (M6.4c5) */
+                for (int c = 0; c < nsn && s < 0; c++) if (tokspan_eq(sn[c], r)) s = sv[c];
+                if (s < 0) continue;
+                int fld = -1;
+                for (int q = 0; q < STT[s].np && fld < 0; q++) if (tokspan_eq(STT[s].pname[q], r + 2)) fld = q;
+                if (fld < 0) continue;
+                int ps = ptr_struct(STT[s].pts[fld], STT[s].pte[fld]);
+                if (ps >= 0 && npn < 128) { pn[npn] = u; pv[npn] = ps; npn++; }
+                continue;
+            }
             if (TOKS[r + 1].k == T_LB) {  /* x := S{ ... } */
                 int s = stt_find(r);
                 if (s >= 0 && nsn < 128) { sn[nsn] = u; sv[nsn] = s; nsn++; }
@@ -2558,7 +2598,7 @@ static char* closure_pass(const char* prog) {
                 }
             }
         }
-        if (!ncl && !nsn) continue;
+        if (!ncl && !nsn && !npn) continue;
         for (int u = fi->body + 1; u + 1 < fi->end; u++) {
             if (TOKS[u].k != T_IDENT || TOKS[u - 1].k == T_DOT || TOKS[u - 1].k == T_KW_FN) continue;
             if (TOKS[u + 1].k == T_LP) {  /* f(a) -> f.call(f.env, a) */
@@ -2570,6 +2610,30 @@ static char* closure_pass(const char* prog) {
                         TOKS[u + 2].k == T_RP ? "" : ", ");
                 if (ne >= MAXI) die("%s: too many rewrites", FILENAME);
                 ced[ne].start = TOKS[u].start; ced[ne].end = TOKS[u + 1].end; ced[ne].repl = r; ne++;
+                continue;
+            }
+            if (TOKS[u + 1].k == T_LBRACK) {  /* bs[i].run(a) -> bs[i].run.call(bs[i].run.env, a) (M6.4c5) */
+                int s = -1;
+                for (int c = 0; c < npn && s < 0; c++) if (tokspan_eq(pn[c], u)) s = pv[c];
+                if (s < 0) continue;
+                int v = u + 1, d = 0;     /* the matching `]` */
+                for (; TOKS[v].k != T_EOF; v++) {
+                    if (TOKS[v].k == T_LBRACK) d++;
+                    else if (TOKS[v].k == T_RBRACK && --d == 0) break;
+                }
+                if (TOKS[v].k != T_RBRACK || TOKS[v + 1].k != T_DOT || TOKS[v + 2].k != T_IDENT || TOKS[v + 3].k != T_LP) continue;
+                int fld = -1;
+                for (int q = 0; q < STT[s].np && fld < 0; q++) if (tokspan_eq(STT[s].pname[q], v + 2)) fld = q;
+                if (fld < 0 || !range_is_Fn(STT[s].pts[fld], STT[s].pte[fld])) continue;
+                int pl = TOKS[v].end - TOKS[u].start;   /* `bs[i]`, verbatim from the source */
+                const char* ps = prog + TOKS[u].start;
+                char* r = xmalloc((size_t)(pl + TOKS[v + 2].slen) * 2 + 24);
+                sprintf(r, "%.*s.%.*s.call(%.*s.%.*s.env%s", pl, ps, TOKS[v + 2].slen, TOKS[v + 2].s,
+                        pl, ps, TOKS[v + 2].slen, TOKS[v + 2].s,
+                        TOKS[v + 4].k == T_RP ? "" : ", ");
+                if (ne >= MAXI) die("%s: too many rewrites", FILENAME);
+                ced[ne].start = TOKS[u].start; ced[ne].end = TOKS[v + 3].end; ced[ne].repl = r; ne++;
+                u = v + 3;
                 continue;
             }
             if (TOKS[u + 1].k == T_DOT && TOKS[u + 2].k == T_IDENT && TOKS[u + 3].k == T_LP) {
