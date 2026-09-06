@@ -458,6 +458,62 @@ int putenv(char* string) {
     return env_append(string);                 /* POSIX: stores the caller's pointer, no copy */
 }
 
+/* =========== getopt (POSIX short-option parser) =========== */
+/* Parses the command-line options in argv[] against `optstring`. Short-option only, in the
+ * POSIX (non-permuting) order: scanning stops at the first non-option operand — so a program
+ * that wants "-l" in `ls foo -l` must write "ls -l foo". `optstring` lists the option letters;
+ * a letter followed by ':' takes an argument (either the rest of the same word, "-oVAL", or the
+ * next word, "-o VAL"). A leading '+' in optstring is accepted and ignored (we are already
+ * POSIX-order); a leading ':' selects silent mode: a missing argument returns ':' instead of
+ * '?' and no message is printed. "--" ends option scanning (and is consumed); a lone "-" is an
+ * operand and stops scanning without being consumed. On '?'/':' optopt holds the offending
+ * letter. Clustered flags ("-abc") are supported. Resetting optind to 1 restarts a fresh scan. */
+char* optarg = NULL;
+int   optind = 1;
+int   opterr = 1;
+int   optopt = 0;
+
+int getopt(int argc, char* const argv[], const char* optstring) {
+    static char* place = "";                        /* remaining letters of the current word */
+    optarg = NULL;                                   /* only an arg-taking option sets it (matches glibc) */
+    const char* os = optstring;
+    if (*os == '+' || *os == '-') os++;             /* ordering flags: we are POSIX-order regardless */
+    int silent = (*os == ':');
+    if (silent) os++;
+
+    if (*place == '\0') {                            /* need the next argv word */
+        if (optind >= argc) return -1;
+        place = argv[optind];
+        if (place[0] != '-' || place[1] == '\0') { place = ""; return -1; }   /* operand or lone "-" */
+        if (place[1] == '-' && place[2] == '\0') { optind++; place = ""; return -1; }  /* "--" */
+        place++;                                     /* skip the leading '-' */
+    }
+
+    int c = (unsigned char)*place++;
+    const char* oli = (c == ':') ? NULL : strchr(os, c);   /* ':' is never a valid option letter */
+    if (!oli) {                                      /* unknown option */
+        optopt = c;
+        if (*place == '\0') optind++;                /* whole word consumed */
+        if (!silent && opterr) fprintf(stderr, "%s: invalid option -- '%c'\n", argv[0], c);
+        return '?';
+    }
+    if (oli[1] == ':') {                             /* this option takes an argument */
+        if (*place != '\0') { optarg = place; }      /* "-oVAL": rest of the word */
+        else if (optind + 1 < argc) { optarg = argv[++optind]; }   /* "-o VAL": next word */
+        else {                                       /* argument missing */
+            place = ""; optind++;
+            optopt = c;
+            if (silent) return ':';
+            if (opterr) fprintf(stderr, "%s: option requires an argument -- '%c'\n", argv[0], c);
+            return '?';
+        }
+        place = ""; optind++;                        /* the whole word (and its arg) is consumed */
+        return c;
+    }
+    if (*place == '\0') optind++;                    /* option without an argument */
+    return c;
+}
+
 /* =========== Calendar time (gmtime / localtime / strftime) =========== */
 /* NyxOS keeps the RTC in UTC, so localtime == gmtime (no timezone database). */
 

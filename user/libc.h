@@ -160,6 +160,16 @@ int setenv(const char* name, const char* value, int overwrite);
 int unsetenv(const char* name);
 int putenv(char* string);
 
+/* getopt (POSIX short-option parser, non-permuting). optstring lists option letters; a ':'
+ * after a letter means it takes an argument (in optarg). Leading '+' is ignored; leading ':'
+ * selects silent mode (missing arg -> ':' not '?'). Returns the option letter, '?'/':' on
+ * error (offender in optopt), or -1 at the first operand / "--" / end. Reset optind to 1 to rescan. */
+extern char* optarg;
+extern int   optind;
+extern int   opterr;
+extern int   optopt;
+int getopt(int argc, char* const argv[], const char* optstring);
+
 /* Calendar time (C standard). `time_t` is Unix epoch seconds; gmtime/localtime break it
  * down (NyxOS keeps the RTC in UTC, so localtime == gmtime — no timezone), and strftime
  * formats a struct tm. Get the epoch from gettimeofday() (see syscall.h). */
