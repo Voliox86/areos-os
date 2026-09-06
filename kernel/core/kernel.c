@@ -9743,6 +9743,7 @@ static uint64_t saved_mboot_magic = 0;   // 0x2BADB002 = multiboot1, 0x36d76289 
 #define MAX_MMAP 64
 static mb_mmap_entry_t g_mmap[MAX_MMAP];
 static int g_mmap_count = 0;
+char g_boot_cmdline[256] = "";   // retained multiboot boot command line, surfaced as /proc/cmdline
 
 // The linear framebuffer GRUB set up for us (multiboot2 type-8 tag, filled in by the boot-info
 // parse in kernel_main). grub_fb_addr != 0 means the bootloader handed us a real LFB — the path
@@ -10572,8 +10573,12 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
                     // Boot command line (multiboot2 type 1): a NUL-terminated string
                     // after the 8-byte tag header. A "selftest" token runs the offline
                     // self-test battery before login (CI); normal boots pass no cmdline.
-                    if (strstr((const char*)(tag + 8), "selftest")) selftest_mode = 1;
-                    const char* rp = strstr((const char*)(tag + 8), "rotate=");
+                    const char* cl = (const char*)(tag + 8);
+                    int ci = 0;                                    // retain it (bounded) for /proc/cmdline
+                    while (cl[ci] && ci < (int)sizeof(g_boot_cmdline) - 1) { g_boot_cmdline[ci] = cl[ci]; ci++; }
+                    g_boot_cmdline[ci] = '\0';
+                    if (strstr(cl, "selftest")) selftest_mode = 1;
+                    const char* rp = strstr(cl, "rotate=");
                     if (rp) rotate_deg = atoi(rp + 7);
                 } else if (type == 4) {
                     uint32_t mem_lower = *(uint32_t*)(tag + 8);

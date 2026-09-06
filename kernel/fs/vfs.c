@@ -81,6 +81,7 @@ typedef struct vfs_node {
 #define PROC_PID_MAPS    8   // /proc/<pid>/maps    (mapped memory regions)
 #define PROC_MOUNTS      9   // /proc/mounts        (mounted filesystems)
 #define PROC_STAT        10  // /proc/stat          (ctxt / processes / procs_running / btime)
+#define PROC_CMDLINE     11  // /proc/cmdline       (retained multiboot boot command line)
 
 /* /dev/random and /dev/urandom are served by the kernel CSPRNG (an HMAC-DRBG seeded from
  * RDSEED/RDRAND hardware entropy) — the same source uuid/mktemp/shuf/encrypt already use.
@@ -480,6 +481,11 @@ static int proc_generate(vfs_node_t* ino, char* buf, int bufsz) {
         case PROC_VERSION:
             snprintf(buf, bufsz, "NyxOS version %s (x86_64)\n", KERNEL_VERSION);
             break;
+        case PROC_CMDLINE: {
+            extern char g_boot_cmdline[];               // the boot command line the kernel retained
+            snprintf(buf, bufsz, "%s\n", g_boot_cmdline);
+            break;
+        }
         case PROC_CPUINFO:
             snprintf(buf, bufsz, "arch\t: x86_64\nvendor\t: NyxOS\n");
             break;
@@ -733,6 +739,7 @@ void init_vfs(void) {
         {"meminfo", PROC_MEMINFO}, {"uptime", PROC_UPTIME},
         {"version", PROC_VERSION}, {"cpuinfo", PROC_CPUINFO},
         {"mounts",  PROC_MOUNTS},  {"stat",   PROC_STAT},
+        {"cmdline", PROC_CMDLINE},
     };
     for (unsigned i = 0; i < sizeof(procf) / sizeof(procf[0]); i++)
         proc_make(proc_node, procf[i].name, 0, procf[i].pt, 0);
