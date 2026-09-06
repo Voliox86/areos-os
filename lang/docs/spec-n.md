@@ -1,6 +1,6 @@
 # The N Language — Specification
 
-**Version:** v0.24 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
+**Version:** v0.25 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
 
 This document specifies N exactly as implemented by the bootstrap compiler
 `ncc`. It is a *descriptive* spec: everything here compiles today. Planned
@@ -557,13 +557,13 @@ is a compile error. The choice is per-type: **must-consume** (the
 compiler makes you finish the story) or **auto-close** (the compiler
 finishes it for you) — both zero-cost.
 
-#### Own fields inside own structs — designed, planned as v0.25
+#### Own fields inside own structs (since v0.25)
 
 The containment rule above keeps every own value in exactly one
-binding, and today that means an own value cannot sit inside another
-type at all. The one nesting that keeps the invariant is an own value
-inside an **own** container: the container is the binding, and the
-container's own move-not-copy, must-consume discipline carries its
+binding, and before v0.25 that meant an own value could not sit inside
+another type at all. The one nesting that keeps the invariant is an own
+value inside an **own** container: the container is the binding, and
+the container's own move-not-copy, must-consume discipline carries its
 fields along. v0.25 admits exactly that, under these rules:
 
 ```n
@@ -583,20 +583,23 @@ fn close_log(l: Log) { put("closing {l.name}\n"); }   // then l.file drops
 - **A field never moves out on its own.** `l.file` may be read
   through — `l.file.fd` peeks — but binding, passing or returning
   `l.file` is refused: *cannot move field 'file' out of own value 'l'
-  — consume 'l' as a whole*. Partial moves would need per-field
-  states the flat tracker does not keep, and the container's one
-  obligation stays one.
+  — consume 'l' as a whole (v0.25)*. Partial moves would need
+  per-field states the flat tracker does not keep, and the container's
+  one obligation stays one.
 - **The container's consumption consumes its fields.** Wherever a
   held container ends its body — a sink such as `close_log`, the
   container's own `#[drop]` function included — the compiler drops
   its own fields in **reverse declaration order** after the body's
-  last statement, each through its type's `#[drop]`; a field whose
-  type has no destructor makes that end a leak error, as a live
-  binding would. Held parameters still never re-run their own
-  destructor, so drop recursion stays impossible. A LIVE local
-  container auto-drops as any own value: through its `#[drop]` when it
-  has one (whose body end then drops the fields), else — when every
-  own field has a destructor — through the field drops alone.
+  last statement (at every `return` and at the function's end), each
+  through its type's `#[drop]`; a field whose type cannot drop makes
+  that end an error — *held own value 'b' ends here with field 'r'
+  unconsumed — 'Raw' has no #[drop] destructor; move 'b' on instead
+  (v0.25)*. Held parameters still never re-run their own destructor,
+  so drop recursion stays impossible. A LIVE local container
+  auto-drops as any own value: through its `#[drop]` when it has one
+  (whose body end then drops the fields), else — when every own field
+  can drop — through the field drops alone; otherwise its scope end is
+  the usual *unconsumed own value* error.
 - **Moving the container moves everything.** A container passed on,
   returned or bound elsewhere takes its fields with it; nothing is
   dropped at that point.
@@ -606,10 +609,11 @@ fn close_log(l: Log) { put("closing {l.name}\n"); }   // then l.file drops
   defer; `impl` on an own type stays refused.
 
 Everything a program can observe is the drop order: in the example,
-`close_log(l)` prints `closing boot`, then `closing 3`. What the rule
-does not yet give is a way to keep an own value **behind a pointer** —
-the shape a heap-allocated closure environment needs — and that stays
-an open question for the N++ closure work, recorded in
+`close_log(l)` prints `closing boot`, then `closing 3`
+([`ownnest.n`](../examples/ownnest.n) walks every case). What the rule
+does not give is a way to keep an own value **behind a pointer** — the
+shape a heap-allocated closure environment needs — and that stays an
+open question for the N++ closure work, recorded in
 [design-npp.md](design-npp.md) §6.2.
 
 Everything above is erased at codegen: an own struct lowers to the same
@@ -1103,6 +1107,7 @@ This section specifies what C the compiler is *required* to emit, because N's
 | `arg_count()` / `arg(i)` (§6.7, v0.23) | `nyx_arg_count()` / `nyx_arg(i')` — runtime accessors over the stashed frame |
 | `struct` / `enum` layouts (§4.3, §4.4; v0.24) | one `typedef struct { … } Name;` per declaration, **in declaration order** — a struct holding an enum by value compiles when the enum was declared first (before v0.24 every struct layout preceded every enum layout) |
 | `fn(A, B) -> R` (§3.4, v0.24) | `typedef R' (*__nyx_fnN)(A', B');` once per distinct signature, after the layouts; a struct field of function type is the declarator `R' (*name)(A', B');`; a function named as a value is the C function designator; a call through a value is the plain C call |
+| own fields inside own structs (§4.6, v0.25) | nothing at the type level — the container is the same plain C struct; where a held container parameter ends its body, `drop_fn(param.field);` per own field in reverse declaration order, after the defers and the local auto-drops (at every `return`, inside the braced `__ret` form, and at the function's end); a live container without a `#[drop]` of its own gets the same calls at its scope end |
 
 ### 7.2 The runtime
 

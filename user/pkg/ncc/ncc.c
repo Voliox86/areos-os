@@ -1476,8 +1476,19 @@ static int ty_is_own(Ty t) {
  * condition re-evaluates every iteration — consuming there would use
  * the value again on the second test), and inside match arms (reserved;
  * consume conditionally with if/else in v0.18). */
+static Ty infer_type(Expr* e);
 static void own_move_expr(Expr* e, int line) {
-    if (!e || e->k != E_PATH) return;
+    if (!e) return;
+    if (e->k == E_FIELD) {                /* v0.25: a field never moves out alone —
+                                           * the container is consumed as a whole */
+        if (ty_is_own(infer_type(e))) {
+            const char* base = e->base->k == E_PATH ? e->base->name : "an own value";
+            die("%s:%d: cannot move field '%s' out of own value '%s' — consume '%s' as a whole (v0.25)",
+                FILENAME, line, e->field, base, base);
+        }
+        return;
+    }
+    if (e->k != E_PATH) return;
     VarInfo* v = vars_find(e->name);
     if (!v || v->own_state == OWN_NONE) return;
     if (v->own_state == OWN_MOVED)
@@ -1907,6 +1918,8 @@ static void check_expr(Expr* e) {
                     die("%s:%d: field '%s' of '%s': expected %s, got %s",
                         FILENAME, e->line, e->snames[j], e->name,
                         ty_str(ft), ty_str(at));
+                if (ty_is_own(ft))                /* v0.25: construction moves the field in */
+                    own_move_expr(e->args[j], e->line);
             }
             break;
         }
@@ -2453,23 +2466,98 @@ static const char* own_drop_fn(Ty t) {
  * callee owns its own parameters manually (the sink pattern), which is
  * also why the drop function cannot recurse — its parameter arrives
  * held. */
+/* v0.25: can a value of type t end on its own — through its #[drop], or,
+ * for an own container without one, through its own fields' drops, every
+ * one of which must exist? */
+static int own_has_drop(Ty t) {
+    if (!t.name || t.ptrs != 0) return 0;
+    StructDef* sd = struct_lookup(t.name);
+    if (!sd || !sd->is_own) return 0;
+    if (sd->drop_fn) return 1;
+    int any = 0;
+    for (int f = 0; f < sd->nf; f++)
+        if (ty_is_own(sd->fs[f].ty)) {
+            if (!own_has_drop(sd->fs[f].ty)) return 0;
+            any = 1;
+        }
+    return any;
+}
+
+/* v0.25: drop the own fields of the container value spelled `path`, in
+ * REVERSE declaration order, each through its type's #[drop] — or, for a
+ * field that is itself a container without one, through its fields. */
+static void own_field_drops_emit(Ty t, const char* path, int ind) {
+    StructDef* sd = struct_lookup(t.name);
+    for (int f = sd->nf - 1; f >= 0; f--) {
+        if (!ty_is_own(sd->fs[f].ty)) continue;
+        char fp[512];
+        snprintf(fp, sizeof fp, "%s.%s", path, sd->fs[f].name);
+        const char* d = own_drop_fn(sd->fs[f].ty);
+        if (d) { indentf(ind); fprintf(OUT, "%s(%s);\n", d, fp); }
+        else own_field_drops_emit(sd->fs[f].ty, fp, ind);
+    }
+}
+
+/* v0.19 auto-drop: every binding at index >= from still OWN_LIVE whose
+ * type carries a #[drop] gets its destructor call emitted here — in
+ * REVERSE birth order (last born, first dropped, mirroring defer's
+ * LIFO) — and becomes OWN_MOVED, so the leak scan that follows only
+ * reports values with no destructor. Held params never auto-drop: a
+ * callee owns its own parameters manually (the sink pattern), which is
+ * also why the drop function cannot recurse — its parameter arrives
+ * held. v0.25: a live own container without a #[drop] of its own drops
+ * through its fields when every own field can drop. */
 static void own_drops_emit(int from, int ind) {
     for (int i = NVARS - 1; i >= from; i--) {
         if (VARS[i].own_state != OWN_LIVE) continue;
         const char* d = own_drop_fn(VARS[i].ty);
-        if (!d) continue;
-        indentf(ind);
-        fprintf(OUT, "%s(%s);\n", d, VARS[i].name);
+        if (d) {
+            indentf(ind);
+            fprintf(OUT, "%s(%s);\n", d, VARS[i].name);
+        } else if (own_has_drop(VARS[i].ty)) {
+            own_field_drops_emit(VARS[i].ty, VARS[i].name, ind);
+        } else continue;
         VARS[i].own_state = OWN_MOVED;
     }
 }
 
+/* v0.25: a HELD own container ending its body here — a sink, the
+ * container's own #[drop] function included — drops its own fields, in
+ * reverse declaration order, after the body's last statement. The
+ * container's own destructor never re-runs (the sink rule, unchanged),
+ * and a field whose type cannot drop makes this end a leak: the
+ * container should have been moved on instead. Emitted only at function
+ * exits (returns and the function's end), never at inner block ends. */
+static void own_held_drops_emit(int ind, int line) {
+    for (int i = 0; i < NVARS; i++) {
+        if (VARS[i].own_state != OWN_HELD) continue;
+        StructDef* sd = struct_lookup(VARS[i].ty.name);
+        if (!sd) continue;
+        for (int f = 0; f < sd->nf; f++)
+            if (ty_is_own(sd->fs[f].ty) && !own_has_drop(sd->fs[f].ty))
+                die("%s:%d: held own value '%s' ends here with field '%s' unconsumed — '%s' has no #[drop] destructor; move '%s' on instead (v0.25)",
+                    FILENAME, line, VARS[i].name, sd->fs[f].name, sd->fs[f].ty.name, VARS[i].name);
+        own_field_drops_emit(VARS[i].ty, VARS[i].name, ind);
+    }
+}
+static int own_held_pending(void) {
+    for (int i = 0; i < NVARS; i++) {
+        if (VARS[i].own_state != OWN_HELD) continue;
+        StructDef* sd = struct_lookup(VARS[i].ty.name);
+        if (!sd) continue;
+        for (int f = 0; f < sd->nf; f++)
+            if (ty_is_own(sd->fs[f].ty)) return 1;
+    }
+    return 0;
+}
+
 /* Is any live binding waiting on an auto-drop? (Decides whether an exit
- * path needs the braced __ret form so the calls have somewhere to go.) */
+ * path needs the braced __ret form so the calls have somewhere to go.)
+ * A function exit (from == 0) also counts a held container's field drops. */
 static int own_drops_pending(int from) {
     for (int i = from; i < NVARS; i++)
-        if (VARS[i].own_state == OWN_LIVE && own_drop_fn(VARS[i].ty)) return 1;
-    return 0;
+        if (VARS[i].own_state == OWN_LIVE && own_has_drop(VARS[i].ty)) return 1;
+    return from == 0 && own_held_pending();
 }
 
 /* v0.19: #[drop(fn)] wires an ORDINARY function as an own struct's
@@ -2606,6 +2694,7 @@ static void gen_stmt(Stmt* s, int ind) {
                     fputs(";\n", OUT);
                     gen_defers(ind + 1);
                     own_drops_emit(0, ind + 1);
+                    own_held_drops_emit(ind + 1, s->line);   /* v0.25 */
                     own_leak_scan(0, s->line, "this return");
                     indentf(ind + 1); fputs("return __ret;\n", OUT);
                     indentf(ind); fputs("}\n", OUT);
@@ -2614,6 +2703,7 @@ static void gen_stmt(Stmt* s, int ind) {
                 if (NDEFERS || pend) {              /* void return */
                     gen_defers(ind);
                     own_drops_emit(0, ind);
+                    own_held_drops_emit(ind, s->line);       /* v0.25 */
                     own_leak_scan(0, s->line, "this return");
                     indentf(ind); fputs("return;\n", OUT);
                     break;
@@ -2968,6 +3058,7 @@ static void gen_block(Block* b, int ind, int fn_tail) {
             fputs(";\n", OUT);
             gen_defers(ind + 1);
             own_drops_emit(0, ind + 1);
+            own_held_drops_emit(ind + 1, b->st[b->n - 1] ? b->st[b->n - 1]->line : 0);   /* v0.25 */
             indentf(ind + 1); fputs("return __ret;\n", OUT);
         } else {
             gen_preludes(b->tail, ind + 1);
@@ -2985,6 +3076,8 @@ static void gen_block(Block* b, int ind, int fn_tail) {
      * otherwise. (Exit paths that already returned drained their drops
      * above, so this is a no-op for them.) */
     own_drops_emit(fn_tail ? 0 : vsave, ind + 1);
+    if (fn_tail)                                  /* v0.25: a held container's fields */
+        own_held_drops_emit(ind + 1, b->n ? b->st[b->n - 1]->line : 0);
     indentf(ind);
     fputs("}", OUT);
     own_leak_scan(vsave, b->n ? b->st[b->n - 1]->line : 0,   /* v0.17: nothing
@@ -3134,7 +3227,9 @@ static void gen_program(const char* srcname) {
     for (int i = 0; i < NSTRUCTS; i++)
         for (int f = 0; f < STRUCTS[i].nf; f++) {
             validate_ty(STRUCTS[i].fs[f].ty, STRUCTS[i].name);
-            if (ty_is_own(STRUCTS[i].fs[f].ty))
+            /* v0.25: an OWN container may hold own fields — it is the one
+             * binding they live in, and its own discipline carries them. */
+            if (ty_is_own(STRUCTS[i].fs[f].ty) && !STRUCTS[i].is_own)
                 die("%s: own type in field '%s.%s' — own values cannot nest in other types (v0.17)",
                     FILENAME, STRUCTS[i].name, STRUCTS[i].fs[f].name);
         }

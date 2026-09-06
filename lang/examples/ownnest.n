@@ -1,0 +1,58 @@
+// ownnest.n — own fields inside own structs (v0.25).
+//
+// An own struct may hold own fields: the container is the one binding its
+// fields live in, and its move-not-copy, must-consume discipline carries
+// them along. Construction moves a field in; a field never moves out alone
+// (`l.file.fd` peeks, `g := l.file` is refused); wherever a held container
+// ends its body — a sink, its own #[drop] function included — the compiler
+// drops its own fields in reverse declaration order after the body, each
+// through its type's #[drop]; a live container with no #[drop] of its own
+// drops through its fields at scope end; moving the container moves
+// everything. What the program shows is the drop order.
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+#[drop(close_file)]
+own struct File { fd: i64 }
+
+fn close_file(f: File) {
+    put("closing file {f.fd}\n");
+}
+
+#[drop(close_log)]
+own struct Log { name: str, file: File }
+
+fn close_log(l: Log) {
+    put("closing log {l.name}\n");       // then l.file drops: closing file 3
+}
+
+// No #[drop] of its own: a live Pair ends through its fields, b then a.
+own struct Pair { a: File, b: File }
+
+fn open_log(fd: i64) -> Log {
+    Log{ name: "boot", file: File{ fd: fd } }
+}
+
+fn pass_through(l: Log) -> Log {
+    l                                    // moved on: nothing drops here
+}
+
+fn peek(l: Log) {
+    put("log {l.name} holds fd {l.file.fd}\n");   // a peek; then l.file drops
+}
+
+fn main() -> i64 {
+    l := open_log(3);
+    l2 := pass_through(l);
+    close_log(l2);
+    p := Pair{ a: File{ fd: 10 }, b: File{ fd: 11 } };
+    put("pair built\n");
+    peek(open_log(7));
+    0
+}                                        // p drops: closing file 11, then 10
