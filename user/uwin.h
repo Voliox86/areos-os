@@ -104,6 +104,27 @@ static inline int uwin_text(unsigned int* buf, int w, int h, int x, int y,
     return x;
 }
 
+/* Pixel width a string will occupy in the fixed 8px-advance kernel font (8 * its length). */
+static inline int uwin_text_width(const char* s) {
+    int n = 0;
+    while (s[n]) n++;
+    return n * 8;
+}
+
+/* Draw a string horizontally CENTERED on column cx (same font + clipping as uwin_text) —
+ * for window/panel titles and centered labels. Returns x just past the last glyph. */
+static inline int uwin_text_center(unsigned int* buf, int w, int h, int cx, int y,
+                                   const char* s, unsigned int fg) {
+    return uwin_text(buf, w, h, cx - uwin_text_width(s) / 2, y, s, fg);
+}
+
+/* Draw a string RIGHT-aligned so its last glyph ends at column xr — for right-aligned
+ * values / numbers in a column. Returns x just past the last glyph (== xr). */
+static inline int uwin_text_right(unsigned int* buf, int w, int h, int xr, int y,
+                                  const char* s, unsigned int fg) {
+    return uwin_text(buf, w, h, xr - uwin_text_width(s), y, s, fg);
+}
+
 /* --- ring-3 window input state (ergonomic wrapper over win_poll_event) -------
  * A window app usually wants the CURRENT input state per frame, not a raw event
  * stream. Zero-init a uwin_input_t, then uwin_input_pump() it once per frame and
