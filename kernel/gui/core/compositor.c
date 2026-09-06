@@ -56,6 +56,7 @@ static int cal_popup_open = 0;      // the taskbar clock's calendar popup
 static int g_clock_12h = 0;         // taskbar clock: 0 = 24-hour (default), 1 = 12-hour AM/PM — nyx.conf `clock`
 static int g_gaps      = 0;         // WM gaps (px) inset around + between snapped/maximized tiles — nyx.conf `gaps` (0 = classic tiling, off)
 static uint32_t g_border_color = 0; // focused-window outline override — nyx.conf `border` (0 = follow the UI accent)
+static uint32_t g_border_inactive = 0; // unfocused-window outline override — nyx.conf `border_inactive` (0 = neutral bevel)
 static int g_panel_tint = 0;        // taskbar tint toward the wallpaper colour, 0-100% — nyx.conf `panel_tint` (0 = off)
 static int g_shadows   = 1;         // window + start-menu drop shadows — nyx.conf `shadow` (off = flat, no shadows)
 static int g_title_center = 0;      // title-bar text alignment — nyx.conf `title_align` (0 = left default, 1 = center)
@@ -441,11 +442,14 @@ static void draw_window_frame(window_t* win) {
     // window buried under others gave no focus cue at all once its title bar was
     // covered.
     // Focused windows outline in the accent (or the nyx.conf `border` color if set), so
-    // the border + title strip read as one edge; unfocused windows keep the neutral bevel.
+    // the border + title strip read as one edge; unfocused windows keep the neutral bevel
+    // unless nyx.conf `border_inactive` overrides it (the classic focused/unfocused rice pair).
     uint32_t acc_hi = g_border_color ? g_border_color               : THEME_ACCENT;
     uint32_t acc_lo = g_border_color ? col_darken(g_border_color, 28) : THEME_ACCENT_DIM;
-    uint32_t hi = win->focused ? acc_hi : THEME_FRAME_HI;
-    uint32_t lo = win->focused ? acc_lo : THEME_FRAME_LO;
+    uint32_t ina_hi = g_border_inactive ? g_border_inactive               : THEME_FRAME_HI;
+    uint32_t ina_lo = g_border_inactive ? col_darken(g_border_inactive, 28) : THEME_FRAME_LO;
+    uint32_t hi = win->focused ? acc_hi : ina_hi;
+    uint32_t lo = win->focused ? acc_lo : ina_lo;
     int x = win->x, y = win->y, w = (int)win->w, H = (int)win_total_h(win);
     int R = win_radius(win);
 
@@ -3860,8 +3864,10 @@ static uint32_t border_resolve(const char* name) {
     return idx >= 0 ? wallpaper_color_rgb(idx) : 0;
 }
 
-// KAT: the border-color resolver — "accent"/unknown/NULL -> 0 (follow accent), a real
-// palette name -> that exact rgb. 0 = pass.
+// KAT: the border-color resolver shared by the focused `border` and the unfocused
+// `border_inactive` knobs — "accent"/unknown/NULL -> 0 (follow accent / neutral bevel), a
+// real palette name -> that exact rgb. Also exercises the full nyx.conf parse chain for the
+// focused+inactive pair (distinct keys, no prefix collision). 0 = pass.
 int border_color_selftest(void) {
     if (border_resolve("accent") != 0) return 1;
     if (border_resolve(0) != 0) return 2;
@@ -3869,6 +3875,10 @@ int border_color_selftest(void) {
     if (border_resolve("Morado")   != fb_rgb(130, 90, 210)) return 4;
     if (border_resolve("Turquesa") != fb_rgb(40, 160, 175)) return 5;
     if (border_resolve("Carbon")   != fb_rgb(45, 50, 70))   return 6;
+    const char* cfg = "border = Turquesa\nborder_inactive = Carbon\n";
+    char v[64];
+    if (!nyxconf_get(cfg, "border", v, sizeof v)          || border_resolve(v) != fb_rgb(40, 160, 175)) return 7;
+    if (!nyxconf_get(cfg, "border_inactive", v, sizeof v) || border_resolve(v) != fb_rgb(45, 50, 70))   return 8;
     return 0;
 }
 
@@ -4131,6 +4141,9 @@ static void apply_nyx_config(void) {
     }
     if (nyxconf_get(buf, "border", val, sizeof val)) {
         g_border_color = border_resolve(val);        // focused-window outline; 0 = follow accent
+    }
+    if (nyxconf_get(buf, "border_inactive", val, sizeof val)) {
+        g_border_inactive = border_resolve(val);     // unfocused-window outline; 0 = neutral bevel
     }
     if (nyxconf_get(buf, "panel_tint", val, sizeof val)) {
         int t = 0;                                   // % the taskbar tints toward the wallpaper
