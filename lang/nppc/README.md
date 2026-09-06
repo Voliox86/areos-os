@@ -303,6 +303,34 @@ and it cannot be born inside a generic template yet.
 [`../examples/owncap.npp`](../examples/owncap.npp) is the worked
 example, held by stage [10v].
 
+**Handlers as fields — the nwin sugar.** What the closure rungs were
+for: [`../examples/nwinui.npp`](../examples/nwinui.npp) is
+[nwin.n](../examples/nwin.n)'s polled event loop expressed through
+closures, and it needs nothing beyond M6.4c1–c2. A widget is a struct
+with a handler field, `Button { label, x, y, w, h, on_click: Fn(i64,
+i64) }`; the `Ui` keeps a table of them (sbrk'd, 64 bytes each — N lays
+a Button out as the str, four i64, and the closure's address and
+function pointer) and a key handler `on_key: Fn(i64) -> bool` whose
+answer is whether the loop goes on; `dispatch(ui, kind, a, b)` routes a
+click to the button whose rectangle holds it and a key to the handler.
+Each button's lambda captures its label and its corner by value, so the
+handler prints the click relative to the button — no callback registry,
+no switch on names, no shared mutable state. It lowers to exactly the
+shapes above: one struct per signature (`__Fn_i64_i64_`,
+`__Fn_i64__bool`), one `__E_0 { x, y, label }` with its maker, two
+lifted functions, and the field calls rewritten — `b.on_click(x, y)`
+becomes `b.on_click.call(b.on_click.env, x, y)`; the widget structs are
+plain N structs, and the same `dispatch` would sit in nwin.n's loop as
+`running = dispatch(ui, ev[0], ev[1], ev[2]);`. One shape to know: nppc
+types a struct-typed name from a parameter, a struct literal or a call,
+so a call through an indexed read (`bs[i].on_click(…)`) is not
+rewritten — `dispatch` hands each button to `inside(b: Button, …)` and
+`fire(b: Button, …)` instead. On the host, where the window syscalls do
+not exist, the program feeds dispatch a scripted table of events and
+prints the trace that stage [10w] checks; the natural mistake — a
+capturing lambda in a plain `fn(i64, i64)` field — is refused with the
+M6.4c2 text.
+
 [`../examples/closure.npp`](../examples/closure.npp) is the worked
 example: four lambdas — an argument, a struct field, another argument,
 a binding — lifted to `__c_0`…`__c_3`, held by the suite's stage [10o]

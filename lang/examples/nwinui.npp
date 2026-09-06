@@ -1,0 +1,157 @@
+// nwinui.npp — handlers as fields: nwin's event loop through closures.
+//
+// nwin.n polls its window for 4×i64 events {kind, a, b, c} and tells them
+// apart with a hand-written ladder — `if ev[0] == 2 { … }`, `if ev[0] == 1
+// { … }` — that grows with every widget and every kind of event. This
+// module is what the M6.4 closure machinery buys instead: a widget is a
+// struct holding its rectangle and a closure, `Button { label, x, y, w, h,
+// on_click: Fn(i64, i64) }`; a `Ui` keeps a table of them and the key
+// handler `on_key: Fn(i64) -> bool`; `dispatch(ui, kind, a, b)` routes a
+// click to the button whose rectangle contains it and a key to the key
+// handler, whose answer is whether the loop goes on. Each button gets its
+// behaviour as a lambda that captures BY VALUE what it needs — its label
+// and its corner, so the handler prints the click relative to the button.
+// No registry of callbacks, no switch on names, no shared mutable state.
+//
+// It lowers to nothing new: `Fn(i64, i64)` and `Fn(i64) -> bool` become
+// one struct per signature (an environment address plus a call), each
+// lambda lifts to a top-level `__c_N` reading its captures from an `__E_N`
+// environment built where the button is born, and `b.on_click(x, y)`
+// becomes `b.on_click.call(b.on_click.env, x, y)`. The widget structs
+// themselves are ordinary N structs, kept in sbrk'd memory the way nwin.n
+// keeps its pixels. Inside NyxOS the very same `dispatch` sits in nwin.n's
+// poll loop as `running = dispatch(ui, ev[0], ev[1], ev[2]);` — the window
+// syscalls do not exist on the host, so this program feeds dispatch from a
+// scripted table of events instead (exactly what win_poll_event would hand
+// the loop) and prints the dispatch trace, which is what the suite checks.
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+    fn sys_sbrk(incr: i64) -> i64 = 7
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+// A widget: where it is, and what it does when clicked.
+struct Button {
+    label: str,
+    x: i64,
+    y: i64,
+    w: i64,
+    h: i64,
+    on_click: Fn(i64, i64),
+}
+
+// The registry: a fixed-capacity table of buttons and the key handler,
+// which answers whether the loop keeps running.
+struct Ui {
+    n: i64,
+    cap: i64,
+    buttons: *Button,
+    on_key: Fn(i64) -> bool,
+}
+
+// A Button is 64 bytes laid out by N: the str (16), four i64 (32), and
+// the closure (an address and a function pointer, 16).
+fn new_ui(cap: i64, on_key: Fn(i64) -> bool) -> Ui {
+    Ui{ n: 0, cap: cap, buttons: sys_sbrk(cap * 64) as *Button, on_key: on_key }
+}
+
+// Registering returns the grown registry — structs are values in N.
+fn add(ui: Ui, b: Button) -> Ui {
+    if ui.n >= ui.cap {
+        put("ui full, {b.label} dropped\n");
+        return ui;
+    }
+    bs := ui.buttons;
+    bs[ui.n] = b;
+    Ui{ n: ui.n + 1, cap: ui.cap, buttons: bs, on_key: ui.on_key }
+}
+
+// A button whose handler captures its label and its corner, so a click
+// reports where inside the button it landed.
+fn button(label: str, x: i64, y: i64, w: i64, h: i64) -> Button {
+    Button{ label: label, x: x, y: y, w: w, h: h,
+            on_click: fn(cx: i64, cy: i64) {
+                rx := cx - x;
+                ry := cy - y;
+                put("{label} at {rx},{ry}\n");
+            } }
+}
+
+fn inside(b: Button, x: i64, y: i64) -> bool {
+    x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h
+}
+
+fn fire(b: Button, x: i64, y: i64) {
+    b.on_click(x, y);
+}
+
+// One event as nwin.n's poll loop sees it: kind 1 key (a = code), 2 click
+// (a = x, b = y), 3 move, 4 close. Returns whether the loop goes on.
+fn dispatch(ui: Ui, kind: i64, a: i64, b: i64) -> bool {
+    if kind == 1 {
+        return ui.on_key(a);
+    }
+    if kind == 2 {
+        bs := ui.buttons;
+        for i in 0..ui.n {
+            if inside(bs[i], a, b) {
+                fire(bs[i], a, b);
+                return true;
+            }
+        }
+        put("ignored {a},{b}\n");
+        return true;
+    }
+    if kind == 4 {
+        put("close requested\n");
+        return false;
+    }
+    true
+}
+
+// The script: the events win_poll_event would hand the loop, 4 words each.
+fn push(tab: *i64, n: i64, kind: i64, a: i64, b: i64) -> i64 {
+    tab[n * 4] = kind;
+    tab[n * 4 + 1] = a;
+    tab[n * 4 + 2] = b;
+    tab[n * 4 + 3] = 0;
+    n + 1
+}
+
+fn main() -> i64 {
+    mut ui := new_ui(3, fn(code: i64) -> bool {
+        if code == 113 {
+            put("key q quits\n");
+            return false;
+        }
+        put("key {code}\n");
+        true
+    });
+    ui = add(ui, button("ok", 10, 12, 40, 20));
+    ui = add(ui, button("cancel", 60, 12, 60, 20));
+    ui = add(ui, button("help", 10, 40, 110, 20));
+    ui = add(ui, button("extra", 0, 0, 1, 1));    // the table is full: said, not stored
+    put("{ui.n} buttons\n");
+    script := sys_sbrk(8 * 4 * 8) as *i64;
+    mut n := 0;
+    n = push(script, n, 2, 12, 16);               // inside "ok"
+    n = push(script, n, 2, 99, 99);               // on no button
+    n = push(script, n, 2, 119, 31);              // the last pixel of "cancel"
+    n = push(script, n, 3, 5, 5);                 // a move: nothing listens
+    n = push(script, n, 1, 97, 0);                // key a
+    n = push(script, n, 2, 15, 59);               // "help"
+    n = push(script, n, 1, 113, 0);               // key q: the handler stops the loop
+    n = push(script, n, 2, 12, 16);               // never reached
+    mut i := 0;
+    mut running := true;
+    while running && i < n {
+        running = dispatch(ui, script[i * 4], script[i * 4 + 1], script[i * 4 + 2]);
+        i += 1;
+    }
+    put("handled {i} of {n} events\n");
+    0
+}
