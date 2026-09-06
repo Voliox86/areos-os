@@ -69,3 +69,7 @@ bad_user_raw.n	bad_user_raw.n:1: #[user] and raw are mutually exclusive — raw 
 bad_userptr.n	bad_userptr.n:6: argument 2 to 'write': expected #[user] *u8, got *u8
 bad_variant_payload.n	bad_variant_payload.n:3: variant 'Shape.Circle' carries a payload — construct it with Shape.Circle{ ... }
 bad_wx.n	bad_wx.n:2: W^X violation: a mapping cannot be both writable and executable
+bad_own_field_move.n	bad_own_field_move.n:7: cannot move field 'file' out of own value 'l' — consume 'l' as a whole (v0.25)
+bad_own_field_arg.n	bad_own_field_arg.n:7: cannot move field 'file' out of own value 'l' — consume 'l' as a whole (v0.25)
+bad_own_field_leak.n	bad_own_field_leak.n:0: held own value 'b' ends here with field 'r' unconsumed — 'Raw' has no #[drop] destructor; move 'b' on instead (v0.25)
+bad_own_moved_in.n	bad_own_moved_in.n:10: use of 'f' after move

@@ -1,0 +1,5 @@
+own struct Raw { fd: i64 }
+#[drop(close_box)]
+own struct Box2 { r: Raw }
+fn close_box(b: Box2) { }
+fn main() -> i64 { 0 }

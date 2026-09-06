@@ -3031,6 +3031,7 @@ static int STASH_ARGS;   /* v0.23: set for main's body — its first act is
 
 static void gen_block(Block* b, int ind, int fn_tail) {
     int vsave = NVARS;                  /* block scope: locals die with the block */
+    int tail_returned = 0;              /* v0.25: a returning tail drained the held drops */
     BLOCK_DEPTH++;
     fputs("{\n", OUT);
     if (STASH_ARGS) {
@@ -3058,7 +3059,8 @@ static void gen_block(Block* b, int ind, int fn_tail) {
             fputs(";\n", OUT);
             gen_defers(ind + 1);
             own_drops_emit(0, ind + 1);
-            own_held_drops_emit(ind + 1, b->st[b->n - 1] ? b->st[b->n - 1]->line : 0);   /* v0.25 */
+            own_held_drops_emit(ind + 1, b->n ? b->st[b->n - 1]->line : 0);   /* v0.25 */
+            tail_returned = 1;
             indentf(ind + 1); fputs("return __ret;\n", OUT);
         } else {
             gen_preludes(b->tail, ind + 1);
@@ -3076,7 +3078,8 @@ static void gen_block(Block* b, int ind, int fn_tail) {
      * otherwise. (Exit paths that already returned drained their drops
      * above, so this is a no-op for them.) */
     own_drops_emit(fn_tail ? 0 : vsave, ind + 1);
-    if (fn_tail)                                  /* v0.25: a held container's fields */
+    if (fn_tail && !tail_returned)                /* v0.25: a held container's fields
+                                                   * (a returning tail drained them above) */
         own_held_drops_emit(ind + 1, b->n ? b->st[b->n - 1]->line : 0);
     indentf(ind);
     fputs("}", OUT);

@@ -1,0 +1,9 @@
+#[drop(close_file)]
+own struct File { fd: i64 }
+fn close_file(f: File) { }
+own struct Log { file: File }
+fn main() -> i64 {
+    l := Log{ file: File{ fd: 1 } };
+    close_file(l.file);
+    0
+}

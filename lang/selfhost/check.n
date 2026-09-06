@@ -767,6 +767,23 @@ fn cmove(p: *u8, st: *i64, i: i64, ln: i64) {
     if st[41] == 1 { return; }
     if i == 0 { return; }
     nd := st[33] as *i64;
+    if nd[i * 8] == 7 {                    // v0.25: a field never moves out
+        ft := cinfer(p, st, i);            // alone — the container is
+        if tyown(p, st, ft) {              // consumed as a whole
+            b := nd[i * 8 + 1];
+            put("{ln}: cannot move field '");
+            put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
+            put("' out of own value '");
+            if nd[b * 8] == 5 { put_span(p, nd[b * 8 + 5], nd[b * 8 + 6]); }
+            if nd[b * 8] != 5 { put("an own value"); }
+            put("' — consume '");
+            if nd[b * 8] == 5 { put_span(p, nd[b * 8 + 5], nd[b * 8 + 6]); }
+            if nd[b * 8] != 5 { put("an own value"); }
+            put("' as a whole (v0.25)\n");
+            st[41] = 1;
+        }
+        return;
+    }
     if nd[i * 8] != 5 { return; }
     v := vfind(p, st, nd[i * 8 + 5], nd[i * 8 + 6]);
     if v < 0 { return; }
@@ -876,24 +893,87 @@ fn bguar(p: *u8, st: *i64, b: i64) -> i64 {
     return 0;
 }
 
+// v0.25: can a value of type t end on its own (ncc's own_has_drop)?
+// Through its #[drop], or — for an own container without one — through
+// its own fields' drops, every one of which must exist.
+fn hasdrop(p: *u8, st: *i64, t: T) -> bool {
+    if t.pt != 0 || t.l == 0 { return false; }
+    si := sfind(p, st, t.s, t.l);
+    if si < 0 { return false; }
+    sa := st[49] as *i64;
+    if sa[si * 8 + 4] != 1 { return false; }
+    if sa[si * 8 + 6] > 0 { return true; }
+    mut any := 0;
+    mut q := 0;
+    while q < sa[si * 8 + 2] {
+        ft := sfty(st, si, q);
+        if tyown(p, st, ft) {
+            if !hasdrop(p, st, ft) { return false; }
+            any = 1;
+        }
+        q = q + 1;
+    }
+    return any == 1;
+}
+
+// v0.25 (ncc's own_held_drops_emit, the judgment half): a HELD own
+// container ending its body here drops its own fields — so a field
+// whose type cannot drop makes this exit an error; the container
+// should have been moved on. Run at function exits only.
+fn cheld(p: *u8, st: *i64, ln: i64) {
+    if st[41] == 1 { return; }
+    va := st[39] as *i64;
+    sa := st[49] as *i64;
+    al := st[35] as *i64;
+    mut j := 0;
+    while j < st[40] {
+        if va[j * 10 + 8] == 3 {
+            t := vty(st, j);
+            if t.pt == 0 && t.l > 0 {
+                si := sfind(p, st, t.s, t.l);
+                if si >= 0 {
+                    mut q := 0;
+                    while q < sa[si * 8 + 2] {
+                        ft := sfty(st, si, q);
+                        if tyown(p, st, ft) && !hasdrop(p, st, ft) {
+                            r := sa[si * 8 + 3] + q * 6;
+                            put("{ln}: held own value '");
+                            put_span(p, va[j * 10], va[j * 10 + 1]);
+                            put("' ends here with field '");
+                            put_span(p, al[r], al[r + 1]);
+                            put("' unconsumed — '");
+                            put_span(p, ft.s, ft.l);
+                            put("' has no #[drop] destructor; move '");
+                            put_span(p, va[j * 10], va[j * 10 + 1]);
+                            put("' on instead (v0.25)\n");
+                            st[41] = 1;
+                            return;
+                        }
+                        q = q + 1;
+                    }
+                }
+            }
+        }
+        j = j + 1;
+    }
+}
+
 // v0.19 auto-drops (ncc's own_drops_emit): at scope ends and returns,
 // every LIVE binding at index >= from whose TYPE carries a #[drop]
 // destructor drops (reverse birth order) — it becomes MOVED, so the
 // leak scan that follows only reports values with no destructor.
 // Held params never auto-drop: a callee owns its parameters manually.
+// v0.25: a live own container without a #[drop] of its own drops
+// through its fields when every own field can drop (hasdrop).
 fn cdrops(p: *u8, st: *i64, from: i64) {
     if st[41] == 1 { return; }
     va := st[39] as *i64;
-    sa := st[49] as *i64;
     mut j := st[40] - 1;
     while j >= from {
         if va[j * 10 + 8] == 1 {
             t := vty(st, j);
-            if t.pt == 0 && t.l > 0 {
-                si := sfind(p, st, t.s, t.l);
-                if si >= 0 && sa[si * 8 + 4] == 1 && sa[si * 8 + 6] > 0 {
-                    va[j * 10 + 8] = 2;
-                }
+            if hasdrop(p, st, t) {
+                va[j * 10 + 8] = 2;
             }
         }
         j = j - 1;
@@ -2913,6 +2993,10 @@ fn cexpr(p: *u8, st: *i64, i: i64) {
                 st[41] = 1;
                 return;
             }
+            if tyown(p, st, dt) {          // v0.25: construction moves the
+                cmove(p, st, vv, ln3);     // field in
+                if st[41] == 1 { return; }
+            }
             j2 = j2 + 1;
         }
         return;
@@ -3296,9 +3380,10 @@ fn cstmt(p: *u8, st: *i64, i: i64) {
             }
             cmove(p, st, nd[i * 8 + 1], nd[i * 8 + 4]);   // v0.17:
             cdrops(p, st, 0);                  // returning consumes; then
-            cleak(p, st, 0, nd[i * 8 + 4], 0); // the drops drain and the
-            return;                            // whole frame must be clean
-        }
+            cheld(p, st, nd[i * 8 + 4]);       // the drops drain (a held
+            cleak(p, st, 0, nd[i * 8 + 4], 0); // container's fields too,
+            return;                            // v0.25) and the whole
+        }                                      // frame must be clean
         if rt4.l > 0 && !nvr {
             ln3 := nd[i * 8 + 4];
             put("{ln3}: 'return' without a value in a function returning ");
@@ -3307,8 +3392,9 @@ fn cstmt(p: *u8, st: *i64, i: i64) {
             st[41] = 1;
         }
         cdrops(p, st, 0);                      // ncc scans bare returns
-        cleak(p, st, 0, nd[i * 8 + 4], 0);     // too — same drain, same
-        return;                                // "this return" wording
+        cheld(p, st, nd[i * 8 + 4]);           // too — same drain, same
+        cleak(p, st, 0, nd[i * 8 + 4], 0);     // "this return" wording
+        return;
     }
     if k == 23 {                           // expr stmt: an own result
         cexpr(p, st, nd[i * 8 + 1]);       // nobody binds is refused
@@ -3621,6 +3707,7 @@ fn cblock(p: *u8, st: *i64, i: i64) {
     }
     mut ln9 := 0;
     if lst2 > 0 { ln9 = nd[lst2 * 8 + 4]; }
+    if st[43] == 1 { cheld(p, st, ln9); }  // v0.25: the function's end
     cleak(p, st, vsave, ln9, 1);
     st[43] = st[43] - 1;
     st[40] = vsave;
@@ -3767,10 +3854,10 @@ fn cdecls(p: *u8, st: *i64) {
         si = si + 1;
     }
     mut si2 := 0;
-    while si2 < st[50] {                   // own cannot nest in fields
-        mut q := 0;
-        while q < sa[si2 * 8 + 2] {
-            if tyown(p, st, sfty(st, si2, q)) {
+    while si2 < st[50] {                   // own cannot nest in fields —
+        mut q := 0;                        // except an OWN container's
+        while q < sa[si2 * 8 + 2] {        // (v0.25)
+            if tyown(p, st, sfty(st, si2, q)) && sa[si2 * 8 + 4] != 1 {
                 r := sa[si2 * 8 + 3] + q * 6;
                 put(" own type in field '");
                 put_span(p, sa[si2 * 8], sa[si2 * 8 + 1]);
