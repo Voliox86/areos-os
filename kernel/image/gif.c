@@ -55,7 +55,10 @@ static int gif_lzw(const uint8_t* data, uint32_t dlen, int mcs, uint8_t* out, ui
         }
         int sp = 0, c = code;
         if (c >= freecode) { stack[sp++] = (uint8_t)first; c = prev; }   // KwKwK special case
-        while (c >= clear) { if (sp >= GIF_MAXCODES) return -2; stack[sp++] = suffix[c]; c = prefix[c]; }
+        // Walk the prefix chain. Bound c to the table: a corrupt stream (or a stale 0xFFFF
+        // sentinel left in the static prefix[] by an earlier decode with a larger clear code)
+        // can make prefix[c] point out of range — reject it instead of reading past the arrays.
+        while (c >= clear) { if (sp >= GIF_MAXCODES || c >= GIF_MAXCODES) return -2; stack[sp++] = suffix[c]; c = prefix[c]; }
         first = suffix[c];
         stack[sp++] = (uint8_t)first;
         while (sp > 0) { uint8_t v = stack[--sp]; if (o < outcap) out[o++] = v; }
@@ -306,6 +309,24 @@ int gif_selftest(void) {
     total++; pass += gif_anim_case("anim-partial", GIF_ANIMP, sizeof(GIF_ANIMP), GIF_ANIMP_W, GIF_ANIMP_H,
                                    GIF_ANIMP_N, GIF_ANIMP_FRAMES, GIF_ANIMP_DELAYS);
     total++; pass += gif_loop_case();
+
+    // Regression (v6.5.139): a corrupt LZW stream must not walk the prefix chain out of the
+    // static 4096-entry tables. mcs varies per decode, so a small clear code leaves stale
+    // 0xFFFF prefix sentinels from an earlier larger-clear decode; a crafted stream once
+    // followed one into suffix[0xFFFF] (an OOB read on untrusted GIF data, found by an
+    // AddressSanitizer fuzz of gif_lzw). The `c < GIF_MAXCODES` guard now rejects it. Seed
+    // the sentinels with an mcs=8 decode, then the trigger stream must fail cleanly (rc != 0).
+    total++;
+    { static uint8_t gbuf[128];
+      static const uint8_t seed0[1] = { 0 };
+      static const uint8_t trig[12] = { 0xb9,0x18,0x31,0xac,0x75,0xf6,0x03,0x8a,0x52,0x8f,0xab,0xe5 };
+      gif_lzw(seed0, 0, 8, gbuf, sizeof gbuf);            // mcs=8 init sets prefix[0..255]=0xFFFF
+      int rc = gif_lzw(trig, sizeof trig, 2, gbuf, sizeof gbuf);
+      int ok = (rc != 0);
+      if (ok) pass++;
+      printf("gif: lzw-oob-guard %s (rc=%d)\n", ok ? "PASS" : "FAIL", rc);
+    }
+
     printf("gif: self-test %d/%d passed\n", pass, total);
     return (pass == total) ? 0 : -1;
 }
