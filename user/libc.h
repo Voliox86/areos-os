@@ -23,6 +23,7 @@ typedef __builtin_va_list va_list;
 #endif
 
 typedef unsigned long size_t;
+typedef long          ssize_t;   /* signed size — a byte count or -1 (getline/getdelim, read/write) */
 
 void* malloc(size_t size);
 void free(void* ptr);
@@ -150,6 +151,11 @@ char*  fgets(char* s, int size, FILE* f);
 int    fputs(const char* s, FILE* f);
 int    fseek(FILE* f, long offset, int whence);
 long   ftell(FILE* f);
+/* Read a whole line/record into an auto-growing malloc'd buffer (POSIX). *lineptr/*n are the
+ * buffer + its size (pass *lineptr=NULL to let it allocate); returns bytes read incl. the
+ * delimiter, or -1 at EOF/error. The safe, length-agnostic replacement for fgets. */
+ssize_t getdelim(char** lineptr, size_t* n, int delim, FILE* f);
+ssize_t getline(char** lineptr, size_t* n, FILE* f);
 
 /* Process environment (set by crt0 from execve's envp). getenv reads it. */
 extern char** environ;

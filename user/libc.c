@@ -1454,6 +1454,41 @@ char* fgets(char* s, int size, FILE* f) {
     return s;
 }
 
+/* getdelim (POSIX): read from `stream` until `delim` (inclusive) or EOF into a malloc'd,
+ * auto-growing buffer. *lineptr/*n hold the buffer and its size; if *lineptr is NULL (or *n
+ * is 0) one is allocated and both are updated, and the buffer is grown with realloc as needed.
+ * The result is NUL-terminated; the delimiter, when found, is kept in the buffer. Returns the
+ * number of bytes stored (excluding the NUL), or -1 at end-of-file with nothing read / on a
+ * bad argument or allocation failure. getline is getdelim with '\n' — the safe replacement for
+ * fgets when line length is unknown. */
+ssize_t getdelim(char** lineptr, size_t* n, int delim, FILE* stream) {
+    if (!lineptr || !n || !stream) return -1;
+    if (!*lineptr || *n == 0) {                          /* allocate an initial buffer */
+        char* nb = (char*)realloc(*lineptr, 120);        /* realloc(NULL, .) == malloc */
+        if (!nb) return -1;
+        *lineptr = nb; *n = 120;
+    }
+    size_t len = 0;
+    int c = EOF;
+    while ((c = fgetc(stream)) != EOF) {
+        if (len + 1 >= *n) {                             /* keep room for the byte + the NUL */
+            size_t cap = *n * 2;
+            char* nb = (char*)realloc(*lineptr, cap);
+            if (!nb) return -1;
+            *lineptr = nb; *n = cap;
+        }
+        (*lineptr)[len++] = (char)c;
+        if (c == delim) break;
+    }
+    if (len == 0 && c == EOF) return -1;                 /* nothing read, at EOF */
+    (*lineptr)[len] = '\0';
+    return (ssize_t)len;
+}
+
+ssize_t getline(char** lineptr, size_t* n, FILE* stream) {
+    return getdelim(lineptr, n, '\n', stream);
+}
+
 /* Write the string (no NUL, no trailing newline). Non-negative on success, EOF on error. */
 int fputs(const char* s, FILE* f) {
     if (!s || !f) return EOF;
