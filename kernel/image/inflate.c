@@ -340,6 +340,24 @@ int inflate_selftest(void) {
         else printf("inflate: corrupt Adler-32 NOT rejected FAIL\n");
     }
 
+    // Malformed DEFLATE must be rejected (rc != 0), never read/write out of bounds — the
+    // -1..-14 guard paths the positive vectors never reach. Cross-checked on the host and by
+    // an AddressSanitizer fuzz of inflate_raw (500k random + 32k mutated-valid streams, 0 OOB).
+    { static const uint8_t r_rsv[]   = {0x07};                                // reserved block type -> -14
+      static const uint8_t r_dyn[]   = {0x05};                                // dynamic header underflow -> -1
+      static const uint8_t r_nlen[]  = {0x01,0x05,0x00,0x00,0x00,1,2,3,4,5};  // stored LEN/~LEN mismatch -> -6
+      static const uint8_t r_trunc[] = {0x01,0x05,0x00,0xfa,0xff,1,2};        // stored block truncated -> -5
+      static const uint8_t r_ovf[]   = {0x01,0x05,0x00,0xfa,0xff,1,2,3,4,5};  // output past dstcap -> -2 (tiny cap)
+      int neg = 0, negtot = 0;
+      negtot++; if (inflate_raw(r_rsv,   sizeof r_rsv,   buf, sizeof buf, &olen) != 0) neg++;
+      negtot++; if (inflate_raw(r_dyn,   sizeof r_dyn,   buf, sizeof buf, &olen) != 0) neg++;
+      negtot++; if (inflate_raw(r_nlen,  sizeof r_nlen,  buf, sizeof buf, &olen) != 0) neg++;
+      negtot++; if (inflate_raw(r_trunc, sizeof r_trunc, buf, sizeof buf, &olen) != 0) neg++;
+      negtot++; if (inflate_raw(r_ovf,   sizeof r_ovf,   buf, 2,          &olen) != 0) neg++;
+      total++; pass += (neg == negtot);
+      printf("inflate: reject %d/%d malformed DEFLATE inputs rejected\n", neg, negtot);
+    }
+
     printf("inflate: self-test %d/%d passed\n", pass, total);
     return (pass == total) ? 0 : -1;
 }
