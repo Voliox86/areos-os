@@ -95,6 +95,38 @@ static inline void uwin_fill_circle(unsigned int* buf, int w, int h,
     }
 }
 
+/* Fill a rounded rectangle: the box (x,y,rw,rh) with its four corners rounded to radius
+ * r, clipped to the buffer. Each corner is a quarter-disc using the same integer
+ * dx*dx+dy*dy<=r*r test as uwin_fill_circle (no sqrt/FP) — filled as one horizontal span
+ * per row whose inset grows toward the extreme corner rows, so the shape is symmetric and
+ * never double-writes a pixel. r is clamped to half the shorter side, and r<=0 degrades to
+ * a sharp uwin_fill_rect. The rice-flagship primitive for rounded panels, cards and bars. */
+static inline void uwin_rounded_rect(unsigned int* buf, int w, int h,
+                                     int x, int y, int rw, int rh, int r, unsigned int color) {
+    if (rw <= 0 || rh <= 0) return;
+    if (r <= 0) { uwin_fill_rect(buf, w, h, x, y, rw, rh, color); return; }
+    if (r > rw / 2) r = rw / 2;                     /* keep the two corner bands from overlapping */
+    if (r > rh / 2) r = rh / 2;
+    int r2 = r * r;
+    for (int yy = y; yy < y + rh; yy++) {
+        if (yy < 0 || yy >= h) continue;
+        int dyc;                                    /* vertical distance from the near corner centre; 0 in the middle band */
+        if (yy < y + r)            dyc = (y + r) - yy;
+        else if (yy >= y + rh - r) dyc = yy - (y + rh - 1 - r);
+        else                       dyc = 0;
+        int ins = 0;
+        if (dyc > 0) {                              /* largest dx with dx*dx+dyc*dyc<=r2 -> inset = r-dx */
+            int dxm = 0;
+            while (dxm + 1 <= r && (dxm + 1) * (dxm + 1) + dyc * dyc <= r2) dxm++;
+            ins = r - dxm;
+        }
+        int x0 = x + ins, x1 = x + rw - ins;        /* fill span [x0,x1) for this row */
+        if (x0 < 0) x0 = 0;
+        if (x1 > w) x1 = w;
+        for (int xx = x0; xx < x1; xx++) buf[yy * w + xx] = color;
+    }
+}
+
 /* Blit one 8x16 glyph bitmap `g` (16 bytes; row 0 = top, MSB = leftmost pixel) at
  * (x,y): only set bits are written, in `fg` (transparent background), clipped. */
 static inline void uwin_glyph(unsigned int* buf, int w, int h, int x, int y,

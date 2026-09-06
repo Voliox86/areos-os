@@ -49,7 +49,7 @@ int main(void) {
             unsigned int bb = 70 + (unsigned int)(y * 150 / H);
             uwin_hline(buf, W, H, 0, y, W, (rr << 16) | (0x18u << 8) | bb);
         }
-        uwin_fill_rect(buf, W, H, sqx, H / 2 - 20, 40, 40, 0x00FFFFFF);   /* white marker */
+        uwin_rounded_rect(buf, W, H, sqx, H / 2 - 20, 40, 40, 8, 0x00FFFFFF); /* white rounded marker */
         uwin_line(buf, W, H, sqx, H / 2 - 20, sqx + 39, H / 2 + 19, 0);   /* diagonal across it */
         uwin_text_center(buf, W, H, W / 2, 8, "wintest ring-3", 0x00FFFFFF); /* centered title (re-centers on resize) */
         uwin_rect_outline(buf, W, H, 0, 0, W, H, 0x00FFFFFF);             /* 1px window frame */
