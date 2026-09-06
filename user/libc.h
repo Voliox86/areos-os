@@ -105,6 +105,8 @@ char* strsep(char** stringp, const char* delim);    /* BSD/POSIX; preserves empt
 char* strrchr(const char* s, int c);
 char* strncat(char* dest, const char* src, size_t n);
 char* strdup(const char* s);
+char* strndup(const char* s, size_t n);                    /* POSIX; malloc'd copy of <= n bytes */
+void* reallocarray(void* ptr, size_t nmemb, size_t size);  /* realloc with overflow-checked nmemb*size */
 void  qsort(void* base, size_t nmemb, size_t size, int (*cmp)(const void*, const void*));
 void* bsearch(const void* key, const void* base, size_t nmemb, size_t size,
               int (*cmp)(const void*, const void*));

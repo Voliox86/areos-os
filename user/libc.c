@@ -1299,6 +1299,26 @@ char* strdup(const char* s) {
     return p;
 }
 
+/* strndup (POSIX): a fresh NUL-terminated malloc'd copy of at most n bytes of s (length
+ * min(strlen(s), n) — strnlen never reads past n, so s need not be NUL-terminated within n).
+ * NULL on allocation failure. */
+char* strndup(const char* s, size_t n) {
+    size_t len = strnlen(s, n);
+    char* p = (char*)malloc(len + 1);
+    if (!p) return NULL;
+    memcpy(p, s, len);
+    p[len] = '\0';
+    return p;
+}
+
+/* reallocarray (BSD/glibc): realloc(ptr, nmemb*size) with the product overflow-checked —
+ * returns NULL and leaves ptr untouched if nmemb*size would wrap size_t (the safe way to
+ * grow an array). size==0 can't overflow and defers to realloc(ptr, 0). */
+void* reallocarray(void* ptr, size_t nmemb, size_t size) {
+    if (size != 0 && nmemb > (size_t)-1 / size) return NULL;   /* nmemb*size > SIZE_MAX */
+    return realloc(ptr, nmemb * size);
+}
+
 static void qsort_swap(char* a, char* b, size_t size) {
     for (size_t i = 0; i < size; i++) { char t = a[i]; a[i] = b[i]; b[i] = t; }
 }
