@@ -1,0 +1,42 @@
+// gdrop.npp — a destructor on a struct template (M6.4d).
+//
+// `#[drop(release)]` in front of `own struct Guard<T>` travels with the
+// template: every instantiation `__g_Guard_X` is emitted with
+// `#[drop(__g_release_X)]`, and the generic drop function `release<T>` —
+// one parameter, the template itself — is instantiated alongside it,
+// whether or not the program ever names it. N then does what it does for
+// any own struct with a destructor: a Guard that reaches the end of its
+// scope unconsumed is released, and its own fields drop after its body
+// (v0.25) — so `Guard<File>`, an own instantiation, closes its File right
+// after its own release.
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+#[drop(close_file)]
+own struct File { fd: i64 }
+
+fn close_file(f: File) {
+    put("closing {f.fd}\n");
+}
+
+// A guard over any T, released at scope end with its tag.
+#[drop(release)]
+own struct Guard<T> { v: T, tag: i64 }
+
+fn release<T>(g: Guard<T>) {
+    put("release {g.tag}\n");
+}
+
+fn main() -> i64 {
+    a := Guard<i64>{ v: 1, tag: 7 };
+    b := Guard<str>{ v: "s", tag: 8 };
+    c := Guard<File>{ v: File{ fd: 3 }, tag: 9 };
+    put("guarding {a.v} and {b.v} and fd {c.v.fd}\n");
+    0
+}

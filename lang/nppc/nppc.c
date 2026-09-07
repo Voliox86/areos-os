@@ -381,6 +381,11 @@ typedef struct {
     int declstart, declend;               /* source span of the whole declaration */
     int own;                              /* struct-only: an `own struct` template (M6.4c6c) —
                                            * its instantiations are own structs too */
+    int dropfn;                           /* struct-only: the `#[drop(f)]` token in front, or -1
+                                           * (M6.4d) — the destructor travels with the template */
+    int dropgi;                           /* ... and the generic function it names, resolved by
+                                           * guard_templates: each instantiation of the struct
+                                           * names the matching instantiation of f */
     /* struct-only: the field templates */
     struct { int fname; int ptrs; int base; int nest; int ts, te; } fields[MAXF];
     int nfields;                          /* base: token index of the field type name;
@@ -443,6 +448,18 @@ static void collect_generic_decls(void) {
         g->own = i > 0 && TOKS[i - 1].k == T_KW_OWN;   /* `own struct S<T>` (M6.4c6c): the
                                                         * keyword travels with the template */
         g->declstart = g->own ? TOKS[i - 1].start : TOKS[i].start;
+        {                                 /* `#[drop(f)] own struct S<T>` (M6.4d): the destructor
+                                           * travels with the template too — the attribute is cut
+                                           * out with it, and every instantiation names f's matching
+                                           * instantiation (resolved by guard_templates) */
+            int a = g->own ? i - 2 : i - 1;
+            g->dropfn = (a >= 0 && TOKS[a].k == T_ATTR_DROP) ? a : -1;
+            g->dropgi = -1;
+            if (g->dropfn >= 0 && !g->own)
+                die("%s:%d: #[drop(%s)] on generic '%.*s' needs an own struct — only an own struct has a destructor",
+                    FILENAME, TOKS[a].line, TOKS[a].s, TOKS[i + 1].slen, TOKS[i + 1].s);
+            if (g->dropfn >= 0) g->declstart = TOKS[a].start;
+        }
         int j = i + 3;                    /* first param */
         for (;;) {
             if (TOKS[j].k != T_IDENT)
@@ -878,6 +895,12 @@ static char* concrete_struct(Inst* it) {
     char* mn = mangle(it);
     char* out = xmalloc(4096 + 512 * (size_t)g->nfields);
     int n = 0;
+    if (g->dropgi >= 0) {                 /* the template's destructor, at this instantiation
+                                           * (M6.4d): `#[drop(__g_f_i64)] own struct __g_S_i64` */
+        Inst di = *it;
+        di.gi = g->dropgi;
+        n += sprintf(out + n, "#[drop(%s)]\n", mangle(&di));
+    }
     n += sprintf(out + n, "%sstruct %s {\n", inst_own(g, it) ? "own " : "", mn);
     for (int fi = 0; fi < g->nfields; fi++) {
         int bt = g->fields[fi].base;
@@ -973,6 +996,8 @@ static void collect_generic_fns(void) {
         g->nametok = i + 1;
         g->nparams = 0;
         g->nfields = 0;
+        g->dropfn = -1;
+        g->dropgi = -1;
         /* A `#[caps(syscall)]` in front belongs to the declaration, so every
          * concrete instantiation carries it (a generated environment maker
          * is such a template, M6.4c3). */
@@ -1026,6 +1051,8 @@ static void collect_generic_enums(void) {
         g->nametok = i + 1;
         g->nparams = 0;
         g->nfields = 0;
+        g->dropfn = -1;
+        g->dropgi = -1;
         g->declstart = TOKS[i].start;
         int j = i + 3;
         for (;;) {
@@ -1095,6 +1122,37 @@ static void guard_templates(void) {
                     die("%s:%d: '%.*s' takes %d type argument(s)", FILENAME, TOKS[b].line,
                         TOKS[b].slen, TOKS[b].s, GS[inner].nparams);
                 g->nested[ne].gi = inner;
+            }
+            if (g->dropfn >= 0) {         /* `#[drop(f)]` on a template (M6.4d): f must be a
+                                           * generic function over the same parameters whose
+                                           * one parameter is `S<T…>` — then each instantiation
+                                           * of S names the matching instantiation of f */
+                const char* fname = TOKS[g->dropfn].s;
+                int fl = (int)strlen(fname);
+                int di = -1;
+                for (int k = 0; k < NGS; k++)
+                    if (GS[k].kind == 1 && TOKS[GS[k].nametok].slen == fl &&
+                        !memcmp(TOKS[GS[k].nametok].s, fname, (size_t)fl)) { di = k; break; }
+                int ok = di >= 0 && GS[di].nparams == g->nparams;
+                if (ok) {                 /* the signature: `( name : S < P1, P2 > )` */
+                    GStruct* d = &GS[di];
+                    int t = d->angleclose + 1;
+                    ok = TOKS[t].k == T_LP && TOKS[t + 1].k == T_IDENT && TOKS[t + 2].k == T_COLON &&
+                         tokspan_eq(TOKS[t + 3].k == T_IDENT ? t + 3 : t, g->nametok) && TOKS[t + 4].k == T_LT;
+                    t += 5;
+                    for (int q = 0; ok && q < d->nparams; q++) {
+                        ok = TOKS[t].k == T_IDENT && tokspan_eq(d->ptok[q], t);
+                        t++;
+                        if (ok && q + 1 < d->nparams) { ok = TOKS[t].k == T_COMMA; t++; }
+                    }
+                    ok = ok && TOKS[t].k == T_GT && TOKS[t + 1].k == T_RP;
+                }
+                if (!ok)
+                    die("%s:%d: #[drop(%s)] on generic '%.*s' needs a generic drop function taking the template — fn %s<%.*s>(v: %.*s<%.*s>) (M6.4d)",
+                        FILENAME, TOKS[g->dropfn].line, fname, TOKS[g->nametok].slen, TOKS[g->nametok].s,
+                        fname, TOKS[g->ptok[0]].slen, TOKS[g->ptok[0]].s, TOKS[g->nametok].slen, TOKS[g->nametok].s,
+                        TOKS[g->ptok[0]].slen, TOKS[g->ptok[0]].s);
+                g->dropgi = di;
             }
             continue;
         }
@@ -1192,6 +1250,21 @@ static void expand_nested(void) {
                 if (NINST >= MAXI) die("%s: too many generic instantiations", FILENAME);
                 INSTS[NINST++] = n;
                 changed = 1;
+            }
+            if (g->dropgi >= 0) {         /* a template's destructor (M6.4d): each instantiation
+                                           * of the struct brings the matching instantiation of
+                                           * its drop function into being, use site or not */
+                Inst n = INSTS[i];
+                n.gi = g->dropgi;
+                n.start = n.end = -1;
+                int dup = 0;
+                for (int k = 0; k < NINST; k++)
+                    if (args_same(&n, &INSTS[k])) { dup = 1; break; }
+                if (!dup) {
+                    if (NINST >= MAXI) die("%s: too many generic instantiations", FILENAME);
+                    INSTS[NINST++] = n;
+                    changed = 1;
+                }
             }
         }
     }

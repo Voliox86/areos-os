@@ -13,7 +13,7 @@ file.npp ──nppc──► file.n ──ncc / toolbox──► C ──cc/tcc�
 ```
 
 The right-hand end of that pipeline is real, not a diagram: the lowered
-N of every program in [../examples](../examples) — twenty-three of them
+N of every program in [../examples](../examples) — twenty-four of them
 — has been compiled and run inside NyxOS by the in-OS `ncc`
 (`xbm install ncc`, then `ncc /mnt/X.n -o /mnt/X_gen.c`,
 `cc /mnt/X_gen.c /mnt/nyxrt.c -I/mnt -o /mnt/bin/nX`, `nX`), each
@@ -438,8 +438,24 @@ after the one call, while `guard<Handle>` stays a plain struct; the
 body may peek a field of the capture (`v.fd`), and returning the
 capture itself is refused by N (*cannot move field 'v' out of the
 pointee '__p[0]' — take it as a whole first, e := __p[0] (v0.26)*) —
-the environment still owns it. A `#[drop]` attribute on a struct
-template is not carried yet.
+the environment still owns it.
+
+**A destructor on a template (M6.4d).** `#[drop(f)]` in front of
+`own struct S<T>` travels with the template: the attribute is cut out
+with the declaration, every instantiation is emitted as
+`#[drop(__g_f_X)] own struct __g_S_X`, and the generic drop function
+`f<T>` — which must take exactly the template, `fn f<T>(v: S<T>)`,
+over the same type parameters — is instantiated alongside each
+instantiation of S whether or not the program ever names it: an
+implicit instantiation the nested-use fixpoint adds. N then applies
+its own rules unchanged — a local that reaches its scope end
+unconsumed is released, in reverse birth order, its own fields
+dropping after the destructor's body (v0.25), and a held parameter
+never auto-drops (the sink rule). A `#[drop]` on a plain struct
+template, and one whose drop function is not generic or does not take
+the template, are refused with the fix spelled out.
+[`../examples/gdrop.npp`](../examples/gdrop.npp) is the worked example
+— three guards, one of them owning a File — held by stage [10z].
 [`../examples/gfnonce.npp`](../examples/gfnonce.npp) is the worked
 example, held by stage [10y].
 
