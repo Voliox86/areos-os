@@ -419,7 +419,7 @@ static const command_t commands[] = {
     {"rm",        cmd_rm,        "Remove files/dirs: rm [-rf] <path>...", false},
     {"shred",     cmd_shred,     "Overwrite a file's data, then optionally remove it: shred [-n N] [-u] <file>", false},
     {"cp",        cmd_cp,        "Copy a file (cp <src> <dst>) or a tree (cp -r <srcdir> <dstdir>)", false},
-    {"mv",        cmd_mv,        "Move/rename file: mv <src> <dst>", false},
+    {"mv",        cmd_mv,        "Move/rename: mv <src> <dst> (into dst if dst is a dir)", false},
     {"useradd",   cmd_useradd,   "Add a user account: useradd <user> <pass>", false},
     {"users",     cmd_users,     "List user accounts", false},
     {"ifconfig",  cmd_ifconfig,  "Show network interfaces", false},
@@ -1058,7 +1058,7 @@ static const man_page_t man_pages[] = {
     {"tar",      "List the members of a POSIX ustar (.tar) archive: `tar t <file.tar>` prints each member's path, and `tar tv` also prints its type flag and byte size. Listing only — extraction is not yet supported."},
     {"iniget",   "Read one value from an INI/.conf file: `iniget <file> <section> <key>` prints the trimmed value under [section], or `iniget <file> - <key>` reads the global section (keys before any [section]). '=' is the delimiter; ';'/'#' begin whole-line comments. Prints nothing and reports not-found if the key is absent."},
     {"cp",       "Copy the file <src> to <dst>, replacing <dst> if it already exists. With `cp -r <srcdir> <dstdir>` it copies a whole directory tree recursively, creating each destination directory and copying every file across filesystems (e.g. from the RAM image to a freshly-formatted disk mounted at /mnt) — this is how `nyxinstall` populates a target disk. The walk is iterative with a bounded off-stack frontier, so deep trees are safe on the small kernel stack."},
-    {"mv",       "Move or rename <src> to <dst>. Within one filesystem this only rewrites the directory entry."},
+    {"mv",       "Move or rename <src> to <dst>. If <dst> is an existing directory, <src> is moved INTO it as <dst>/<name> (GNU mv); otherwise <src> is renamed to <dst>. Within one filesystem this only rewrites the directory entry."},
     {"rm",       "Remove <path>. There is no recycle bin, so a removed file is gone for good."},
     {"shred",    "Destroy a file's contents by overwriting every byte with cryptographic random data before it can be recovered: shred [-n N] [-u] <file>. -n sets the number of overwrite passes (default 3); -u also removes the file afterwards (like shred -u on Linux). The overwrite is in place — on the ramdisk it rewrites the bytes directly, and on the EXT2 mount it is flushed back to the same disk blocks at close — so unlike rm alone, the old contents are actually gone. Operates on one file (not a directory)."},
     {"mkdir",    "Create a new, empty directory: `mkdir [-p] <dir>...`. With -p, create any missing parent directories too (and don't error if it already exists)."},
@@ -9528,8 +9528,28 @@ static void cmd_nyxverify(int argc, char** argv) {
 
 static void cmd_mv(int argc, char** argv) {
     if (argc < 3) { printf("Usage: mv <src> <dst>\n"); return; }
-    if (!path_last_component_ok(argv[2])) { printf("mv: invalid destination name '%s'\n", argv[2]); return; }
-    vfs_rename(argv[1], argv[2]);
+    const char* src = argv[1];
+    const char* dst = argv[2];
+    // GNU mv: when the destination is an existing directory, move src INTO it as
+    // <dst>/<basename(src)> — otherwise vfs_rename would relink src under dst's parent
+    // and rename it to the directory's own name, colliding with the directory.
+    char dstbuf[256];
+    if (vfs_isdir(dst)) {
+        int sl = (int)strlen(src);
+        while (sl > 0 && src[sl - 1] == '/') sl--;      // ignore a trailing slash on src
+        int b = sl;
+        while (b > 0 && src[b - 1] != '/') b--;          // b = start of src's last component
+        int dl = (int)strlen(dst);
+        while (dl > 1 && dst[dl - 1] == '/') dl--;       // strip a trailing slash on dst
+        int o = 0;
+        for (int k = 0; k < dl && o < (int)sizeof(dstbuf) - 1; k++) dstbuf[o++] = dst[k];
+        if (o < (int)sizeof(dstbuf) - 1) dstbuf[o++] = '/';
+        for (int k = b; k < sl && o < (int)sizeof(dstbuf) - 1; k++) dstbuf[o++] = src[k];
+        dstbuf[o] = '\0';
+        dst = dstbuf;
+    }
+    if (!path_last_component_ok(dst)) { printf("mv: invalid destination name '%s'\n", dst); return; }
+    vfs_rename(src, dst);
 }
 
 static void cmd_useradd(int argc, char** argv) {
