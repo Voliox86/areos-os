@@ -1117,7 +1117,7 @@ static const man_page_t man_pages[] = {
     {"fletcher", "Print the Fletcher checksum of the argument text (all arguments joined by single spaces): Fletcher-16 by default as 4-digit hex, or Fletcher-32 with -32 as 8-digit hex. Fletcher's checksum keeps two running modular sums (the second accumulates the first), so its result depends on byte ORDER — it detects most transpositions that a plain sum misses, at a fraction of a CRC's cost. Fletcher-16 folds bytes mod 255; Fletcher-32 folds 16-bit little-endian words mod 65535 (a trailing odd byte is zero-padded). Used by ZFS and several transport/routing protocols. fletcher of `abcde` is c8f0 (and -32 f04fc729). Verified by the boot self-test battery against the canonical vectors."},
     {"bech32",   "Verify and decode a Bech32 (BIP-173) string. Bech32 is the checksummed base-32 encoding used by Bitcoin SegWit and Lightning identifiers: a human-readable prefix (HRP), a '1' separator, the base-32 data symbols, and a 6-symbol checksum computed by a BCH code over GF(32) so that a small number of altered or transposed characters is provably detected — the reason it is safer to transcribe than plain base58. `bech32 <string>` prints the decoded HRP and the data symbols (as hex) when the checksum verifies, or reports the string invalid. Rejects exactly what BIP-173 rejects: mixed upper/lower case, any byte outside printable ASCII, a missing or misplaced separator, an empty HRP, an out-of-charset symbol, a length above 90, or a bad checksum. Verified by the boot self-test battery against the canonical BIP-173 vectors. Pairs with base58, the other Bitcoin encoding."},
     {"base58",   "Base58-encode the argument text (Bitcoin alphabet — the digits and letters minus 0, O, I and l, which are easy to confuse), or with -d decode a base58 string back to its bytes. Base58 writes a byte string as one big-endian base-58 number and renders each leading zero byte as a leading '1', so it is the compact, ambiguity-free encoding used for crypto addresses. Arguments are joined with single spaces before encoding; an out-of-alphabet character is rejected on decode. Verified by the boot self-test battery against the canonical Bitcoin vectors."},
-    {"printf",   "Print ARGs under the control of FORMAT (like the C/coreutil printf). FORMAT is reused as needed to consume all ARGs. It interprets backslash escapes (\\n \\t \\r \\a \\b \\f \\v \\\\) and the conversions %s %d %i %u %x %X %c %% with optional flags and field width (e.g. %-10s, %05d). Numeric ARGs are read as decimal. Unlike echo, printf never appends a trailing newline unless FORMAT contains one."},
+    {"printf",   "Print ARGs under the control of FORMAT (like the C/coreutil printf). FORMAT is reused as needed to consume all ARGs. It interprets backslash escapes (\\n \\t \\r \\a \\b \\f \\v \\\\, plus \\NNN octal and \\xHH hex — so `printf '\\033[31m...'` emits ANSI colour) and the conversions %s %d %i %u %x %X %c %% with optional flags and field width (e.g. %-10s, %05d). Numeric ARGs are read as decimal. Unlike echo, printf never appends a trailing newline unless FORMAT contains one."},
     {"expand",   "Convert the tabs in <file> to spaces. Each tab advances to the next tab stop, which are spaced N columns apart (8 by default, or -t N), so columns stay aligned instead of a fixed number of spaces per tab. Non-tab characters and newlines pass through unchanged (a newline resets the column count)."},
     {"unexpand", "The inverse of expand: convert runs of spaces in <file> back into tabs, collapsing each blank run to the fewest tabs+spaces at N-column tab stops (8 by default, or -t N). A single space is never turned into a tab. By default only the LEADING blanks of each line are converted (matching GNU unexpand); -a converts blank runs everywhere on the line, and -t N implies -a."},
     {"wc",       "Count the lines, words and characters in <file>. -l, -w, -c (bytes) or -L (length of the longest line, tabs expanded to 8-column stops) limit the output to just those, in that fixed order; combine them, e.g. wc -lL <file>."},
@@ -3891,6 +3891,9 @@ static void cmd_nl(int argc, char** argv) {
 // FORMAT contains at least one conversion, the whole FORMAT is REUSED until the
 // ARGs are exhausted (POSIX). Length modifiers (l) are ignored so the vararg
 // stays int-width to match atoi. Unlike echo, no trailing newline is added.
+static int printf_ishex(char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }
+static int printf_hexval(char c) { return (c <= '9') ? (c - '0') : ((c | 0x20) - 'a' + 10); }
+
 static void cmd_printf(int argc, char** argv) {
     if (argc < 2) { printf("Usage: printf FORMAT [ARG...]\n"); return; }
     const char* fmt = argv[1];
@@ -3910,6 +3913,22 @@ static void cmd_printf(int argc, char** argv) {
                     case 'f': putchar('\f'); break;
                     case 'v': putchar('\v'); break;
                     case '\\': putchar('\\'); break;
+                    case '0': case '1': case '2': case '3':
+                    case '4': case '5': case '6': case '7': {
+                        // \NNN / \0NNN octal escape: up to 3 octal digits (GNU printf). Leaves p
+                        // at the last digit so the enclosing for-loop's p++ advances correctly.
+                        int v = *p - '0';
+                        for (int k = 1; k < 3 && p[1] >= '0' && p[1] <= '7'; k++) { p++; v = v * 8 + (*p - '0'); }
+                        putchar((char)v);
+                        break;
+                    }
+                    case 'x':                                       // \xHH hex escape: 1-2 hex digits
+                        if (printf_ishex(p[1])) {
+                            int v = 0;
+                            for (int k = 0; k < 2 && printf_ishex(p[1]); k++) { p++; v = v * 16 + printf_hexval(*p); }
+                            putchar((char)v);
+                        } else { putchar('\\'); putchar('x'); }     // no hex digit: keep \x literal (GNU)
+                        break;
                     default:  putchar('\\'); putchar(*p); break;   // unknown escape: keep literal
                 }
             } else if (*p == '%' && p[1]) {
