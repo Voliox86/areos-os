@@ -8514,11 +8514,18 @@ static int cd_do(const char* arg, int* echoed) {
     return 0;
 }
 static void cmd_cd(int argc, char** argv) {
-    if (argc < 2) { printf("Usage: cd <path>\n"); return; }
+    // Bare `cd` goes to $HOME (POSIX); HOME is synced to the real session home on login.
+    const char* dest;
+    if (argc < 2) {
+        dest = shell_lookup_var("HOME", 4);
+        if (!dest || !dest[0]) { printf("cd: HOME not set\n"); return; }
+    } else {
+        dest = argv[1];
+    }
     int echoed = 0;
-    int rc = cd_do(argv[1], &echoed);
+    int rc = cd_do(dest, &echoed);
     if      (rc == -2) printf("cd: OLDPWD not set\n");
-    else if (rc == -1) printf("cd: %s: No such directory\n", argv[1]);
+    else if (rc == -1) printf("cd: %s: No such directory\n", dest);
     else if (echoed)   printf("%s\n", vfs_getcwd());        // bash echoes the dir on `cd -`
 }
 
