@@ -378,6 +378,32 @@ same toolchain discipline — and the self-hosting question is deferred
 until the dialect stabilizes (the N ladder showed the way; it can be
 climbed again when it is worth climbing).
 
+**And the third way — the OS itself.** The lowered N of four examples
+(`closure`, `capture`, `fnonce`, `gfnonce`) has been compiled and run
+inside NyxOS by the in-OS `ncc` — built from source there by
+`xbm install ncc`, itself compiled by the in-OS TinyCC — with the
+lowered `.n` files and `nyxrt.{c,h}` on the `/mnt` disk:
+`ncc /mnt/X.n -o /mnt/X_gen.c`, then
+`cc /mnt/X_gen.c /mnt/nyxrt.c -I/mnt -o /mnt/bin/nX`, then `nX`. Every
+run printed its host trace line for line on the serial port:
+
+| example | in-OS output (one line per `/`) |
+|---|---|
+| closure | `1 4 9` / `inc(41) = 42` / `twice(+1, 40) = 42` / `neg(5) = -5` |
+| capture | `42` / `12 15` / `bump: 42` |
+| fnonce | `calling` / `body: fd 3` / `closing 3` / `r = 42` / `closing 5` / `s = 6` / `closing 4` |
+| gfnonce | `closing 3` / `a = 42` / `s = hi` / `keeper 7` / `closing 7` / `b = 5` / `keeper 8` / `closing 8` / `w = seed` / `guard 100 sees 9` / `closing 9` / `c = 101` / `guard 200 sees 2` / `d = 201` |
+
+Nothing in `nppc`'s output is special to the host — environments on the
+sbrk heap, function values, `#[drop]` own structs and their finalisers,
+generic instantiations — and the in-OS TinyCC compiled all of it as the
+plain C99 `ncc` emits, with no change to any compiler. (The batch of
+2026-09-07, at commit 531668d: a temporary boot hook ran the commands
+before the login screen with the results on serial, and was never
+committed; the recipe is a clean archive of `master` in `/tmp`, the
+kernel and ISO built there, the four `.n` files injected into a copy of
+the ext2 image with `debugfs`, QEMU headless.)
+
 ### 6.4 Milestones
 
 | Stage | Contents | Gate |
