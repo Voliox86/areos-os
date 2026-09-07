@@ -1634,31 +1634,19 @@ void vfs_list_dir(const char* path) {
     set_terminal_color(vga_entry_color(VGA_LIGHT_GREY, VGA_BLACK));
 }
 
+// Print a file's entire contents verbatim. Streams via vfs_open + vfs_pread so it reads the
+// WHOLE file uniformly across RAM, mount-backed (ext2 /mnt), /proc and /dev. The old mount
+// fast-path did a SINGLE 511-byte me->read_file() and silently truncated any mounted file
+// past 511 bytes (e.g. `cat /mnt/home/<user>/notes.txt`); the -n/-b path already streamed.
 void vfs_cat_file(const char* path) {
-    mount_entry_t* me = vfs_find_mount(path);
-    if (me && me->read_file) {
-        int mlen = strlen(me->mount_point);
-        const char* subpath = path + mlen;
-        if (subpath[0] == '\0') subpath = "/";
-        char buf[512];
-        int n = me->read_file(subpath, buf, 511);
-        if (n < 0) {
-            printf("cat: %s: error reading file\n", path);
-            return;
-        }
-        buf[n] = '\0';
-        printf("%s", buf);
-        return;
+    int fd = vfs_open(path, 0, 0);
+    if (fd < 0) { printf("cat: %s: No such file\n", path); return; }
+    char buf[512]; int n; uint32_t off = 0;
+    while ((n = vfs_pread(fd, buf, sizeof buf, off)) > 0) {
+        for (int i = 0; i < n; i++) putchar(buf[i]);
+        off += (uint32_t)n;
     }
-
-    vfs_node_t* ino = resolve_path(path);
-    if (!ino || ino->type != 0) {
-        printf("cat: %s: No such file\n", path);
-        return;
-    }
-    for (uint32_t i = 0; i < ino->size; i++) {
-        putchar(ino->data[i]);
-    }
+    vfs_close(fd);
 }
 
 int vfs_touch(const char* path) {
