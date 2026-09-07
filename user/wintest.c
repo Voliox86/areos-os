@@ -20,7 +20,7 @@ int main(void) {
     printf("wintest: win_create -> id %d\n", id);
     if (id < 0) { printf("wintest: win_create FAILED\n"); return 1; }
 
-    unsigned int* buf = (unsigned int*)malloc(W * H * 4);
+    unsigned int* buf = (unsigned int*)malloc((size_t)W * H * 4);
     if (!buf) { printf("wintest: malloc FAILED\n"); win_destroy(id); return 1; }
 
     int frames = 0, events = 0;
@@ -35,7 +35,7 @@ int main(void) {
             printf("wintest: RESIZE w=%d h=%d\n", input.win_w, input.win_h);
             W = input.win_w; H = input.win_h;
             free(buf);
-            buf = (unsigned int*)malloc(W * H * 4);
+            buf = (unsigned int*)malloc((size_t)W * H * 4);   /* widen before the *4: W/H are the runtime resize size (CWE-190) */
             if (!buf) { printf("wintest: realloc FAILED\n"); goto done; }
         }
         if (input.got_click) printf("wintest: CLICK x=%d y=%d btn=%d\n", input.click_x, input.click_y, input.click_btn);
