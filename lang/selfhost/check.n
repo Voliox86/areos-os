@@ -781,13 +781,29 @@ fn vfind(p: *u8, st: *i64, ss: i64, sl: i64) -> i64 {
 // as a VALUE (bound, passed, returned, assigned, or a block tail).
 // v0.25: the PLACE a refused field move names — a binding, or a field
 // chain rooted in one, spelled as written (`o.p`, `__self.env`);
-// anything else (a call's result, an index) stays "an own value".
-// root = 1 prints only the binding the chain hangs from: the value
-// to consume as a whole (ncc: expr_place).
+// anything else (a call's result, a computed index) stays "an own
+// value". root = 1 prints only the binding the chain hangs from: the
+// value to consume as a whole (ncc: expr_place). v0.26: a chain may
+// hang from a POINTEE instead — `p[0]`, a name indexed by a literal or
+// a name (kind 13 over kind 5 and kind 1 or 5) — spelled as written
+// too, and the fix is then a take, not a consume (mpointee).
 fn mpathok(st: *i64, b: i64) -> bool {
     nd := st[33] as *i64;
     if nd[b * 8] == 5 { return true; }
     if nd[b * 8] == 7 { return mpathok(st, nd[b * 8 + 1]); }
+    if nd[b * 8] == 13 {
+        a := nd[b * 8 + 1];
+        x := nd[b * 8 + 2];
+        if nd[a * 8] != 5 { return false; }
+        if nd[x * 8] == 1 { return true; }
+        return nd[x * 8] == 5;
+    }
+    return false;
+}
+fn mpointee(st: *i64, b: i64) -> bool {
+    nd := st[33] as *i64;
+    if nd[b * 8] == 7 { return mpointee(st, nd[b * 8 + 1]); }
+    if nd[b * 8] == 13 { return mpathok(st, b); }
     return false;
 }
 fn mpath(p: *u8, st: *i64, b: i64, root: i64) {
@@ -796,6 +812,16 @@ fn mpath(p: *u8, st: *i64, b: i64, root: i64) {
         mpath(p, st, nd[b * 8 + 1], root);
         if root == 1 { return; }
         put(".");
+    }
+    if nd[b * 8] == 13 {
+        a := nd[b * 8 + 1];
+        x := nd[b * 8 + 2];
+        put_span(p, nd[a * 8 + 5], nd[a * 8 + 6]);
+        put("[");
+        if nd[x * 8] == 1 { v := nd[x * 8 + 1]; put("{v}"); }
+        if nd[x * 8] == 5 { put_span(p, nd[x * 8 + 5], nd[x * 8 + 6]); }
+        put("]");
+        return;
     }
     put_span(p, nd[b * 8 + 5], nd[b * 8 + 6]);
 }
@@ -820,11 +846,20 @@ fn cmove(p: *u8, st: *i64, i: i64, ln: i64) {
             b := nd[i * 8 + 1];
             put("{ln}: cannot move field '");
             put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
-            put("' out of own value '");
-            mplace(p, st, b, 0);
-            put("' — consume '");
-            mplace(p, st, b, 1);
-            put("' as a whole (v0.25)\n");
+            if mpointee(st, b) {           // v0.26: a cell behind a pointer —
+                put("' out of the pointee '");   // taken whole, then consumed
+                mplace(p, st, b, 0);
+                put("' — take it as a whole first, e := ");
+                mplace(p, st, b, 1);
+                put(" (v0.26)\n");
+            }
+            if !mpointee(st, b) {
+                put("' out of own value '");
+                mplace(p, st, b, 0);
+                put("' — consume '");
+                mplace(p, st, b, 1);
+                put("' as a whole (v0.25)\n");
+            }
             st[41] = 1;
         }
         return;
@@ -1646,6 +1681,7 @@ fn ppostfix(p: *u8, n: i64, st: *i64) -> i64 {
         nl := st[27];
         ln := st[25];
         adv(p, n, st);                     // the name
+        dl := st[25];                      // the '.' line (ncc: dline)
         adv(p, n, st);                     // '.'
         if !ck(st, 7) { perr(st); return 0; }
         fs := st[26];
@@ -1680,7 +1716,7 @@ fn ppostfix(p: *u8, n: i64, st: *i64) -> i64 {
             return ppostfix_tail(p, n, st, el);   // chain, so x is free)
         }
         base := nnew(st, 5, 0, 0, 0, ln, ns, nl);
-        h := pfield_or_call(p, n, st, base, fs, fl);
+        h := pfield_or_call(p, n, st, base, fs, fl, dl);
         return ppostfix_tail(p, n, st, h);
     }
     h2 := pprimary(p, n, st);
@@ -1695,12 +1731,13 @@ fn ppostfix_tail(p: *u8, n: i64, st: *i64, h0: i64) -> i64 {
     while going {
         going = false;
         if ck(st, 68) {                    // '.' field or method
+            dl := st[25];                  // the '.' line (ncc: dline)
             adv(p, n, st);
             if !ck(st, 7) { perr(st); return 0; }
             fs := st[26];
             fl := st[27];
             adv(p, n, st);
-            h = pfield_or_call(p, n, st, h, fs, fl);
+            h = pfield_or_call(p, n, st, h, fs, fl, dl);
             going = true;
             continue;
         }
@@ -1742,7 +1779,7 @@ fn ppostfix_tail(p: *u8, n: i64, st: *i64, h0: i64) -> i64 {
 // After base + '.' + name: a call makes the field node the callee
 // (ncc's method-call shape); a plain read is just the field node.
 #[caps(syscall)]
-fn pfield_or_call(p: *u8, n: i64, st: *i64, base: i64, fs: i64, fl: i64) -> i64 {
+fn pfield_or_call(p: *u8, n: i64, st: *i64, base: i64, fs: i64, fl: i64, dl: i64) -> i64 {
     if ck(st, 37) {                        // method call
         ln := st[25];
         fld := nnew(st, 7, base, 0, 0, ln, fs, fl);
@@ -1763,8 +1800,7 @@ fn pfield_or_call(p: *u8, n: i64, st: *i64, base: i64, fs: i64, fl: i64) -> i64 
         while q < na { ladd(st, ax[q]); q = q + 1; }
         return nnew(st, 6, fld, ast, na, ln, 0, 0);
     }
-    ln2 := st[25];
-    return nnew(st, 7, base, 0, 0, ln2, fs, fl);
+    return nnew(st, 7, base, 0, 0, dl, fs, fl);   // a field read carries its '.' line
 }
 
 fn punary(p: *u8, n: i64, st: *i64) -> i64 {
@@ -3741,7 +3777,7 @@ fn cblock(p: *u8, st: *i64, i: i64) {
     t := nd[i * 8 + 2];
     if t > 0 {
         cexpr(p, st, t);
-        cmove(p, st, t, 0);                // ncc: own_move_expr(tail, 0)
+        cmove(p, st, t, nd[t * 8 + 4]);    // ncc: own_move_expr(tail, tail->line)
     }
     cdrops(p, st, vsave);                  // v0.19 auto-drops close the
     mut s2 := nd[i * 8 + 1];               // scope, THEN nothing may leak

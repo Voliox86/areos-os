@@ -659,8 +659,12 @@ is narrow and explicit:
   are. The rule is as raw as the pointer it rides on; what stays checked
   is every binding a take produces.
 - **A field never moves out of a pointee alone.** `close_file(p[0].f)`
-  is the v0.25 refusal (*cannot move field 'f' out of own value 'an own
-  value'*): take the value, then consume it.
+  is refused with the place and the fix spelled out (*cannot move field
+  'f' out of the pointee 'p[0]' — take it as a whole first, e := p[0]
+  (v0.26)*): take the value, then consume it. The cell is named as
+  written when the pointer is a name indexed by a literal or a name —
+  `p[0]`, `p[i]`, or a chain hanging from one, `p[0].e`; behind a
+  computed index the v0.25 wording over "an own value" stands.
 
 That is enough for an **owning closure** with no new type: an own struct
 with a `#[drop]` holding the environment's address, the call, and a

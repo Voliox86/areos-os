@@ -427,7 +427,8 @@ lambda that captures nothing and for a named function adapted into the
 slot. `guard<File>` in the example thus owns its File and closes it
 after the one call, while `guard<Handle>` stays a plain struct; the
 body may peek a field of the capture (`v.fd`), and returning the
-capture itself is refused by N as a field move out of an own value —
+capture itself is refused by N (*cannot move field 'v' out of the
+pointee '__p[0]' — take it as a whole first, e := __p[0] (v0.26)*) —
 the environment still owns it. A `#[drop]` attribute on a struct
 template is not carried yet.
 [`../examples/gfnonce.npp`](../examples/gfnonce.npp) is the worked

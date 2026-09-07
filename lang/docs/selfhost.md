@@ -624,6 +624,23 @@ emitting, harmlessly, since `gmove` is idempotent — and
 differential (an argument in a tail, an own field in a tail literal, a
 `return` value, and a held-parameter control).
 
+A diagnostics polish followed, found by lowering N++'s M6.4c6d (a
+`FnOnce` body that returns its own capture lowers to `__p[0].v` as a
+block tail): the refused field move out of a pointee named no place
+(*out of own value 'an own value'*) and, because a block's tail was
+checked with line 0, no line either. Now a place may hang from a
+pointee — `p[0]`, a name indexed by a literal or a name, spelled as
+written — and the message names the fix, a take: *cannot move field
+'f' out of the pointee 'p[0]' — take it as a whole first, e := p[0]
+(v0.26)*. A tail's move is reported at the tail's own line, and a field
+read carries the line of its `.` rather than of the token after it (a
+tail followed by `}` on the next line used to be reported there). All
+three land in ncc, check.n and gen.n's checker half alike — `mpathok`
+accepts the index shape, `mpointee` chooses the wording,
+`pfield_or_call` takes the dot's line — and the corpus is
+**seventy-eight rows** with `bad_own_ptr_fieldout.n`, written in the
+tail form so that one row pins both the wording and the line.
+
 `gen.n` then emits the field drops the way `ncc` does — the same
 helpers under the same names: a container's own fields in reverse
 declaration order, each through its type's destructor, a field that is

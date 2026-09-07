@@ -75,3 +75,4 @@ bad_own_field_leak.n	bad_own_field_leak.n:4: held own value 'b' ends here with f
 bad_own_moved_in.n	bad_own_moved_in.n:10: use of 'f' after move
 bad_own_field_move2.n	bad_own_field_move2.n:8: cannot move field 'a' out of own value 'o.p' — consume 'o' as a whole (v0.25)
 bad_own_ptr_sig.n	bad_own_ptr_sig.n: pointers to own type 'Env' are not allowed (in peek)
+bad_own_ptr_fieldout.n	bad_own_ptr_fieldout.n:11: cannot move field 'f' out of the pointee 'p[0]' — take it as a whole first, e := p[0] (v0.26)

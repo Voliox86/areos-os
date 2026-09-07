@@ -1,0 +1,17 @@
+extern syscall {
+    fn sys_sbrk(incr: i64) -> i64 = 7
+}
+#[drop(close_file)]
+own struct File { fd: i64 }
+fn close_file(f: File) { }
+own struct Env { f: File, tag: i64 }
+fn box_env(f: File) -> addr { m := sys_sbrk(16) as *Env; m[0] = Env{ f: f, tag: 7 }; m as addr }
+fn take_f(a: addr) -> File {
+    p := a as *Env;
+    p[0].f
+}
+fn main() -> i64 {
+    h := take_f(box_env(File{ fd: 5 }));
+    close_file(h);
+    0
+}
