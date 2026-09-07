@@ -13,11 +13,11 @@ file.npp ──nppc──► file.n ──ncc / toolbox──► C ──cc/tcc�
 ```
 
 The right-hand end of that pipeline is real, not a diagram: the lowered
-N of `closure`, `capture`, `fnonce` and `gfnonce` has been compiled and
-run inside NyxOS by the in-OS `ncc` (`xbm install ncc`, then
-`ncc /mnt/X.n -o /mnt/X_gen.c`,
+N of every program in [../examples](../examples) — twenty-three of them
+— has been compiled and run inside NyxOS by the in-OS `ncc`
+(`xbm install ncc`, then `ncc /mnt/X.n -o /mnt/X_gen.c`,
 `cc /mnt/X_gen.c /mnt/nyxrt.c -I/mnt -o /mnt/bin/nX`, `nX`), each
-printing its host trace line for line — see *verified three ways* in
+printing exactly what its host run prints — see *verified three ways* in
 [../README.md](../README.md) and the transcript in
 [../docs/design-npp.md §6.3](../docs/design-npp.md).
 

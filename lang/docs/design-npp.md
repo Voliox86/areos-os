@@ -378,14 +378,17 @@ same toolchain discipline — and the self-hosting question is deferred
 until the dialect stabilizes (the N ladder showed the way; it can be
 climbed again when it is worth climbing).
 
-**And the third way — the OS itself.** The lowered N of four examples
-(`closure`, `capture`, `fnonce`, `gfnonce`) has been compiled and run
+**And the third way — the OS itself.** The lowered N of every N++
+program — twenty-three of the twenty-five `.npp` examples; `modlib` and
+`modutil` are modules their users inline — has been compiled and run
 inside NyxOS by the in-OS `ncc` — built from source there by
 `xbm install ncc`, itself compiled by the in-OS TinyCC — with the
 lowered `.n` files and `nyxrt.{c,h}` on the `/mnt` disk:
 `ncc /mnt/X.n -o /mnt/X_gen.c`, then
 `cc /mnt/X_gen.c /mnt/nyxrt.c -I/mnt -o /mnt/bin/nX`, then `nX`. Every
-run printed its host trace line for line on the serial port:
+run printed on the serial port exactly what its host run prints (the
+host runs are what the suite pins with exact traces) and exited clean.
+The four closure rungs' traces, for the record:
 
 | example | in-OS output (one line per `/`) |
 |---|---|
@@ -394,15 +397,23 @@ run printed its host trace line for line on the serial port:
 | fnonce | `calling` / `body: fd 3` / `closing 3` / `r = 42` / `closing 5` / `s = 6` / `closing 4` |
 | gfnonce | `closing 3` / `a = 42` / `s = hi` / `keeper 7` / `closing 7` / `b = 5` / `keeper 8` / `closing 8` / `w = seed` / `guard 100 sees 9` / `closing 9` / `c = 101` / `guard 200 sees 2` / `d = 201` |
 
-Nothing in `nppc`'s output is special to the host — environments on the
-sbrk heap, function values, `#[drop]` own structs and their finalisers,
-generic instantiations — and the in-OS TinyCC compiled all of it as the
-plain C99 `ncc` emits, with no change to any compiler. (The batch of
-2026-09-07, at commit 531668d: a temporary boot hook ran the commands
-before the login screen with the results on serial, and was never
-committed; the recipe is a clean archive of `master` in `/tmp`, the
-kernel and ISO built there, the four `.n` files injected into a copy of
-the ext2 image with `debugfs`, QEMU headless.)
+The other nineteen — `hello` (its pid aside), `box`, `genfn`, `gcast`,
+`ginfer`, `genum`, `result`, `rinfer`, `modmain`, `modreexp`, `gnest`,
+`gfield`, `gclosure`, `closurety`, `gfnclosure`, `gstructfn`,
+`gstructnest`, `owncap` and `nwinui` — matched the same way: 23 of 23,
+through 23 in-OS `ncc` runs and 24 TinyCC compiles (the compiler itself
+first), 70 clean exits, no panic, the whole hook done 21 seconds after
+boot. Nothing in `nppc`'s output is special to the host — environments
+on the sbrk heap, function values, `#[drop]` own structs and their
+finalisers, generic instantiations, modules already inlined — and the
+in-OS TinyCC compiled all of it as the plain C99 `ncc` emits, with no
+change to any compiler. (The batches of 2026-09-07, at commits 531668d
+and e92af82: a temporary boot hook ran the commands before the login
+screen with the results on serial, and was never committed; the recipe
+is a clean archive of `master` in `/tmp`, the kernel and ISO built
+there, the `.n` files injected into a copy of the ext2 image with
+`debugfs`, QEMU headless, each in-OS output diffed against the
+program's host run.)
 
 ### 6.4 Milestones
 
