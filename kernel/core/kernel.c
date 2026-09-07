@@ -471,7 +471,7 @@ static const command_t commands[] = {
     {"fold",      cmd_fold,      "Wrap long lines to a width: fold [-s] [-w width] <file>", false},
     {"pr",        cmd_pr,        "Paginate text for printing: pr [-l lines] <file>", false},
     {"fmt",       cmd_fmt,       "Reflow text to fill lines up to a width: fmt [-w width] <file>", false},
-    {"nl",        cmd_nl,        "Number lines: nl [-b a|t|n] [-w N] [-s SEP] <file>", false},
+    {"nl",        cmd_nl,        "Number lines: nl [-b a|t|n] [-n ln|rn|rz] [-w N] [-s SEP] <file>", false},
     {"factor",    cmd_factor,    "Prime factorization: factor N [N ...]", false},
     {"gcd",       cmd_gcd,       "Greatest common divisor: gcd N [N ...]", false},
     {"lcm",       cmd_lcm,       "Least common multiple: lcm N [N ...]", false},
@@ -1076,7 +1076,7 @@ static const man_page_t man_pages[] = {
     {"fold",     "Wrap the lines of <file> so no output line is longer than the given width (80 by default, or -w width). A line longer than the width is broken with a hard newline at exactly that many characters; shorter lines and existing line breaks are left alone. With -s the break is placed at a word boundary instead — after the last space or tab that fits, so words aren't split (a run with no blank still hard-breaks at the width)."},
     {"pr",       "Paginate a text file for printing: `pr [-l lines] <file>` splits it into pages of `lines` content lines (56 by default) and prints a `--- Page N ---` header before each. Useful for chunking long output into page-sized sections."},
     {"fmt",      "Reflow (rewrap) the prose in <file> to fill lines up to a width (75 by default, or -w width) -- the paragraph formatter. Unlike `fold`, which only hard-breaks over-long lines at a fixed column, fmt COLLAPSES each paragraph's internal whitespace and repacks its words greedily, so short lines are joined and long ones split at word boundaries. A blank line separates paragraphs and is preserved as a single blank line; a word longer than the width is left whole on its own line rather than broken. Reads one bounded chunk of the file (like head/fold)."},
-    {"nl",       "Number the lines of <file>. By default only non-empty lines are numbered (-b t); -b a numbers every line and -b n numbers none. Each line number is right-justified in a field N columns wide (6 by default, or -w N) and followed by a separator (a tab by default, or -s SEP), then the line text."},
+    {"nl",       "Number the lines of <file>. By default only non-empty lines are numbered (-b t); -b a numbers every line and -b n numbers none. Each line number sits in a field N columns wide (6 by default, or -w N) and is followed by a separator (a tab by default, or -s SEP), then the line text. -n sets the number format: rn right-justified (the default), ln left-justified, rz right-justified with leading zeros (e.g. nl -n rz -w3 -> 001)."},
     {"factor",   "Print the prime factorization of each integer argument, one per line, as `N: p1 p2 ...` with factors ascending and repeated by multiplicity (e.g. `factor 90` prints `90: 2 3 3 5`). 0 and 1 print just `N:`. Accepts any 64-bit unsigned value; a non-numeric or negative argument is reported and skipped. Small factors are peeled by trial division and the rest by Miller-Rabin + Pollard's rho, so even a large 64-bit semiprime factors quickly."},
     {"gcd",      "Print the greatest common divisor of the integer arguments (two or more), folded left with Euclid's algorithm — e.g. `gcd 12 18` prints `6`, `gcd 24 36 60` prints `12`. gcd(0, n) is n and gcd(0, 0) is 0. Accepts any 64-bit non-negative values; a non-numeric or negative argument is reported and the command stops. The companion of `lcm`."},
     {"lcm",      "Print the least common multiple of the integer arguments (two or more), folded left — e.g. `lcm 4 6` prints `12`, `lcm 2 3 4` prints `12`. Computed as a/gcd(a,b)*b so the intermediate never overflows unnecessarily; lcm with a 0 operand is 0. If the true result would exceed 64 bits it reports `result overflows 64 bits` rather than printing a wrapped value. The companion of `gcd`."},
@@ -3830,13 +3830,15 @@ static int secure_zero_selftest(void) {
     return 0;
 }
 
-// nl [-b a|t|n] [-w N] [-s SEP] <file> — number the lines of <file>. By default
-// (-b t) only non-empty lines are numbered; -b a numbers every line, -b n none.
-// The number is right-justified in N columns (default 6) and followed by SEP
-// (default a tab). Arg-based like fold/expand (no stdin into a kernel builtin).
+// nl [-b a|t|n] [-n ln|rn|rz] [-w N] [-s SEP] <file> — number the lines of <file>.
+// By default (-b t) only non-empty lines are numbered; -b a numbers every line, -b n
+// none. The number sits in an N-column field (default 6) and is followed by SEP
+// (default a tab). -n picks the number format: rn right-justified (default), ln
+// left-justified, rz right-justified zero-padded. Arg-based like fold/expand.
 static void cmd_nl(int argc, char** argv) {
     int width = 6, ai = 1;
     char style = 't';                 // t = non-empty (default), a = all, n = none
+    char justify = 'r'; int zeropad = 0;   // -n: rn right (default) / ln left / rz right zero-padded
     const char* sep = "\t";
     while (ai < argc && argv[ai][0] == '-' && argv[ai][1] != '\0') {
         char f = argv[ai][1];
@@ -3847,16 +3849,23 @@ static void cmd_nl(int argc, char** argv) {
         } else if (f == 'w') {
             if (argv[ai][2] != '\0') { width = atoi(argv[ai] + 2); ai++; }
             else if (ai + 1 < argc) { width = atoi(argv[ai + 1]); ai += 2; }
-            else { printf("Usage: nl [-b a|t|n] [-w N] [-s SEP] <file>\n"); return; }
+            else { printf("Usage: nl [-b a|t|n] [-n ln|rn|rz] [-w N] [-s SEP] <file>\n"); return; }
         } else if (f == 's') {
             if (argv[ai][2] != '\0') { sep = argv[ai] + 2; ai++; }
             else if (ai + 1 < argc) { sep = argv[ai + 1]; ai += 2; }
-            else { printf("Usage: nl [-b a|t|n] [-w N] [-s SEP] <file>\n"); return; }
+            else { printf("Usage: nl [-b a|t|n] [-n ln|rn|rz] [-w N] [-s SEP] <file>\n"); return; }
+        } else if (f == 'n') {
+            const char* v = (argv[ai][2] != '\0') ? argv[ai] + 2 : (ai + 1 < argc ? argv[++ai] : "");
+            if      (strcmp(v, "ln") == 0) { justify = 'l'; zeropad = 0; }
+            else if (strcmp(v, "rn") == 0) { justify = 'r'; zeropad = 0; }
+            else if (strcmp(v, "rz") == 0) { justify = 'r'; zeropad = 1; }
+            else { printf("nl: invalid line numbering format '%s' (use ln, rn, or rz)\n", v); return; }
+            ai++;
         } else break;
     }
     if (width < 1)  width = 1;
     if (width > 12) width = 12;
-    if (ai >= argc) { printf("Usage: nl [-b a|t|n] [-w N] [-s SEP] <file>\n"); return; }
+    if (ai >= argc) { printf("Usage: nl [-b a|t|n] [-n ln|rn|rz] [-w N] [-s SEP] <file>\n"); return; }
 
     int fd = vfs_open(argv[ai], 0, 0);
     if (fd < 0) { printf("nl: cannot open '%s'\n", argv[ai]); return; }
@@ -3873,8 +3882,15 @@ static void cmd_nl(int argc, char** argv) {
         if (style == 'a' || (style == 't' && len > 0)) { // this line gets a number
             char nb[16]; snprintf(nb, sizeof(nb), "%d", num++);
             int nlen = (int)strlen(nb);
-            for (int k = 0; k < width - nlen; k++) putchar(' ');   // right-justify
-            for (int k = 0; nb[k]; k++)  putchar(nb[k]);
+            int padn = width - nlen; if (padn < 0) padn = 0;
+            if (justify == 'l') {                                  // -n ln: number, then pad right with spaces
+                for (int k = 0; nb[k]; k++) putchar(nb[k]);
+                for (int k = 0; k < padn; k++) putchar(' ');
+            } else {                                               // -n rn (spaces, default) / rz (leading zeros)
+                char pc = zeropad ? '0' : ' ';
+                for (int k = 0; k < padn; k++) putchar(pc);
+                for (int k = 0; nb[k]; k++) putchar(nb[k]);
+            }
             for (int k = 0; sep[k]; k++) putchar(sep[k]);
         }
         for (int k = i; k < j; k++) putchar(buf[k]);
