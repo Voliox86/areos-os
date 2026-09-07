@@ -1094,7 +1094,7 @@ static const man_page_t man_pages[] = {
     {"vfsstat",  "Report VFS node-pool usage: how many of the fixed node slots are live, free, and the linear high-water mark, then a by-kind breakdown of the live nodes -- mount-backed (ext2 /mnt mirror) held (open fd) vs idle, and the non-mount nodes split into /proc generated, /dev special, ramdisk dirs, and ramdisk files. A diagnostic for node-pool exhaustion under sustained in-OS file I/O (issue #66): watch it before/after `cc`/`xbm` runs -- if `mount held` climbs and never falls an fd is leaking, and the per-kind counts now show exactly which category (e.g. ramdisk files) grows rather than lumping /proc and ramdisk together."},
     {"comm",     "Compare two files that are each already sorted, line by line, in three columns: lines only in <file1> (column 1), lines only in <file2> (column 2, indented one tab), and lines common to both (column 3, indented two tabs). `-1`/`-2`/`-3` suppress the respective column (and drop its indentation from the later columns), so e.g. `comm -12 a b` prints just the lines common to both. Input is assumed sorted in byte order."},
     {"semver",   "Parse and compare Semantic Versioning 2.0.0 strings (MAJOR.MINOR.PATCH[-prerelease][+build]). With one argument, validate it and print the parsed fields. With two, print their precedence relation (`A < B`, `A = B`, or `A > B`) per the semver spec: core numbers compared numerically, a prerelease ranks below the same version without one, and build metadata is ignored. Useful for comparing package versions."},
-    {"seq",      "Print an inclusive sequence of integers, one per line. `seq LAST` counts 1..LAST; `seq FIRST LAST` counts FIRST..LAST; `seq FIRST STEP LAST` advances by STEP (which may be negative). A range that starts on the wrong side of LAST prints nothing, and a zero STEP is an error. Integer-only (64-bit signed), matching GNU seq for integer arguments."},
+    {"seq",      "Print an inclusive sequence of integers, one per line. `seq LAST` counts 1..LAST; `seq FIRST LAST` counts FIRST..LAST; `seq FIRST STEP LAST` advances by STEP (which may be negative). A range that starts on the wrong side of LAST prints nothing, and a zero STEP is an error. `-w` equalizes width by padding with leading zeros; `-s SEP` puts SEP between numbers instead of a newline. Integer-only (64-bit signed), matching GNU seq for integer arguments."},
     {"stackcheck","Scan every running task's kernel stack for overflow. Each 4 KB kernel task stack carries a magic canary word at its low (overflow) end, stamped when the stack is allocated; `stackcheck` walks the process table and reports whether every canary is still intact or names any task whose stack has been smashed (grown past 4 KB into the canary). A cheap detect-and-report tripwire for stack overflows, complementing the off-stack-buffer hardening."},
     {"notify",   "Post a desktop notification toast. `notify <title> [message...]` pops a small purple Nyx card in the top-right of the desktop (title on the first line, the rest of the arguments joined as the message below) that stays up for a few seconds and then dismisses itself — the compositor keeps repainting while a toast is alive so it fades out on its own. Up to a few toasts stack at once; a new one past that evicts the oldest. Useful for surfacing background events (a finished job, a download) to the user without stealing focus."},
     {"clip",     "A system text clipboard (like pbcopy/pbpaste). `clip <text...>` copies the arguments (joined with spaces) to the clipboard; `clip` with no arguments pastes - prints the current contents; `clip -c` clears it. The clipboard holds up to 4096 bytes and persists across commands, so you can copy a value from one command's output and paste it into another. The same buffer is exposed to the rest of the kernel (clipboard_get/set), so the GUI terminal and editor can be wired to copy/paste through it."},
@@ -2666,14 +2666,35 @@ static void cmd_bech32(int argc, char** argv) {
 // seq output callback: print each value as a decimal on its own line. The number is
 // formatted by hand (unsigned magnitude, so INT64_MIN is safe) to avoid depending on
 // printf %lld support.
-static void seq_emit_print(long long value, void* ctx) {
-    (void)ctx;
+// seq -s/-w formatting context: separator, equal-width column, first-value flag.
+typedef struct { const char* sep; int width; int first; } seq_fmt_ctx_t;
+
+// Printed width of v: decimal digits plus a sign column for negatives.
+static int seq_numw(long long v) {
+    int w = (v < 0) ? 1 : 0;
+    unsigned long long m = (v < 0) ? (0ULL - (unsigned long long)v) : (unsigned long long)v;
+    if (m == 0) return w + 1;
+    while (m) { w++; m /= 10; }
+    return w;
+}
+
+// seq emit: the separator before every value except the first, then the number zero-padded
+// (after the sign) to ctx->width printed columns. Default sep "\n" + width 0 reproduces the
+// classic one-per-line output; -s sets the separator and -w sets the width (GNU seq).
+static void seq_emit_fmt(long long value, void* ctx) {
+    seq_fmt_ctx_t* f = (seq_fmt_ctx_t*)ctx;
+    if (!f->first) printf("%s", f->sep);
+    f->first = 0;
     char buf[24]; int i = (int)sizeof(buf); buf[--i] = '\0';
     unsigned long long m = (value < 0) ? (0ULL - (unsigned long long)value) : (unsigned long long)value;
     if (m == 0) buf[--i] = '0';
     while (m) { buf[--i] = (char)('0' + (m % 10)); m /= 10; }
-    if (value < 0) buf[--i] = '-';
-    printf("%s\n", &buf[i]);
+    int neg = (value < 0);
+    int digits = (int)sizeof(buf) - 1 - i;
+    int total = digits + (neg ? 1 : 0);
+    if (neg) putchar('-');
+    for (int k = total; k < f->width; k++) putchar('0');   // leading zeros after the sign
+    printf("%s", &buf[i]);
 }
 
 // seq [FIRST [STEP]] LAST — print an inclusive integer sequence, one per line.
@@ -2681,15 +2702,29 @@ static void seq_emit_print(long long value, void* ctx) {
 //   seq F S L    -> F, F+S, ... bounded by L (STEP may be negative; 0 is an error)
 // Integer-only (64-bit signed), matching GNU seq for integer arguments.
 static void cmd_seq(int argc, char** argv) {
+    const char* sep = "\n";
+    int wflag = 0, ai = 1;
+    // Options -w (equal-width, zero-pad) and -s SEP. A '-' followed by a digit is a
+    // negative-number operand, not an option — only -w/-s (a '-' then a letter) are consumed.
+    while (ai < argc && argv[ai][0] == '-' && (argv[ai][1] == 'w' || argv[ai][1] == 's')) {
+        if (argv[ai][1] == 'w') { wflag = 1; ai++; }
+        else if (argv[ai][2]) { sep = &argv[ai][2]; ai++; }          // -sSEP
+        else if (ai + 1 < argc) { sep = argv[ai + 1]; ai += 2; }     // -s SEP
+        else { printf("seq: option requires an argument -- 's'\n"); return; }
+    }
     long long first = 1, step = 1, last = 0;
-    int ok = 1;
-    if (argc == 2)      ok = (parse_i64(argv[1], &last) == 0);
-    else if (argc == 3) ok = (parse_i64(argv[1], &first) == 0) && (parse_i64(argv[2], &last) == 0);
-    else if (argc == 4) ok = (parse_i64(argv[1], &first) == 0) && (parse_i64(argv[2], &step) == 0) &&
-                             (parse_i64(argv[3], &last) == 0);
-    else { printf("Usage: seq [FIRST [STEP]] LAST\n"); return; }
+    int ok = 1, nrem = argc - ai;
+    if (nrem == 1)      ok = (parse_i64(argv[ai], &last) == 0);
+    else if (nrem == 2) ok = (parse_i64(argv[ai], &first) == 0) && (parse_i64(argv[ai + 1], &last) == 0);
+    else if (nrem == 3) ok = (parse_i64(argv[ai], &first) == 0) && (parse_i64(argv[ai + 1], &step) == 0) &&
+                             (parse_i64(argv[ai + 2], &last) == 0);
+    else { printf("Usage: seq [-w] [-s SEP] [FIRST [STEP]] LAST\n"); return; }
     if (!ok) { printf("seq: arguments must be integers\n"); return; }
-    if (seq_run(first, step, last, seq_emit_print, 0) != 0) printf("seq: step must not be zero\n");
+    int width = 0;
+    if (wflag) { int a = seq_numw(first), b = seq_numw(last); width = a > b ? a : b; }
+    seq_fmt_ctx_t ctx = { sep, width, 1 };
+    if (seq_run(first, step, last, seq_emit_fmt, &ctx) != 0) { printf("seq: step must not be zero\n"); return; }
+    if (!ctx.first) putchar('\n');                                   // trailing newline iff a value printed
 }
 
 // comm output callback: `tabs` tab stops, then the raw line bytes, then a newline.
