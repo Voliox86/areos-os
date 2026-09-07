@@ -5,22 +5,26 @@
 // builds one whose lambda captures a plain `seed: T` and an `n: i64`.
 // The template's lambda lifts as a template of its own, as M6.4b–c3
 // do for `fn` and `Fn` lambdas — the lifted body `__c_N<T>`, the
-// environment `__E_N<T>` with its maker `__mk_E_N<T>`, and (when the
-// environment owns something) its finaliser `__fin_E_N<T>` — all
-// instantiated with the template that uses them; the owning struct
-// itself is one per CONCRETE signature, `__FnOnce_i64__i64` and
-// `__FnOnce_str__str` here, declared by the closure pass that runs after
-// the generic pass, which also rewrites every `f(x)` on a FnOnce name
-// into `__call_once_…(f, x)` once the signature is concrete. An `own`
-// capture flows through a generic CONSUMER the same way — `consume<i64>`
-// is handed a closure that owns a File, and the File closes when the
-// closure's one call ends. An own capture born INSIDE a template works
-// too (M6.4c6c): the generic pass carries `own struct` templates, so
-// `keeper<T>`'s environment instantiates as an own struct per T, with a
-// finaliser of its own — each keeper owns a File and closes it after its
-// one call. The limit that remains is a capture typed `T` when T is
-// instantiated with an own type: nppc cannot see that at the lambda, the
-// environment comes out plain, and N refuses the own field inside it.
+// environment `__E_N<T>` with its maker `__mk_E_N<T>` and its finaliser
+// `__fin_E_N<T>` — all instantiated with the template that uses them;
+// the owning struct itself is one per CONCRETE signature,
+// `__FnOnce_i64__i64` and `__FnOnce_str__str` here, declared by the
+// closure pass that runs after the generic pass, which also rewrites
+// every `f(x)` on a FnOnce name into `__call_once_…(f, x)` once the
+// signature is concrete. An `own` capture flows through a generic
+// CONSUMER the same way — `consume<i64>` is handed a closure that owns a
+// File, and the File closes when the closure's one call ends. An own
+// capture born INSIDE a template works too (M6.4c6c): the generic pass
+// carries `own struct` templates, so `keeper<T>`'s environment
+// instantiates as an own struct per T, with a finaliser of its own — each
+// keeper owns a File and closes it after its one call. And a capture
+// typed T itself may be own at some instantiation (M6.4c6d): `guard<T>`
+// captures its `v: T`; the environment template is plain, since nppc
+// cannot know at the lambda what T will be, and each instantiation
+// decides — a struct that receives an own type argument for a by-value
+// field comes out `own struct`, N's rule that an own value lives only
+// inside an own container — so `guard<File>` owns its File and closes it
+// after the one call, while `guard<Handle>` stays plain.
 
 extern syscall {
     fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
@@ -37,6 +41,9 @@ fn close_file(f: File) {
     put("closing {f.fd}\n");
 }
 
+// A plain struct with the same field, for the plain instantiation.
+struct Handle { fd: i64 }
+
 // A generic consumer: the closure's one call, at whatever T.
 fn consume<T>(f: FnOnce(T) -> T, x: T) -> T {
     f(x)
@@ -48,6 +55,14 @@ fn consume<T>(f: FnOnce(T) -> T, x: T) -> T {
 fn keeper<T>(seed: T, n: i64) -> FnOnce(T) -> T {
     h := File{ fd: n };
     fn(x: T) -> T { put("keeper {h.fd}\n"); seed }
+}
+
+// A generic guard: the lambda captures the T itself and peeks a field of
+// it at the one call. The environment template is plain; its `File`
+// instantiation is an own struct that closes the File once the call has
+// run, its `Handle` instantiation a plain struct.
+fn guard<T>(v: T, tag: i64) -> FnOnce(i64) -> i64 {
+    fn(x: i64) -> i64 { put("guard {tag} sees {v.fd}\n"); x + tag }
 }
 
 fn main() -> i64 {
@@ -62,5 +77,11 @@ fn main() -> i64 {
     put("b = {b}\n");
     w := v("x");
     put("w = {w}\n");
+    g := guard<File>(File{ fd: 9 }, 100);
+    k := guard<Handle>(Handle{ fd: 2 }, 200);
+    c := g(1);
+    put("c = {c}\n");
+    d := k(1);
+    put("d = {d}\n");
     0
 }

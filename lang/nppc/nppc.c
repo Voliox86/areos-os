@@ -838,6 +838,39 @@ static int span_subst(GStruct* g, Inst* it, int ts, int te, char* out) {
     return n;
 }
 
+/* Is the type text (n characters, not terminated) an `own struct` of this
+ * program? */
+static int is_own_span(const char* s, int n) {
+    for (int t = 0; t + 2 < NTOK; t++)
+        if (TOKS[t].k == T_KW_OWN && TOKS[t + 1].k == T_KW_STRUCT && TOKS[t + 2].k == T_IDENT &&
+            TOKS[t + 2].slen == n && !memcmp(TOKS[t + 2].s, s, (size_t)n))
+            return 1;
+    return 0;
+}
+
+/* Does this instantiation of a struct template come out own? An own
+ * template does (M6.4c6c); so does a plain one whose type argument for a
+ * by-value field names an own struct, or whose field is a nested use of
+ * an own template (M6.4c6d) — a struct that receives an own value is own,
+ * which is N's rule that an own value lives only inside an own container.
+ * A lambda's environment template `__E_N<T>` with a capture typed T is the
+ * case that matters: nppc cannot know at the lambda whether T will be own,
+ * and this decides it per instantiation. */
+static int inst_own(GStruct* g, Inst* it) {
+    if (g->own) return 1;
+    for (int fi = 0; fi < g->nfields; fi++) {
+        if (g->fields[fi].ptrs || g->fields[fi].te > 0) continue;
+        if (g->fields[fi].nest >= 0) {
+            if (GS[g->nested[g->fields[fi].nest].gi].own) return 1;
+            continue;
+        }
+        for (int p = 0; p < g->nparams; p++)
+            if (tokspan_eq(g->ptok[p], g->fields[fi].base) && is_own_span(it->aname[p], it->alen[p]))
+                return 1;
+    }
+    return 0;
+}
+
 /* The concrete N struct for one instantiation: the template body with each
  * type parameter replaced by the matching argument. */
 static char* concrete_struct(Inst* it) {
@@ -845,8 +878,7 @@ static char* concrete_struct(Inst* it) {
     char* mn = mangle(it);
     char* out = xmalloc(4096 + 512 * (size_t)g->nfields);
     int n = 0;
-    n += sprintf(out + n, "%sstruct %s {\n", g->own ? "own " : "", mn);   /* an own template
-                                                                          * instantiates own */
+    n += sprintf(out + n, "%sstruct %s {\n", inst_own(g, it) ? "own " : "", mn);
     for (int fi = 0; fi < g->nfields; fi++) {
         int bt = g->fields[fi].base;
         int sub = -1;                     /* is the field type a type parameter? */
@@ -2075,12 +2107,7 @@ static char* env_text(int itemfirst, int lam, int* caps, int ncap, int lamno, ch
 /* Is the type text an `own struct` of this program? (M6.4c4: an own
  * capture cannot live behind the heap environment's pointer.) */
 static int is_own_type(const char* ty) {
-    size_t n = strlen(ty);
-    for (int t = 0; t + 2 < NTOK; t++)
-        if (TOKS[t].k == T_KW_OWN && TOKS[t + 1].k == T_KW_STRUCT && TOKS[t + 2].k == T_IDENT &&
-            (size_t)TOKS[t + 2].slen == n && !memcmp(TOKS[t + 2].s, ty, n))
-            return 1;
-    return 0;
+    return is_own_span(ty, (int)strlen(ty));
 }
 
 /* The environment of a call-once closure (M6.4c4): an `own struct __E_N`
@@ -2241,12 +2268,6 @@ static char* lambda_pass(const char* prog) {
         /* `h := fn(...) { ... }` (M6.4c4): a bound lambda may capture own
          * locals — it becomes a call-once closure, consumed by its call. */
         int bname = (i >= 2 && TOKS[i - 1].k == T_WALRUS && TOKS[i - 2].k == T_IDENT) ? i - 2 : -1;
-        int used[MAXP], nused = 0;        /* the ones the lambda — or its closure type — mentions, in order */
-        for (int q = 0; q < ntp; q++) {
-            int m = closure && word_in(slot, tp[q]);
-            for (int u = i + 1; u <= end && !m; u++) if (tokspan_eq(tp[q], u)) m = 1;
-            if (m) used[nused++] = q;
-        }
         int refs[256];                    /* references to enclosing locals (M6.4c2) */
         int nref = scan_captures(itemfirst, i, body, end, refs, 256, !closure && bname < 0);
         int caps[32], ncap = 0;           /* the distinct captured names, first use first */
@@ -2254,6 +2275,19 @@ static char* lambda_pass(const char* prog) {
             int dup = 0;
             for (int c = 0; c < ncap && !dup; c++) if (tokspan_eq(caps[c], refs[r])) dup = 1;
             if (!dup && ncap < 32) caps[ncap++] = refs[r];
+        }
+        int used[MAXP], nused = 0;        /* the ones the lambda — its closure type, its tokens,
+                                           * or a capture's type (M6.4c6d) — mentions, in order */
+        for (int q = 0; q < ntp; q++) {
+            int m = closure && word_in(slot, tp[q]);
+            for (int u = i + 1; u <= end && !m; u++) if (tokspan_eq(tp[q], u)) m = 1;
+            for (int c = 0; c < ncap && !m; c++) {   /* `v: T` captured by a lambda whose own
+                                                     * signature names no T: its environment
+                                                     * is a template over T all the same */
+                char* t = local_type(itemfirst, i, caps[c], 0);
+                if (t && word_in(t, tp[q])) m = 1;
+            }
+            if (m) used[nused++] = q;
         }
         int once = 0;                     /* M6.4c4: an own capture makes a call-once closure */
         char* otys[32] = {0};
@@ -2323,11 +2357,16 @@ static char* lambda_pass(const char* prog) {
             apps(&acc, &an, &acap, "\n\n");
             madeenv = 1;
         }
-        if (oslot) {                      /* M6.4c6: the finaliser — takes an own environment
-                                           * out so its captures drop; a no-op otherwise */
+        if (oslot) {                      /* M6.4c6: the finaliser — takes the environment out
+                                           * so its captures drop; a no-op when nothing was
+                                           * captured. Every capturing lambda gets the real
+                                           * one (M6.4c6d): a plain environment takes out a
+                                           * plain struct and nothing drops, and a template
+                                           * environment may instantiate own (a capture typed
+                                           * T at an own T), which only this shape finalises */
             char ft[400];                 /* inside a template (M6.4c6b) the finaliser is a
                                            * template too, over the environment's parameters */
-            if (ownenv) {
+            if (ncap) {
                 sprintf(fin, "__fin_E_%d%s", lamno, targs);
                 sprintf(ft, "fn %s(_env: addr) {\n    __p := _env as *__E_%d%s;\n    __e := __p[0];\n}\n\n", fin, lamno, targs);
             } else {

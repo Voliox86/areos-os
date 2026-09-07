@@ -54,7 +54,13 @@ token-span rewrite over the lexed file, no parse tree yet, and the
 lowered `.n` is then held to the N checker like any hand-written N. A
 concrete item is emitted where its template is declared, so a type a
 template will be instantiated with is declared before the template, as
-any struct used by value would be.
+any struct used by value would be. A struct template is `own` at an
+instantiation that receives an own struct as the type argument of a
+by-value field, or holds a nested use of an own template — `Pair<T> {
+a: T, b: T }` at `File` is `own struct __g_Pair_File`, and drops both
+Files at scope end — which is N's rule that an own value lives only
+inside an own container, decided per instantiation (M6.4c6d); an `own
+struct` template is own at every instantiation (M6.4c6c).
 
 | Rung | Example | What lowers |
 |---|---|---|
@@ -403,12 +409,27 @@ declaration and every instantiation is an own struct — so such a
 lambda's environment is `own struct __E_N<T>`, instantiated as
 `own struct __g___E_N_i64` with its finaliser `__g___fin_E_N_i64`;
 `keeper<T>` in the example owns a File per instantiation and closes it
-after the one call. What stays out of reach is a capture typed `T`
-when T is instantiated with an own type: nppc cannot see the
-instantiation at the lambda, the environment comes out plain, and N
-refuses the own field inside it (*own type in field '__g___E_0_File.v'
-— own values cannot nest in other types (v0.17)*). A `#[drop]`
-attribute on a struct template is not carried either.
+after the one call. A capture typed `T` itself may be own at some
+instantiation (M6.4c6d): nppc cannot see that at the lambda — `T` is
+not an own struct of the program — so the environment template comes
+out plain, and the generic pass decides per instantiation: a struct
+template instantiated with an own struct as the type argument of a
+by-value field (or holding a nested use of an own template) is emitted
+as `own struct`, N's rule that an own value lives only inside an own
+container. Two details make it hold. The lifted items are templates
+over the type parameters a capture's TYPE names, not only the ones the
+lambda's own signature names — `guard<T>(v: T, tag: i64)`'s lambda is
+`fn(x: i64) -> i64` and names no T, yet its environment is `__E_N<T>`.
+And every capturing FnOnce lambda gets the real finaliser
+`__fin_E_N<T>`: taking a plain environment out is harmless, and only
+that shape drops an own one, so the no-op finaliser is kept for the
+lambda that captures nothing and for a named function adapted into the
+slot. `guard<File>` in the example thus owns its File and closes it
+after the one call, while `guard<Handle>` stays a plain struct; the
+body may peek a field of the capture (`v.fd`), and returning the
+capture itself is refused by N as a field move out of an own value —
+the environment still owns it. A `#[drop]` attribute on a struct
+template is not carried yet.
 [`../examples/gfnonce.npp`](../examples/gfnonce.npp) is the worked
 example, held by stage [10y].
 
