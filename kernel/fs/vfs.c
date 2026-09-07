@@ -1766,23 +1766,41 @@ int vfs_cp(const char* src, const char* dst) {
     } else {
         char child_name[MAX_NAME];
         vfs_node_t* dst_parent = resolve_parent(dst, child_name);
-        if (dst_parent && dst_parent->type == 1 && !find_child(dst_parent, child_name)) {
-            vfs_node_t* dst_ino = alloc_node();
-            if (dst_ino) {
-                strncpy(dst_ino->name, child_name, MAX_NAME-1);
-                dst_ino->type = 0;
-                dst_ino->parent = dst_parent;
-                dst_ino->size = ssize;
-                if (ssize) {
-                    dst_ino->data = (uint8_t*)kmalloc(ssize);
-                    if (dst_ino->data) memcpy(dst_ino->data, sbuf, ssize);
-                    else dst_ino->size = 0;
+        if (dst_parent && dst_parent->type == 1) {
+            vfs_node_t* existing = find_child(dst_parent, child_name);
+            if (existing) {
+                // Overwrite an existing regular file in place — the documented `cp`
+                // behaviour ("replacing <dst> if it already exists"). Previously this
+                // path only created a NEW node, so `cp a b` failed when b already
+                // existed. A directory destination is refused (leaves rc = -1).
+                if (existing->type == 0) {
+                    uint8_t* nd = ssize ? (uint8_t*)kmalloc(ssize) : NULL;
+                    if (!ssize || nd) {
+                        if (existing->data) kfree(existing->data);
+                        existing->data = nd;
+                        if (ssize) memcpy(existing->data, sbuf, ssize);
+                        existing->size = ssize;
+                        rc = 0;
+                    }
                 }
-                if (vfs_append_child(dst_parent, dst_ino) == 0) {
-                    rc = 0;
-                } else {
-                    if (dst_ino->data) kfree(dst_ino->data);
-                    free_node(dst_ino);
+            } else {
+                vfs_node_t* dst_ino = alloc_node();
+                if (dst_ino) {
+                    strncpy(dst_ino->name, child_name, MAX_NAME-1);
+                    dst_ino->type = 0;
+                    dst_ino->parent = dst_parent;
+                    dst_ino->size = ssize;
+                    if (ssize) {
+                        dst_ino->data = (uint8_t*)kmalloc(ssize);
+                        if (dst_ino->data) memcpy(dst_ino->data, sbuf, ssize);
+                        else dst_ino->size = 0;
+                    }
+                    if (vfs_append_child(dst_parent, dst_ino) == 0) {
+                        rc = 0;
+                    } else {
+                        if (dst_ino->data) kfree(dst_ino->data);
+                        free_node(dst_ino);
+                    }
                 }
             }
         }
