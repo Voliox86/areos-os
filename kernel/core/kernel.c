@@ -248,6 +248,7 @@ static void cmd_mkfs(int argc, char** argv);
 static void cmd_nyxinstall(int argc, char** argv);
 static void cmd_env(int argc, char** argv);
 static void cmd_export(int argc, char** argv);
+static void cmd_unset(int argc, char** argv);
 static void cmd_alias(int argc, char** argv);
 static void cmd_unalias(int argc, char** argv);
 static void cmd_find(int argc, char** argv);
@@ -456,6 +457,7 @@ static const command_t commands[] = {
     {"nyxverify", cmd_nyxverify, "Check an installed disk's kernel (ELF+multiboot2, ext2+raw): nyxverify <drive>", false},
     {"env",       cmd_env,       "Show environment variables", false},
     {"export",    cmd_export,    "Set env variable: export <name>=<value>", false},
+    {"unset",     cmd_unset,     "Unset env variable(s): unset <name>...", false},
     {"alias",     cmd_alias,     "Define/list command aliases: alias [name[=value]]", false},
     {"unalias",   cmd_unalias,   "Remove a command alias: unalias <name>", false},
     {"find",      cmd_find,      "Find files by name: find <name> [path]", false},
@@ -975,7 +977,7 @@ typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","alias","unalias","exec","spawn","jobs","wait","nice","renice","taskset",0};
 static const char* const HC_files[] = {"ls","cd","pwd","pushd","popd","dirs","cat","file","identify","tar","iniget","open","touch","mkdir","rm","shred","cp","mv","tree","find","which","basename","dirname","realpath","stat","files","df","du","disks","lsblk","lspci","nvme","nyxpart","mkfs","nyxinstall","nyxgrub","mount","ext2ls","ext2cat",0};
 static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","sed","patch","fold","fmt","nl","expand","unexpand","factor","isprime","strings","sha256sum","sha512sum","sha1sum","md5sum","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump","od",0};
-static const char* const HC_sys[]   = {"ps","top","time","kill","pgrep","pkill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
+static const char* const HC_sys[]   = {"ps","top","time","kill","pgrep","pkill","mem","cpus","uname","date","reboot","env","export","unset","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","route","arp","netstat","dhcp","dns","ping","setip","httpget","httpd","tls","ipcalc",0};
 static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","murmur","base58","bech32","deflate","gzip","gunzip","zcat","calc","expr","json","hmac","totp","uuid",0};
@@ -1161,7 +1163,8 @@ static const man_page_t man_pages[] = {
     {"truncate", "Set a file's length: `truncate -s <size> <file>`. The size is `N` (bytes), `NK`/`NM`/`NG` (1024-based), or `+N`/`-N` to grow/shrink relative to the current size (`-N` clamps at 0). Growing zero-fills the new tail; shrinking discards the excess. The file is created if it doesn't exist. Sizes are capped at 16 MB (files are held as one contiguous buffer, so there are no sparse holes). Handy for making a fixed-size test file — e.g. `truncate -s 1M /tmp/big` — or trimming one."},
     {"which",    "Look <name> up as a shell command and report how it would run: as a built-in, or as the program at a particular path."},
     {"env",      "Print the shell's environment variables, one NAME=value pair per line."},
-    {"export",   "Set an environment variable: `export NAME=value`. Exported variables are passed on to the programs the shell runs."},
+    {"export",   "Set an environment variable: `export NAME=value`. Exported variables are passed on to the programs the shell runs; re-exporting a name updates it in place."},
+    {"unset",    "Remove one or more environment variables: `unset NAME...`. Afterwards $NAME expands to empty and the programs the shell runs no longer receive it."},
     {"alias",    "Define or list command aliases, bash-style. `alias ll=ls -l` makes typing `ll` run `ls -l` (the value is the whole rest of the line after `=`, so no quotes are needed); `alias ll foo` then runs `ls -l foo`. With no arguments, `alias` lists every defined alias; `alias <name>` prints just that one. The first word of every command you type is expanded through the alias table, with a recursion cap so a self-referential alias can't loop. Aliases live for the session (they are not saved to disk). Remove one with `unalias`."},
     {"unalias",  "Remove a command alias defined with `alias`: `unalias <name>`."},
     {"ps",       "List the running processes with their PID, scheduler state and name. Use kill to stop one."},
@@ -5079,14 +5082,33 @@ static void cmd_env(int argc, char** argv) {
     printf("  (%d variables)\n", env_count);
 }
 
+void shell_set_env(const char* name, const char* value);   // defined below (shell env table)
+int  shell_unset_env(const char* name);                     // defined below (shell env table)
+
 static void cmd_export(int argc, char** argv) {
     if (argc < 2) { printf("Usage: export <name>=<value>\n"); return; }
-    if (env_count >= 16) { printf("export: too many variables\n"); return; }
-    strncpy(env_buf[env_count], argv[1], 63);
-    env_buf[env_count][63] = '\0';
-    env_vars[env_count] = env_buf[env_count];
-    env_count++;
-    printf("  %s\n", argv[1]);
+    // Split NAME=VALUE (no '=' -> set to empty). shell_set_env UPDATES an existing entry in
+    // place, so re-exporting a variable now changes it instead of appending a shadowed dup.
+    const char* eq = strchr(argv[1], '=');
+    char name[64];
+    const char* value;
+    if (eq) {
+        int nl = (int)(eq - argv[1]); if (nl > 63) nl = 63;
+        memcpy(name, argv[1], (size_t)nl); name[nl] = '\0';
+        value = eq + 1;
+    } else {
+        strncpy(name, argv[1], 63); name[63] = '\0';
+        value = "";
+    }
+    if (!name[0]) { printf("export: invalid name\n"); return; }
+    shell_set_env(name, value);
+    printf("  %s=%s\n", name, value);
+}
+
+// unset NAME... — remove one or more env variables (POSIX: silent whether or not set).
+static void cmd_unset(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: unset <name>...\n"); return; }
+    for (int i = 1; i < argc; i++) shell_unset_env(argv[i]);
 }
 
 // alias — define or list command aliases (bash-style). `alias` lists all; `alias name`
@@ -5170,6 +5192,26 @@ void shell_set_env(const char* name, const char* value) {
     if (o < 63)                                  env_buf[slot][o++] = '=';
     for (int i = 0; value[i] && o < 63; i++)     env_buf[slot][o++] = value[i];
     env_buf[slot][o] = '\0';
+}
+
+// Remove shell env var NAME (the `unset` builtin). Compacts the table by shifting the
+// remaining "NAME=value" contents down a slot (env_vars[k] always aliases env_buf[k], so
+// copy contents, not pointers). Returns 1 if a var was removed, 0 if NAME was not set.
+int shell_unset_env(const char* name) {
+    if (!name) return 0;
+    int nl = (int)strlen(name);
+    for (int i = 0; i < env_count; i++) {
+        if (strncmp(env_vars[i], name, (size_t)nl) == 0 && env_vars[i][nl] == '=') {
+            for (int k = i; k < env_count - 1; k++) {
+                strncpy(env_buf[k], env_buf[k + 1], 63);
+                env_buf[k][63] = '\0';
+                env_vars[k] = env_buf[k];
+            }
+            env_count--;
+            return 1;
+        }
+    }
+    return 0;
 }
 
 // Value of shell variable `name` (length `namelen`), or NULL if unset. Reads the same
