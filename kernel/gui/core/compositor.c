@@ -3868,6 +3868,7 @@ static uint32_t border_resolve(const char* name) {
 // `border_inactive` knobs — "accent"/unknown/NULL -> 0 (follow accent / neutral bevel), a
 // real palette name -> that exact rgb. Also exercises the full nyx.conf parse chain for the
 // focused+inactive pair (distinct keys, no prefix collision). 0 = pass.
+static void border_config_str(uint32_t rgb, char* out, int cap);   // save_nyx_config's rgb->name reverse
 int border_color_selftest(void) {
     if (border_resolve("accent") != 0) return 1;
     if (border_resolve(0) != 0) return 2;
@@ -3879,6 +3880,15 @@ int border_color_selftest(void) {
     char v[64];
     if (!nyxconf_get(cfg, "border", v, sizeof v)          || border_resolve(v) != fb_rgb(40, 160, 175)) return 7;
     if (!nyxconf_get(cfg, "border_inactive", v, sizeof v) || border_resolve(v) != fb_rgb(45, 50, 70))   return 8;
+    // Persistence round-trip (save_nyx_config): border_resolve(border_config_str(rgb)) == rgb, so a
+    // border color survives a GUI save->reload. 0 maps through "accent" back to 0.
+    char rb[24];
+    border_config_str(0, rb, sizeof rb);                          if (border_resolve(rb) != 0) return 9;
+    for (int i = 0; i < WALLPAPER_COUNT; i++) {
+        uint32_t rgb = wallpaper_color_rgb(i);
+        border_config_str(rgb, rb, sizeof rb);
+        if (border_resolve(rb) != rgb) return 10;
+    }
     return 0;
 }
 
@@ -4168,11 +4178,28 @@ static void apply_nyx_config(void) {
 // Write the current theme (wallpaper style + accent color + widget state) back to
 // /etc/nyx.conf, so a change made in the GUI (the Wallpaper theme picker) persists across
 // reboots — apply_nyx_config reads it at desktop start. The inverse of apply_nyx_config.
+// Reverse of border_resolve for save_nyx_config: 0 -> "accent", else the palette name whose
+// rgb matches (a border only ever holds 0 or one of the 11 palette colors, so this round-trips
+// exactly). An unrecognised rgb falls back to "accent" so the write is always valid.
+static void border_config_str(uint32_t rgb, char* out, int cap) {
+    if (rgb != 0)
+        for (int i = 0; i < WALLPAPER_COUNT; i++)
+            if (wallpaper_color_rgb(i) == rgb) { snprintf(out, cap, "%s", wallpaper_color_name(i)); return; }
+    snprintf(out, cap, "accent");
+}
+
 void save_nyx_config(void) {
-    char buf[320];
+    char buf[640];
     char acc[16];   // a #RRGGBB accent has no palette name — persist it so the GUI save round-trips
     accent_config_str(wallpaper_is_rgb_override(), wallpaper_override_rgb(),
                       wallpaper_color_name(wallpaper_color()), acc, sizeof acc);
+    char bf[24], bi[24];                              // border / border_inactive as palette names
+    border_config_str(g_border_color, bf, sizeof bf);
+    border_config_str(g_border_inactive, bi, sizeof bi);
+    // Persist EVERY knob apply_nyx_config reads (not just the GUI-picker ones), so a theme
+    // change in the GUI no longer O_TRUNCs away a hand-set rice config (gaps/border/rounding/
+    // shadow/title_align/panel_tint/wallpaper_dim). `scheme` is intentionally omitted — it is a
+    // one-word alias that resolves into wallpaper+accent, which are written explicitly here.
     int n = snprintf(buf, sizeof buf,
         "# NyxOS desktop config -- rice it here (also editable from the Wallpaper picker).\n"
         "wallpaper = %s\n"
@@ -4181,15 +4208,29 @@ void save_nyx_config(void) {
         "widget_pos = %s\n"
         "clock = %s\n"
         "gaps = %d\n"
-        "icons = %s\n",
+        "icons = %s\n"
+        "border = %s\n"
+        "border_inactive = %s\n"
+        "panel_tint = %d\n"
+        "rounding = %d\n"
+        "shadow = %s\n"
+        "title_align = %s\n"
+        "wallpaper_dim = %d\n",
         wallpaper_style_name(wallpaper_style()),
         acc,
         g_widget_on ? "on" : "off",
         widget_pos_name(g_widget_pos),
         g_clock_12h ? "12h" : "24h",
         g_gaps,
-        g_desktop_icons_visible ? "on" : "off");
+        g_desktop_icons_visible ? "on" : "off",
+        bf, bi,
+        g_panel_tint,
+        g_corner_radius,
+        g_shadows ? "on" : "off",
+        g_title_center ? "center" : "left",
+        g_wallpaper_dim);
     if (n <= 0) return;
+    if (n > (int)sizeof buf - 1) n = (int)sizeof buf - 1;   // snprintf returns the intended length; clamp to what fit
     int fd = vfs_open("/etc/nyx.conf", O_CREAT | O_TRUNC, 0644);
     if (fd >= 0) { vfs_write(fd, buf, (size_t)n); vfs_close(fd); }
 }
