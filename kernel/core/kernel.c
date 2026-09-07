@@ -1070,7 +1070,7 @@ static const man_page_t man_pages[] = {
     {"rev",      "Print each line of <file> with the order of its characters reversed."},
     {"sed",      "Substitute text with the s command: sed s/old/new/[g] <file> replaces the literal string <old> with <new> on each line (the first match per line, or every match with the g flag) and prints the result — the file itself is not changed. Any character right after the s works as the delimiter, so s|a|b|g is the same as s/a/b/g. Matching is literal (NyxOS has no regex engine); unlike tr, which works one character at a time, sed replaces whole strings."},
     {"patch",    "Apply a unified diff to a file IN PLACE: `patch <file> <diff>` reads the unified diff in <diff> (the format `diff -u` and git produce) and edits <file> accordingly — added (`+`) lines inserted, removed (`-`) lines dropped, context (` `) lines kept. It is fail-safe: every hunk's context and removed lines must match <file> exactly at the hunk's position, or the whole patch is rejected with a reason and the file is left completely unchanged (no partial application). `---`/`+++` headers and `\\ No newline` markers are ignored. The read side of the existing `diff` — together they let you produce a diff, ship it, and apply it in-OS. Pinned by the `patch` self-test (insert/delete/change hunks + context-mismatch rejection)."},
-    {"tr",       "Translate, delete or squeeze characters read from <file>. With two sets, each character of <file> that appears in SET1 is replaced by the character at the same position in SET2 (a shorter SET2 repeats its last character). -d deletes every SET1 character instead; -s collapses each run of a repeated result character into one. Sets may use ascending ranges such as a-z or 0-9 and C-style escapes \\n \\t \\r \\\\ and \\NNN (octal), so e.g. `tr '\\n' ' '` or `tr -d '\\r'`."},
+    {"tr",       "Translate, delete or squeeze characters read from <file>. With two sets, each character of <file> that appears in SET1 is replaced by the character at the same position in SET2 (a shorter SET2 repeats its last character). -d deletes every SET1 character instead; -s collapses each run of a repeated result character into one; -c (or -C) complements SET1 so the operation applies to the bytes NOT listed (e.g. `tr -cd '0-9'` keeps only the digits). Sets may use ascending ranges such as a-z or 0-9 and C-style escapes \\n \\t \\r \\\\ and \\NNN (octal), so e.g. `tr '\\n' ' '` or `tr -d '\\r'`."},
     {"fold",     "Wrap the lines of <file> so no output line is longer than the given width (80 by default, or -w width). A line longer than the width is broken with a hard newline at exactly that many characters; shorter lines and existing line breaks are left alone."},
     {"pr",       "Paginate a text file for printing: `pr [-l lines] <file>` splits it into pages of `lines` content lines (56 by default) and prints a `--- Page N ---` header before each. Useful for chunking long output into page-sized sections."},
     {"fmt",      "Reflow (rewrap) the prose in <file> to fill lines up to a width (75 by default, or -w width) -- the paragraph formatter. Unlike `fold`, which only hard-breaks over-long lines at a fixed column, fmt COLLAPSES each paragraph's internal whitespace and repacks its words greedily, so short lines are joined and long ones split at word boundaries. A blank line separates paragraphs and is preserved as a single blank line; a word longer than the width is left whole on its own line rather than broken. Reads one bounded chunk of the file (like head/fold)."},
@@ -3333,6 +3333,19 @@ static int tr_expand(const char* s, unsigned char* out, int max) {
     return n;
 }
 
+// Replace an expanded SET with its complement over the 0..255 byte range, in
+// ascending order (GNU tr -c/-C: operate on bytes NOT in SET1). Each byte occurs
+// once, so tr_map's "last mapping wins" is moot on a complemented set. Returns the
+// new length. Pure — pinned by tr_selftest, host-diffed against GNU tr.
+static int tr_complement(unsigned char* set, int n) {
+    unsigned char seen[256];
+    for (int i = 0; i < 256; i++) seen[i] = 0;
+    for (int i = 0; i < n; i++) seen[set[i]] = 1;
+    int m = 0;
+    for (int c = 0; c < 256; c++) if (!seen[c]) set[m++] = (unsigned char)c;
+    return m;
+}
+
 // Map one input byte for `tr`: returns the byte to emit, or -1 to drop it. `s2present`
 // says a second set was given (translate mode); `*last` carries the previous emitted
 // byte so -s can squeeze runs. When a byte occurs more than once in SET1 the LAST
@@ -3395,18 +3408,20 @@ static int tr_unescape(const char* s, char* out, int max) {
     return o;
 }
 
-// tr [-d] [-s] SET1 [SET2] <file> — translate, delete or squeeze characters read
+// tr [-c] [-d] [-s] SET1 [SET2] <file> — translate, delete or squeeze characters read
 // from <file>. NyxOS shell builtins are file-oriented (there is no stdin into a
 // kernel builtin), so tr takes a file argument like rev/sort/wc rather than the
 // classic stdin filter. SET1/SET2 support ascending ranges (a-z, 0-9). In
 // translate mode a shorter SET2 has its last character repeated to SET1's length
-// (GNU behaviour). -d deletes SET1; -s squeezes runs of the result/SET1 chars.
+// (GNU behaviour). -d deletes SET1; -s squeezes runs of the result/SET1 chars;
+// -c/-C complements SET1 (act on the bytes NOT listed) — e.g. `tr -cd '0-9'`.
 static void cmd_tr(int argc, char** argv) {
-    int del = 0, sqz = 0, ai = 1;
+    int del = 0, sqz = 0, comp = 0, ai = 1;
     while (ai < argc && argv[ai][0] == '-' && argv[ai][1]) {
         for (char* f = argv[ai] + 1; *f; f++) {
             if (*f == 'd') del = 1;
             else if (*f == 's') sqz = 1;
+            else if (*f == 'c' || *f == 'C') comp = 1;   // -c/-C: complement SET1
             else { printf("tr: invalid option -- '%c'\n", *f); return; }
         }
         ai++;
@@ -3421,12 +3436,13 @@ static void cmd_tr(int argc, char** argv) {
     } else if (rem >= 3) {                        // [-s] SET1 SET2 file (translate)
         s1 = argv[ai]; s2 = argv[ai + 1]; fname = argv[ai + 2];
     }
-    if (!fname) { printf("Usage: tr [-s] SET1 SET2 <file>  |  tr -d[s] SET1 [SET2] <file>\n"); return; }
+    if (!fname) { printf("Usage: tr [-cs] SET1 SET2 <file>  |  tr -c[d][s] SET1 [SET2] <file>\n"); return; }
 
     unsigned char set1[256], set2[256];
     char e1[256], e2[256];                        // escape-interpreted SETs (\n \t \NNN ...)
     tr_unescape(s1, e1, sizeof(e1));
     int n1 = tr_expand(e1, set1, 256);
+    if (comp) n1 = tr_complement(set1, n1);       // -c/-C: act on bytes NOT in SET1
     int n2 = 0;
     if (s2) { tr_unescape(s2, e2, sizeof(e2)); n2 = tr_expand(e2, set2, 256); }
 
@@ -3469,6 +3485,20 @@ int tr_selftest(void) {
     in = "a    b  c"; TR_RUN(0,1," ",0);       if (strcmp(out,"a b c")) return 7;    // squeeze spaces
     in = "aabbcc";    TR_RUN(0,1,"abc","xxx"); if (strcmp(out,"x")) return 8;        // translate then squeeze
     #undef TR_RUN
+    // -c/-C complement: SET1 becomes the bytes NOT listed, then map as usual (host-diffed vs GNU tr).
+    #define TR_RUNC(del,sqz,S1,S2) do { \
+        n1 = tr_expand(S1, a, 256); n1 = tr_complement(a, n1); \
+        int _h = ((S2) != 0); n2 = _h ? tr_expand((S2), b, 256) : 0; \
+        last = -1; o = 0; \
+        for (const char* _p = in; *_p; _p++) { \
+            int _r = tr_map(del, sqz, a, n1, _h, b, n2, (unsigned char)*_p, &last); \
+            if (_r >= 0) out[o++] = (char)_r; \
+        } out[o] = '\0'; } while (0)
+    in = "abc123def"; TR_RUNC(1,0,"0-9",0);      if (strcmp(out,"123")) return 13;     // -cd: keep only digits
+    in = "a1b2c3";    TR_RUNC(0,0,"a-z","X");    if (strcmp(out,"aXbXcX")) return 14;  // -c: non-letters -> X
+    in = "a1!b2@";    TR_RUNC(0,1,"a-z","-");    if (strcmp(out,"a-b-")) return 15;     // -cs: map then squeeze run
+    in = "Hi, World!"; TR_RUNC(1,0,"a-zA-Z",0);  if (strcmp(out,"HiWorld")) return 16;  // -cd: keep only letters
+    #undef TR_RUNC
     // tr_unescape: named escapes, octal, dropped-backslash for an unknown escape (GNU rules)
     char u[16];
     if (tr_unescape("\\n\\t\\r", u, sizeof u) != 3 || u[0] != '\n' || u[1] != '\t' || u[2] != '\r') return 9;
