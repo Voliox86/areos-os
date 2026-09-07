@@ -5702,12 +5702,22 @@ static void cmd_wc(int argc, char** argv) {
     const char* path = argv[ai];
     int fd = vfs_open(path, 0, 0);
     if (fd < 0) { printf("wc: cannot open '%s'\n", path); return; }
+    // Stream the whole file in windows (vfs_pread, so synthesized /proc reads work too) and
+    // fold each into a carried count: the old single 8 KB read silently truncated the counts
+    // of any file larger than the buffer. The character rules live once in wc_accum (KAT'd).
     static char buf[8192];                       // static: kept off the kernel stack
-    int bytes = vfs_read(fd, buf, sizeof(buf) - 1);
+    wc_state_t st = { 0, 0, 0, 0, 0, 0 };
+    uint32_t off = 0;
+    for (;;) {
+        int b = vfs_pread(fd, buf, sizeof(buf), off);
+        if (b <= 0) break;
+        wc_accum(&st, buf, b);
+        off += (uint32_t)b;
+        if (b < (int)sizeof(buf)) break;             // short read => EOF
+    }
     vfs_close(fd);
-    if (bytes < 0) bytes = 0;
-    int lines, words, chars, max_len;
-    wc_count(buf, bytes, &lines, &words, &chars, &max_len);   // shared, unit-tested count (kernel/core/wc.c)
+    wc_finish(&st);
+    int lines = st.lines, words = st.words, chars = st.chars, max_len = st.max_len;
 
     int first = 1;
     if (want_l) { printf(first ? "%d" : " %d", lines); first = 0; }

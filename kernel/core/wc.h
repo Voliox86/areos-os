@@ -9,6 +9,15 @@
 // `wc` shell builtin and its self-test.
 void wc_count(const char* buf, int len, int* lines, int* words, int* chars, int* max_len);
 
+// Streaming form of the same count, so `wc` can process a file larger than one read
+// buffer without truncating it: zero a wc_state_t, feed it each chunk with wc_accum
+// (state — the in-word flag and the current column — carries across chunk boundaries),
+// then call wc_finish once to account a final unterminated line. wc_count is just
+// init+accum(one buffer)+finish, so both share ONE definition of the rules (KAT'd).
+typedef struct { int lines, words, in_word, cur, max_len, chars; } wc_state_t;
+void wc_accum(wc_state_t* st, const char* buf, int len);
+void wc_finish(wc_state_t* st);
+
 int wc_selftest(void);   // known-answer test of wc_count
 
 #endif // NYX_WC_H

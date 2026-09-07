@@ -9,24 +9,37 @@
 //              column; '\t' advances to the next multiple of 8; '\v' leaves the column
 //              unchanged; every other byte advances it by one. A final unterminated line is
 //              still measured. (Verified against GNU wc across the \v/\f/\r edge cases.)
-void wc_count(const char* buf, int len, int* lines, int* words, int* chars, int* max_len) {
-    int l = 0, w = 0, in_word = 0, cur = 0, mx = 0;
+// Fold one chunk into the running counts, carrying the in-word flag and the current
+// column across chunk boundaries so a word or line split across two reads is counted
+// once. This is the single definition of wc's character rules; wc_count wraps it.
+void wc_accum(wc_state_t* st, const char* buf, int len) {
     if (len < 0) len = 0;
     for (int i = 0; i < len; i++) {
         char c = buf[i];
-        if (c == '\n' || c == '\r' || c == '\f') { if (cur > mx) mx = cur; cur = 0; }
-        else if (c == '\t') cur += 8 - (cur % 8);          // advance to the next 8-column tab stop
+        if (c == '\n' || c == '\r' || c == '\f') { if (st->cur > st->max_len) st->max_len = st->cur; st->cur = 0; }
+        else if (c == '\t') st->cur += 8 - (st->cur % 8);  // advance to the next 8-column tab stop
         else if (c == '\v') { /* vertical tab: no column change (matches GNU wc) */ }
-        else                cur++;
-        if (c == '\n') l++;
-        if (c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\f' || c == '\r') in_word = 0;
-        else if (!in_word) { in_word = 1; w++; }
+        else                st->cur++;
+        if (c == '\n') st->lines++;
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\f' || c == '\r') st->in_word = 0;
+        else if (!st->in_word) { st->in_word = 1; st->words++; }
     }
-    if (cur > mx) mx = cur;                                 // a final line with no trailing '\n'
-    if (lines)   *lines = l;
-    if (words)   *words = w;
-    if (chars)   *chars = len;
-    if (max_len) *max_len = mx;
+    st->chars += len;
+}
+
+// Account a final line with no trailing newline. Call once after the last wc_accum.
+void wc_finish(wc_state_t* st) {
+    if (st->cur > st->max_len) st->max_len = st->cur;
+}
+
+void wc_count(const char* buf, int len, int* lines, int* words, int* chars, int* max_len) {
+    wc_state_t st = { 0, 0, 0, 0, 0, 0 };
+    wc_accum(&st, buf, len);
+    wc_finish(&st);
+    if (lines)   *lines = st.lines;
+    if (words)   *words = st.words;
+    if (chars)   *chars = st.chars;
+    if (max_len) *max_len = st.max_len;
 }
 
 // ---- known-answer self-test (`wc`) --------------------------------------------------------
