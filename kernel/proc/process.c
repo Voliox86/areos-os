@@ -634,14 +634,25 @@ void proc_set_comm(process_t* p, const char* path) {
 // `path` is the exec'd file's path (for comm/cmdline; may be NULL).
 // Returns -1 on failure before the commit point (caller left intact); on success it
 // "returns" into the new image. Runs inside the syscall (interrupts masked).
-// Build a fresh SysV argv frame (empty environment) at the top of `pd`'s stack page
-// and return the ring-3 RSP that points at the argc frame. This is the spawn-side
-// counterpart to do_execve's frame builder: it writes into a NEW address space's
-// stack (so the kernel shell's `exec <file> a b c` can forward argv without
-// replacing the caller). `stack_top` is elf_load_image's value; argc==0 leaves the
-// stack untouched (identical to a no-argv launch). Returns the adjusted RSP.
+// Build a fresh SysV argv+envp frame at the top of `pd`'s stack page and return the
+// ring-3 RSP that points at the argc frame. This is the spawn-side counterpart to
+// do_execve's frame builder: it writes into a NEW address space's stack (so the kernel
+// shell's `exec <file> a b c` can forward argv without replacing the caller). The child
+// inherits the SHELL's environment (HOME + any `export`ed vars) via shell_env_snapshot,
+// matching do_execve's inherit-the-parent-env behaviour — programs used to get an empty
+// environment here, so getenv("HOME") returned NULL when launched from the shell.
+// `stack_top` is elf_load_image's value; with no argv AND no env this leaves the stack
+// untouched (identical to a no-argv launch). Returns the adjusted RSP.
+extern int shell_env_snapshot(char*** out);          // kernel.c — the shell env table
+
 uint64_t build_argv_stack(uint64_t* pd, uint64_t stack_top, char* const* kargv, int argc) {
-    if (argc <= 0 || !kargv) return stack_top;
+    if (argc < 0) argc = 0;
+    if (argc > 0 && !kargv) argc = 0;
+    char** kenvp = 0;
+    int envc = shell_env_snapshot(&kenvp);              // inherit the shell's environment
+    if (envc < 0 || !kenvp) envc = 0;
+    if (envc > 16) envc = 16;
+    if (argc == 0 && envc == 0) return stack_top;       // nothing to seed -> keep the empty frame
     if (argc > 32) argc = 32;
 
     // copy_to_user() translates through the global user_cr3; aim it at the target
@@ -662,14 +673,22 @@ uint64_t build_argv_stack(uint64_t* pd, uint64_t stack_top, char* const* kargv, 
         uargv[i] = sp;
     }
     uargv[argc] = 0;                                     // argv terminator
+    uint64_t uenvp[17];                                  // envp strings below the argv strings
+    for (int i = envc - 1; i >= 0; i--) {
+        uint64_t len = strlen(kenvp[i]) + 1;
+        sp -= len;
+        copy_to_user(sp, kenvp[i], len);
+        uenvp[i] = sp;
+    }
+    uenvp[envc] = 0;                                     // envp terminator
     sp &= ~0xFULL;
-    int qwords = 1 + (argc + 1) + 1;                     // argc + argv[]+NULL + envp NULL
+    int qwords = 1 + (argc + 1) + (envc + 1);            // argc + argv[]+NULL + envp[]+NULL
     if (qwords & 1) qwords++;                            // keep entry RSP 16-byte aligned
     sp -= (uint64_t)qwords * 8;
-    uint64_t argc64 = (uint64_t)argc, off = 0, zero = 0;
+    uint64_t argc64 = (uint64_t)argc, off = 0;
     copy_to_user(sp + off, &argc64, 8);                         off += 8;
     copy_to_user(sp + off, uargv, ((uint64_t)argc + 1) * 8);    off += ((uint64_t)argc + 1) * 8;
-    copy_to_user(sp + off, &zero, 8);                   // envp[0] = NULL (empty environment)
+    copy_to_user(sp + off, uenvp, ((uint64_t)envc + 1) * 8);    // envp[] + NULL
 
     user_cr3 = saved_cr3;
     if (flags & 0x200) __asm__ volatile("sti" ::: "memory");

@@ -5143,6 +5143,12 @@ static void cmd_unalias(int argc, char** argv) {
 static int sh_name_start(char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_'; }
 static int sh_name_cont(char c)  { return sh_name_start(c) || (c >= '0' && c <= '9'); }
 
+// Snapshot the shell's environment table (the "NAME=value" strings `export`/HOME populate)
+// so a program launched from the shell inherits it. Returns the count; *out points at the
+// internal env_vars[] array (valid until the next `export`). Used by build_argv_stack
+// (process.c) to seed a fresh process's envp — previously programs got an empty environment.
+int shell_env_snapshot(char*** out) { *out = env_vars; return env_count; }
+
 // Value of shell variable `name` (length `namelen`), or NULL if unset. Reads the same
 // env_vars[] table `export`/`env` populate ("NAME=value" strings).
 static const char* shell_lookup_var(const char* name, int namelen) {
