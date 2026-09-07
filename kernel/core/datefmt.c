@@ -72,13 +72,39 @@ int date_format(char* out, int cap, const char* fmt, const rtc_time_t* t) {
             case 'M': pos = put_num(out, cap, pos, mi, 2, '0'); break;
             case 'S': pos = put_num(out, cap, pos, se, 2, '0'); break;
             case 'j': pos = put_num(out, cap, pos, dt_yday(y, mo, d), 3, '0'); break;
+            case 'F':                                 // ISO date == %Y-%m-%d
+                pos = put_num(out, cap, pos, y, 4, '0');
+                if (pos < cap - 1) out[pos++] = '-';
+                pos = put_num(out, cap, pos, mo, 2, '0');
+                if (pos < cap - 1) out[pos++] = '-';
+                pos = put_num(out, cap, pos, d, 2, '0');
+                break;
+            case 'T':                                 // 24-hour time == %H:%M:%S
+                pos = put_num(out, cap, pos, h, 2, '0');
+                if (pos < cap - 1) out[pos++] = ':';
+                pos = put_num(out, cap, pos, mi, 2, '0');
+                if (pos < cap - 1) out[pos++] = ':';
+                pos = put_num(out, cap, pos, se, 2, '0');
+                break;
+            case 'R':                                 // hours:minutes == %H:%M
+                pos = put_num(out, cap, pos, h, 2, '0');
+                if (pos < cap - 1) out[pos++] = ':';
+                pos = put_num(out, cap, pos, mi, 2, '0');
+                break;
+            case 'D':                                 // US short date == %m/%d/%y
+                pos = put_num(out, cap, pos, mo, 2, '0');
+                if (pos < cap - 1) out[pos++] = '/';
+                pos = put_num(out, cap, pos, d, 2, '0');
+                if (pos < cap - 1) out[pos++] = '/';
+                pos = put_num(out, cap, pos, y % 100, 2, '0');
+                break;
             case 'p': pos = put_s(out, cap, pos, h < 12 ? "AM" : "PM"); break;
             case 'A': pos = put_s(out, cap, pos, WD_FULL[wd]); break;
             case 'a': pos = put_s(out, cap, pos, WD_ABBR[wd]); break;
             case 'w': pos = put_num(out, cap, pos, wd, 1, '0'); break;              // weekday 0-6, Sunday=0
             case 'u': pos = put_num(out, cap, pos, wd == 0 ? 7 : wd, 1, '0'); break; // weekday 1-7, Monday=1..Sunday=7 (ISO)
             case 'B': pos = put_s(out, cap, pos, MO_FULL[mo-1]); break;
-            case 'b': pos = put_s(out, cap, pos, MO_ABBR[mo-1]); break;
+            case 'b': case 'h': pos = put_s(out, cap, pos, MO_ABBR[mo-1]); break;   // %h is an alias for %b
             case 'n': if (pos < cap - 1) out[pos++] = '\n'; break;
             case 't': if (pos < cap - 1) out[pos++] = '\t'; break;
             case '%': if (pos < cap - 1) out[pos++] = '%'; break;
@@ -107,6 +133,12 @@ int datefmt_selftest(void) {
         { "%I%p",      "07PM" },
         { "%y",        "26" },
         { "%j",        "224" },
+        { "%F",        "2026-08-12" },               // combined ISO date (== %Y-%m-%d)
+        { "%T",        "19:33:07" },                 // combined 24h time (== %H:%M:%S)
+        { "%R",        "19:33" },                    // hours:minutes
+        { "%D",        "08/12/26" },                 // US short date (%m/%d/%y)
+        { "%h",        "Aug" },                      // alias for %b
+        { "%F %T",     "2026-08-12 19:33:07" },      // both together, with a literal space
         { "%w",        "3" },                     // Wednesday: 0=Sun .. 3=Wed
         { "%u",        "3" },                     // ISO: 1=Mon .. 3=Wed
         { "day %d%%",  "day 12%" },               // literal text + %% -> %
