@@ -396,11 +396,19 @@ rewritten into `__call_once_…` — the closure pass before it leaves
 `f(x)` alone while the signature still names a type parameter, because
 the struct it would name does not exist yet. An `own` capture flows
 through a generic consumer unchanged (`consume<i64>` handed a closure
-that owns a File closes it after the one call). The one shape still
-refused is an `own` capture in a lambda born INSIDE a template —
-*an own capture in a FnOnce lambda inside generic 'keeper' is not
-supported yet — pass 'h' as a parameter* — since its environment would
-have to be an own struct template.
+that owns a File closes it after the one call). An `own` capture in a
+lambda born INSIDE a template works too (M6.4c6c): the generic pass
+carries `own struct` templates — the keyword travels with the
+declaration and every instantiation is an own struct — so such a
+lambda's environment is `own struct __E_N<T>`, instantiated as
+`own struct __g___E_N_i64` with its finaliser `__g___fin_E_N_i64`;
+`keeper<T>` in the example owns a File per instantiation and closes it
+after the one call. What stays out of reach is a capture typed `T`
+when T is instantiated with an own type: nppc cannot see the
+instantiation at the lambda, the environment comes out plain, and N
+refuses the own field inside it (*own type in field '__g___E_0_File.v'
+— own values cannot nest in other types (v0.17)*). A `#[drop]`
+attribute on a struct template is not carried either.
 [`../examples/gfnonce.npp`](../examples/gfnonce.npp) is the worked
 example, held by stage [10y].
 

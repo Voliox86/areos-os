@@ -14,9 +14,13 @@
 // into `__call_once_…(f, x)` once the signature is concrete. An `own`
 // capture flows through a generic CONSUMER the same way — `consume<i64>`
 // is handed a closure that owns a File, and the File closes when the
-// closure's one call ends. The one limit at this rung: an own capture in
-// a lambda born INSIDE a template is still refused (its environment
-// would be an own struct template).
+// closure's one call ends. An own capture born INSIDE a template works
+// too (M6.4c6c): the generic pass carries `own struct` templates, so
+// `keeper<T>`'s environment instantiates as an own struct per T, with a
+// finaliser of its own — each keeper owns a File and closes it after its
+// one call. The limit that remains is a capture typed `T` when T is
+// instantiated with an own type: nppc cannot see that at the lambda, the
+// environment comes out plain, and N refuses the own field inside it.
 
 extern syscall {
     fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
@@ -38,9 +42,12 @@ fn consume<T>(f: FnOnce(T) -> T, x: T) -> T {
     f(x)
 }
 
-// A generic maker: the lambda captures the seed (a T) and a number.
+// A generic maker: the lambda captures the seed (a T) and a File born
+// here — an own environment template, `own struct __E_N<T>`, whose
+// instantiations own a File each and close it through the finaliser.
 fn keeper<T>(seed: T, n: i64) -> FnOnce(T) -> T {
-    fn(x: T) -> T { put("keeper {n}\n"); seed }
+    h := File{ fd: n };
+    fn(x: T) -> T { put("keeper {h.fd}\n"); seed }
 }
 
 fn main() -> i64 {

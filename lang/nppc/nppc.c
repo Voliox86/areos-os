@@ -379,6 +379,8 @@ typedef struct {
     int nametok;                          /* the IDENT token of the generic name */
     int ptok[MAXP]; int nparams;          /* type-param IDENT tokens */
     int declstart, declend;               /* source span of the whole declaration */
+    int own;                              /* struct-only: an `own struct` template (M6.4c6c) —
+                                           * its instantiations are own structs too */
     /* struct-only: the field templates */
     struct { int fname; int ptrs; int base; int nest; int ts, te; } fields[MAXF];
     int nfields;                          /* base: token index of the field type name;
@@ -438,7 +440,9 @@ static void collect_generic_decls(void) {
         g->nametok = i + 1;
         g->nparams = 0;
         g->nnested = 0;
-        g->declstart = TOKS[i].start;
+        g->own = i > 0 && TOKS[i - 1].k == T_KW_OWN;   /* `own struct S<T>` (M6.4c6c): the
+                                                        * keyword travels with the template */
+        g->declstart = g->own ? TOKS[i - 1].start : TOKS[i].start;
         int j = i + 3;                    /* first param */
         for (;;) {
             if (TOKS[j].k != T_IDENT)
@@ -841,7 +845,8 @@ static char* concrete_struct(Inst* it) {
     char* mn = mangle(it);
     char* out = xmalloc(4096 + 512 * (size_t)g->nfields);
     int n = 0;
-    n += sprintf(out + n, "struct %s {\n", mn);
+    n += sprintf(out + n, "%sstruct %s {\n", g->own ? "own " : "", mn);   /* an own template
+                                                                          * instantiates own */
     for (int fi = 0; fi < g->nfields; fi++) {
         int bt = g->fields[fi].base;
         int sub = -1;                     /* is the field type a type parameter? */
@@ -2279,10 +2284,8 @@ static char* lambda_pass(const char* prog) {
                     die("%s:%d: lambda captures own value '%.*s' — an own capture needs a call-once closure: bind the lambda with := and call it once, or make the slot FnOnce(...) (M6.4c6)",
                         FILENAME, TOKS[caps[c]].line, TOKS[caps[c]].slen, TOKS[caps[c]].s);
             }
-        if (oslot && ownenv && gname >= 0)   /* M6.4c6b: plain captures template fine; an own
-                                              * environment would need an own struct template */
-            die("%s:%d: an own capture in a FnOnce lambda inside generic '%.*s' is not supported yet — pass '%.*s' as a parameter",
-                FILENAME, TOKS[i].line, TOKS[gname].slen, TOKS[gname].s, TOKS[caps[0]].slen, TOKS[caps[0]].s);
+        /* M6.4c6c: an own environment inside a template is an `own struct __E_N<T>`
+         * template — the generic pass carries the keyword into every instantiation. */
         int lamno = NLAMBDA++;
         char* targs = xmalloc(4 + (size_t)nused * 64);   /* `<A, B>`, or "" */
         int tn = 0;
