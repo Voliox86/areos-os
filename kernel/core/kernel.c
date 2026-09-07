@@ -1057,7 +1057,7 @@ static const man_page_t man_pages[] = {
     {"identify", "Print an image's format and pixel dimensions from its header alone -- `identify <image>...` prints `<file>: <FMT> image, <W> x <H>` for PNG, GIF, BMP, NetPBM (P1-P6) and JPEG. It reads only the header (no full decode, so it is fast and light even on a large image) and reports the width/height the file declares. The dimension companion to `file`, which reports only the type. Pinned by the `imgident` self-test."},
     {"tar",      "List the members of a POSIX ustar (.tar) archive: `tar t <file.tar>` prints each member's path, and `tar tv` also prints its type flag and byte size. Listing only — extraction is not yet supported."},
     {"iniget",   "Read one value from an INI/.conf file: `iniget <file> <section> <key>` prints the trimmed value under [section], or `iniget <file> - <key>` reads the global section (keys before any [section]). '=' is the delimiter; ';'/'#' begin whole-line comments. Prints nothing and reports not-found if the key is absent."},
-    {"cp",       "Copy the file <src> to <dst>, replacing <dst> if it already exists. With `cp -r <srcdir> <dstdir>` it copies a whole directory tree recursively, creating each destination directory and copying every file across filesystems (e.g. from the RAM image to a freshly-formatted disk mounted at /mnt) — this is how `nyxinstall` populates a target disk. The walk is iterative with a bounded off-stack frontier, so deep trees are safe on the small kernel stack."},
+    {"cp",       "Copy the file <src> to <dst>, replacing <dst> if it already exists. If <dst> is an existing directory, <src> is copied INTO it as <dst>/<name> (GNU cp). With `cp -r <srcdir> <dstdir>` it copies a whole directory tree recursively, creating each destination directory and copying every file across filesystems (e.g. from the RAM image to a freshly-formatted disk mounted at /mnt) — this is how `nyxinstall` populates a target disk. The walk is iterative with a bounded off-stack frontier, so deep trees are safe on the small kernel stack."},
     {"mv",       "Move or rename <src> to <dst>. If <dst> is an existing directory, <src> is moved INTO it as <dst>/<name> (GNU mv); otherwise <src> is renamed to <dst>. Within one filesystem this only rewrites the directory entry."},
     {"rm",       "Remove <path>. There is no recycle bin, so a removed file is gone for good."},
     {"shred",    "Destroy a file's contents by overwriting every byte with cryptographic random data before it can be recovered: shred [-n N] [-u] <file>. -n sets the number of overwrite passes (default 3); -u also removes the file afterwards (like shred -u on Linux). The overwrite is in place — on the ramdisk it rewrites the bytes directly, and on the EXT2 mount it is flushed back to the same disk blocks at close — so unlike rm alone, the old contents are actually gone. Operates on one file (not a directory)."},
@@ -9264,6 +9264,26 @@ int cptree_walk_selftest(void) {
     return 0;
 }
 
+// If `dst` is an existing directory, return "<dst>/<basename(src)>" built into `buf`
+// (GNU cp/mv copy/move INTO a directory rather than onto its name); otherwise return
+// `dst` unchanged. Trailing slashes on both are ignored; byte-copy so it does not lean
+// on kernel snprintf precision. Shared by cmd_cp and cmd_mv.
+static const char* path_into_dir_dest(const char* src, const char* dst, char* buf, int bufsz) {
+    if (!vfs_isdir(dst)) return dst;
+    int sl = (int)strlen(src);
+    while (sl > 0 && src[sl - 1] == '/') sl--;          // ignore a trailing slash on src
+    int b = sl;
+    while (b > 0 && src[b - 1] != '/') b--;              // b = start of src's last component
+    int dl = (int)strlen(dst);
+    while (dl > 1 && dst[dl - 1] == '/') dl--;           // strip a trailing slash on dst
+    int o = 0;
+    for (int k = 0; k < dl && o < bufsz - 1; k++) buf[o++] = dst[k];
+    if (o < bufsz - 1) buf[o++] = '/';
+    for (int k = b; k < sl && o < bufsz - 1; k++) buf[o++] = src[k];
+    buf[o] = '\0';
+    return buf;
+}
+
 static void cmd_cp(int argc, char** argv) {
     if (argc >= 4 && strcmp(argv[1], "-r") == 0) {           // recursive directory copy
         int dirs = 0, files = 0, err = 0;
@@ -9272,8 +9292,12 @@ static void cmd_cp(int argc, char** argv) {
         return;
     }
     if (argc < 3) { printf("Usage: cp [-r] <src> <dst>\n"); return; }
-    if (!path_last_component_ok(argv[2])) { printf("cp: invalid destination name '%s'\n", argv[2]); return; }
-    if (vfs_cp(argv[1], argv[2]) < 0) printf("cp: failed to copy %s to %s\n", argv[1], argv[2]);
+    // Copy INTO an existing directory as dst/basename(src) (GNU cp) — vfs_cp refuses a
+    // directory destination outright, so without this `cp file dir` just failed.
+    char dstbuf[256];
+    const char* dst = path_into_dir_dest(argv[1], argv[2], dstbuf, sizeof(dstbuf));
+    if (!path_last_component_ok(dst)) { printf("cp: invalid destination name '%s'\n", dst); return; }
+    if (vfs_cp(argv[1], dst) < 0) printf("cp: failed to copy %s to %s\n", argv[1], dst);
 }
 
 // ---- in-OS GRUB bootloader install ----------------------------------------
@@ -9528,28 +9552,13 @@ static void cmd_nyxverify(int argc, char** argv) {
 
 static void cmd_mv(int argc, char** argv) {
     if (argc < 3) { printf("Usage: mv <src> <dst>\n"); return; }
-    const char* src = argv[1];
-    const char* dst = argv[2];
-    // GNU mv: when the destination is an existing directory, move src INTO it as
-    // <dst>/<basename(src)> — otherwise vfs_rename would relink src under dst's parent
-    // and rename it to the directory's own name, colliding with the directory.
+    // Move INTO an existing directory as dst/basename(src) (GNU mv) — otherwise
+    // vfs_rename would relink src under dst's parent and rename it to the directory's
+    // own name, colliding with the directory. Shared with cp via path_into_dir_dest.
     char dstbuf[256];
-    if (vfs_isdir(dst)) {
-        int sl = (int)strlen(src);
-        while (sl > 0 && src[sl - 1] == '/') sl--;      // ignore a trailing slash on src
-        int b = sl;
-        while (b > 0 && src[b - 1] != '/') b--;          // b = start of src's last component
-        int dl = (int)strlen(dst);
-        while (dl > 1 && dst[dl - 1] == '/') dl--;       // strip a trailing slash on dst
-        int o = 0;
-        for (int k = 0; k < dl && o < (int)sizeof(dstbuf) - 1; k++) dstbuf[o++] = dst[k];
-        if (o < (int)sizeof(dstbuf) - 1) dstbuf[o++] = '/';
-        for (int k = b; k < sl && o < (int)sizeof(dstbuf) - 1; k++) dstbuf[o++] = src[k];
-        dstbuf[o] = '\0';
-        dst = dstbuf;
-    }
+    const char* dst = path_into_dir_dest(argv[1], argv[2], dstbuf, sizeof(dstbuf));
     if (!path_last_component_ok(dst)) { printf("mv: invalid destination name '%s'\n", dst); return; }
-    vfs_rename(src, dst);
+    vfs_rename(argv[1], dst);
 }
 
 static void cmd_useradd(int argc, char** argv) {
