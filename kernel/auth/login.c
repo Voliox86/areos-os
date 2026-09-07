@@ -53,6 +53,11 @@ static void setup_user_home(void) {
     int fresh = (vfs_mkdir(path, 0755) == 0);  // 0 => created now (first ever login for this user)
     strncpy(g_login_home, path, sizeof(g_login_home) - 1);
     g_login_home[sizeof(g_login_home) - 1] = '\0';
+    // Sync the shell env HOME to the real session home so `~`, $HOME and programs launched
+    // from the shell all agree with it (HOME was seeded to a fixed "/home/user" at init,
+    // which did not match /home/<user> or /mnt/home/<user>).
+    extern void shell_set_env(const char* name, const char* value);
+    shell_set_env("HOME", g_login_home);
     if (fresh) populate_home(path);
 }
 

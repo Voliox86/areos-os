@@ -5149,6 +5149,29 @@ static int sh_name_cont(char c)  { return sh_name_start(c) || (c >= '0' && c <= 
 // (process.c) to seed a fresh process's envp — previously programs got an empty environment.
 int shell_env_snapshot(char*** out) { *out = env_vars; return env_count; }
 
+// Set/replace shell env var NAME to VALUE ("NAME=VALUE"), UPDATING an existing entry in
+// place (never a duplicate — getenv/$-expansion take the first match) or appending if the
+// 16-slot table has room. Login calls it to sync HOME to the session's real home so `~`,
+// $HOME and launched programs all agree with g_login_home (they didn't: HOME was a fixed
+// "/home/user" while the session home is /home/<user>). Truncates into the 63-char slot.
+void shell_set_env(const char* name, const char* value) {
+    if (!name || !value) return;
+    int nl = (int)strlen(name);
+    int slot = -1;
+    for (int i = 0; i < env_count; i++)
+        if (strncmp(env_vars[i], name, (size_t)nl) == 0 && env_vars[i][nl] == '=') { slot = i; break; }
+    if (slot < 0) {
+        if (env_count >= 16) return;                 // table full — leave the environment intact
+        slot = env_count++;
+    }
+    env_vars[slot] = env_buf[slot];
+    int o = 0;
+    for (int i = 0; i < nl && o < 63; i++)       env_buf[slot][o++] = name[i];
+    if (o < 63)                                  env_buf[slot][o++] = '=';
+    for (int i = 0; value[i] && o < 63; i++)     env_buf[slot][o++] = value[i];
+    env_buf[slot][o] = '\0';
+}
+
 // Value of shell variable `name` (length `namelen`), or NULL if unset. Reads the same
 // env_vars[] table `export`/`env` populate ("NAME=value" strings).
 static const char* shell_lookup_var(const char* name, int namelen) {
