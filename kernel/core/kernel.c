@@ -1774,20 +1774,29 @@ static void cmd_head(int argc, char** argv) {
     if (n < 0) n = 0;
     int fd = vfs_open(path, 0, 0);
     if (fd < 0) { printf("head: cannot open '%s'\n", path); return; }
-    char buf[1024];
-    int b = vfs_read(fd, buf, sizeof(buf));
-    vfs_close(fd);
-    if (b <= 0) return;
-    if (bmode) {
-        int lim = n < b ? n : b;
-        for (int i = 0; i < lim; i++) putchar(buf[i]);
-    } else {
-        int lines = 0;
-        for (int i = 0; i < b && lines < n; i++) {
-            putchar(buf[i]);
-            if (buf[i] == '\n') lines++;
+    // Stream the file in windows from the start (vfs_pread, so synthesized /proc reads work too)
+    // and stop once the request is met: the old single 1024-byte read silently truncated
+    // `head -c N`/`head -n N` when the first N bytes/lines exceeded 1024 (tail already streams).
+    static char buf[4096];
+    uint32_t off = 0;
+    long need = n;                                   // bytes remaining (byte mode) or lines (line mode)
+    while (need > 0) {
+        int b = vfs_pread(fd, buf, sizeof(buf), off);
+        if (b <= 0) break;
+        int done = 0;
+        if (bmode) {
+            for (int i = 0; i < b && need > 0; i++) { putchar(buf[i]); need--; }
+        } else {
+            for (int i = 0; i < b; i++) {
+                putchar(buf[i]);
+                if (buf[i] == '\n' && --need == 0) { done = 1; break; }
+            }
         }
+        if (done) break;
+        off += (uint32_t)b;
+        if ((uint32_t)b < sizeof(buf)) break;        // short read => EOF
     }
+    vfs_close(fd);
 }
 
 // file <path>... — identify each file's type from its leading bytes (magic numbers)
