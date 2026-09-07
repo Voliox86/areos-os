@@ -610,10 +610,15 @@ judges whether any auto-drop is pending (`check_expr(b->tail)` marks
 the moves of call arguments inside the tail), while gen.n marks those
 moves as it emits the tail — so a live own local moved as a call
 argument *inside the tail expression* (`h := File{ fd: 1 }; make(h)`)
-still counts as pending in gen.n and gets the braced `__ret` form
-where ncc returns directly. No example does this yet (the
-differentials are green); the fix is a pre-walk in `gblock` mirroring
-ncc's order, with an example that pins it.
+still counted as pending in gen.n and got the braced `__ret` form
+where ncc returns directly. Closed in the next rung: `gpremark` walks a
+tail's (or a `return` value's) expression tree before the judgement
+and marks every call argument and own-field source it moves, exactly
+what ncc's `check_expr` does first — `gexpr` marks them again while
+emitting, harmlessly, since `gmove` is idempotent — and
+[`tailmove.n`](../examples/tailmove.n) pins the order under every
+differential (an argument in a tail, an own field in a tail literal, a
+`return` value, and a held-parameter control).
 
 `gen.n` then emits the field drops the way `ncc` does — the same
 helpers under the same names: a container's own fields in reverse

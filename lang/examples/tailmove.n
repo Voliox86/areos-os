@@ -1,0 +1,88 @@
+// tailmove.n — moves made inside a tail expression, and where the
+// pending-drop judgement sits.
+//
+// A block's tail (and a `return` value) is judged twice by the compiler:
+// first the expression is checked — and checking marks every move it
+// makes, a live own local passed as a call argument or moved into a
+// struct literal's own field — and only then does the compiler ask
+// whether any auto-drop is still pending, which decides between a direct
+// `return f(x);` and the braced form that computes `__ret`, runs the
+// drops, and returns it. The order matters exactly when the tail itself
+// consumes the last live own local: judged before the moves, the local
+// still looks alive and the braced form appears for nothing; judged
+// after, the compiler returns directly. ncc has always judged after; the
+// self-hosted gen.n marked those moves only while emitting, and reached
+// the judgement first. This program pins the order for both, so their C
+// stays byte for byte the same: `viaarg` moves `h` as an argument in its
+// tail, `vialit` moves `f` into a literal, `viaret` does it in a `return`
+// and in a tail after an `if` arm; `take_log` is the held-parameter
+// control, where nothing was ever pending.
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+#[drop(close_file)]
+own struct File { fd: i64 }
+
+fn close_file(f: File) {
+    put("closing {f.fd}\n");
+}
+
+#[drop(close_log)]
+own struct Log { file: File, tag: i64 }
+
+fn close_log(l: Log) {
+    put("log {l.tag} done\n");
+}
+
+// A sink that answers: the file closes here, explicitly.
+fn take(f: File) -> i64 {
+    fd := f.fd;
+    close_file(f);
+    fd
+}
+
+fn take_log(l: Log) -> i64 {
+    t := l.tag;
+    close_log(l);
+    t
+}
+
+// The tail moves h as an argument: nothing is pending once it has.
+fn viaarg() -> i64 {
+    h := File{ fd: 1 };
+    take(h)
+}
+
+// The tail moves f into an own field of the literal it returns.
+fn vialit() -> Log {
+    f := File{ fd: 2 };
+    Log{ file: f, tag: 2 }
+}
+
+// A `return` value moving h, and a tail doing the same after an arm
+// that returned (a return-ending arm leaves h live on the other path).
+fn viaret(x: i64) -> i64 {
+    h := File{ fd: 3 };
+    if x > 0 {
+        return take(h);
+    }
+    take(h)
+}
+
+fn main() -> i64 {
+    a := viaarg();
+    put("a = {a}\n");
+    l := vialit();
+    b := take_log(l);
+    put("b = {b}\n");
+    c := viaret(1);
+    d := viaret(0);
+    put("c = {c} d = {d}\n");
+    0
+}

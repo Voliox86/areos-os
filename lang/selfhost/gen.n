@@ -4815,6 +4815,64 @@ fn gmove(p: *u8, st: *i64, i: i64) {
     if va[v * 10 + 8] != 0 { va[v * 10 + 8] = 2; }
 }
 
+// The moves an expression makes INSIDE itself — a call's arguments, a
+// struct literal's own-field sources — marked before the pending-drop
+// judgement of a tail or a return value, in ncc's order: check_expr
+// walks the whole expression first, then own_drops_pending decides the
+// braced __ret form. gexpr marks the same moves again while emitting;
+// gmove is idempotent, so that second pass changes nothing.
+fn gpremark(p: *u8, st: *i64, i: i64) {
+    if i == 0 { return; }
+    nd := st[33] as *i64;
+    al := st[35] as *i64;
+    k := nd[i * 8];
+    if k == 4 {                            // interpolation: every hole
+        mut q0 := 0;
+        while q0 < nd[i * 8 + 2] {
+            gpremark(p, st, al[nd[i * 8 + 1] + q0 * 8 + 2]);
+            q0 = q0 + 1;
+        }
+        return;
+    }
+    if k == 6 {                            // call: the callee (a method's
+        gpremark(p, st, nd[i * 8 + 1]);    // receiver inside it), then
+        mut q := 0;                        // every argument moves
+        while q < nd[i * 8 + 3] {
+            gpremark(p, st, al[nd[i * 8 + 2] + q]);
+            gmove(p, st, al[nd[i * 8 + 2] + q]);
+            q = q + 1;
+        }
+        return;
+    }
+    if k == 7 || k == 8 || k == 10 {
+        gpremark(p, st, nd[i * 8 + 1]);
+        return;
+    }
+    if k == 9 || k == 13 {
+        gpremark(p, st, nd[i * 8 + 1]);
+        gpremark(p, st, nd[i * 8 + 2]);
+        return;
+    }
+    if k == 11 {                           // struct literal: an own field's
+        mut q4 := 0;                       // source moves in
+        while q4 < nd[i * 8 + 3] {
+            r4 := nd[i * 8 + 1] + q4 * 3;
+            gpremark(p, st, al[r4 + 2]);
+            gmove(p, st, al[r4 + 2]);
+            q4 = q4 + 1;
+        }
+        return;
+    }
+    if k == 12 {                           // variant literal: payload sources
+        mut q5 := 0;
+        while q5 < nd[i * 8 + 3] {
+            r5 := nd[i * 8 + 1] + q5 * 3;
+            gpremark(p, st, al[r5 + 2]);
+            q5 = q5 + 1;
+        }
+    }
+}
+
 // v0.25: the value path a field drop names — `name.field.field`, a
 // stack of spans in st[70], st[71] deep (the root binding first).
 fn gpath(p: *u8, st: *i64) {
@@ -5025,8 +5083,10 @@ fn gstmt(p: *u8, st: *i64, i: i64, d: i64) {
         return;
     }
     if k == 22 {
-        gmove(p, st, nd[i * 8 + 1]);       // returning consumes — a
-        pnd := gpend(p, st, 0);            // returned own must not drop
+        gpremark(p, st, nd[i * 8 + 1]);    // the moves inside the value first
+        gmove(p, st, nd[i * 8 + 1]);       // (ncc: check_expr), then
+        pnd := gpend(p, st, 0);            // returning consumes — a
+                                           // returned own must not drop
         if (st[59] > 0 || pnd == 1) && nd[i * 8 + 1] > 0 {
             eind(d);                       // braced: the value computes
             put("\{\n");                   // BEFORE the defers run, and
@@ -5339,9 +5399,10 @@ fn gblock(p: *u8, st: *i64, b: i64, d: i64, ftail: i64) {
         nvr := rt.l == 5 && eq5(p, rt.s, 110, 101, 118, 101, 114);
         mut rets := 0;
         if ftail == 1 && rt.l > 0 && !nvr { rets = 1; }
-        gmove(p, st, t);                   // ncc: the tail consumes, at
-        pnd2 := gpend(p, st, 0);           // line 0 — BEFORE pending is
-        if rets == 1 && (st[59] > 0 || pnd2 == 1) {   // judged
+        gpremark(p, st, t);                // ncc: check_expr(tail) — the
+        gmove(p, st, t);                   // moves inside it, then the
+        pnd2 := gpend(p, st, 0);           // tail consumes, at line 0 —
+        if rets == 1 && (st[59] > 0 || pnd2 == 1) {   // BEFORE pending is judged
             gpre(p, st, t, d + 1);         // tail value, then defers,
             eind(d + 1);                   // then drops, then return
             tt := cinfer(p, st, t);        // (the block's own braces

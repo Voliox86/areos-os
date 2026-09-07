@@ -161,6 +161,7 @@ void gpre(nyx_u8* p, nyx_i64* st, nyx_i64 i, nyx_i64 d);
 void gexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i);
 void gtry(nyx_u8* p, nyx_i64* st, nyx_i64 i, nyx_i64 d, nyx_i64 form);
 void gmove(nyx_u8* p, nyx_i64* st, nyx_i64 i);
+void gpremark(nyx_u8* p, nyx_i64* st, nyx_i64 i);
 void gpath(nyx_u8* p, nyx_i64* st);
 void gfdrops(nyx_u8* p, nyx_i64* st, nyx_i64 si, nyx_i64 d);
 void gheld(nyx_u8* p, nyx_i64* st, nyx_i64 d);
@@ -6505,6 +6506,60 @@ void gmove(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
     }
 }
 
+void gpremark(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
+    if ((i == 0)) {
+        return;
+    }
+    nyx_i64* nd = (nyx_i64*)(st[33]);
+    nyx_i64* al = (nyx_i64*)(st[35]);
+    nyx_i64 k = nd[(i * 8)];
+    if ((k == 4)) {
+        nyx_i64 q0 = 0;
+        while ((q0 < nd[((i * 8) + 2)])) {
+            gpremark(p, st, al[((nd[((i * 8) + 1)] + (q0 * 8)) + 2)]);
+            q0 = (q0 + 1);
+        }
+        return;
+    }
+    if ((k == 6)) {
+        gpremark(p, st, nd[((i * 8) + 1)]);
+        nyx_i64 q = 0;
+        while ((q < nd[((i * 8) + 3)])) {
+            gpremark(p, st, al[(nd[((i * 8) + 2)] + q)]);
+            gmove(p, st, al[(nd[((i * 8) + 2)] + q)]);
+            q = (q + 1);
+        }
+        return;
+    }
+    if ((((k == 7) || (k == 8)) || (k == 10))) {
+        gpremark(p, st, nd[((i * 8) + 1)]);
+        return;
+    }
+    if (((k == 9) || (k == 13))) {
+        gpremark(p, st, nd[((i * 8) + 1)]);
+        gpremark(p, st, nd[((i * 8) + 2)]);
+        return;
+    }
+    if ((k == 11)) {
+        nyx_i64 q4 = 0;
+        while ((q4 < nd[((i * 8) + 3)])) {
+            nyx_i64 r4 = (nd[((i * 8) + 1)] + (q4 * 3));
+            gpremark(p, st, al[(r4 + 2)]);
+            gmove(p, st, al[(r4 + 2)]);
+            q4 = (q4 + 1);
+        }
+        return;
+    }
+    if ((k == 12)) {
+        nyx_i64 q5 = 0;
+        while ((q5 < nd[((i * 8) + 3)])) {
+            nyx_i64 r5 = (nd[((i * 8) + 1)] + (q5 * 3));
+            gpremark(p, st, al[(r5 + 2)]);
+            q5 = (q5 + 1);
+        }
+    }
+}
+
 void gpath(nyx_u8* p, nyx_i64* st) {
     nyx_i64* ps = (nyx_i64*)(st[70]);
     nyx_i64 k = 0;
@@ -6713,6 +6768,7 @@ void gstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i, nyx_i64 d) {
         return;
     }
     if ((k == 22)) {
+        gpremark(p, st, nd[((i * 8) + 1)]);
         gmove(p, st, nd[((i * 8) + 1)]);
         nyx_i64 pnd = gpend(p, st, 0);
         if ((((st[59] > 0) || (pnd == 1)) && (nd[((i * 8) + 1)] > 0))) {
@@ -7135,6 +7191,7 @@ void gblock(nyx_u8* p, nyx_i64* st, nyx_i64 b, nyx_i64 d, nyx_i64 ftail) {
         if ((((ftail == 1) && (rt.l > 0)) && !(nvr))) {
             rets = 1;
         }
+        gpremark(p, st, t);
         gmove(p, st, t);
         nyx_i64 pnd2 = gpend(p, st, 0);
         if (((rets == 1) && ((st[59] > 0) || (pnd2 == 1)))) {
