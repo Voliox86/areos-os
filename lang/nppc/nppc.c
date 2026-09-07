@@ -2231,7 +2231,7 @@ static char* lambda_pass(const char* prog) {
         char* slot = fn_slot(i, end);     /* a closure slot (M6.4c1)? its type text */
         int closure = slot != NULL;
         int oslot = closure && !strncmp(slot, "FnOnce", 6);   /* an owning slot (M6.4c6) */
-        char fin[48];                     /* its finaliser's name */
+        char fin[160];                    /* its finaliser's name (a template's carries <T>) */
         fin[0] = 0;
         /* `h := fn(...) { ... }` (M6.4c4): a bound lambda may capture own
          * locals — it becomes a call-once closure, consumed by its call. */
@@ -2279,9 +2279,10 @@ static char* lambda_pass(const char* prog) {
                     die("%s:%d: lambda captures own value '%.*s' — an own capture needs a call-once closure: bind the lambda with := and call it once, or make the slot FnOnce(...) (M6.4c6)",
                         FILENAME, TOKS[caps[c]].line, TOKS[caps[c]].slen, TOKS[caps[c]].s);
             }
-        if (oslot && ncap && gname >= 0)
-            die("%s:%d: a FnOnce lambda inside generic '%.*s' is not supported yet — pass its captures as parameters",
-                FILENAME, TOKS[i].line, TOKS[gname].slen, TOKS[gname].s);
+        if (oslot && ownenv && gname >= 0)   /* M6.4c6b: plain captures template fine; an own
+                                              * environment would need an own struct template */
+            die("%s:%d: an own capture in a FnOnce lambda inside generic '%.*s' is not supported yet — pass '%.*s' as a parameter",
+                FILENAME, TOKS[i].line, TOKS[gname].slen, TOKS[gname].s, TOKS[caps[0]].slen, TOKS[caps[0]].s);
         int lamno = NLAMBDA++;
         char* targs = xmalloc(4 + (size_t)nused * 64);   /* `<A, B>`, or "" */
         int tn = 0;
@@ -2321,10 +2322,11 @@ static char* lambda_pass(const char* prog) {
         }
         if (oslot) {                      /* M6.4c6: the finaliser — takes an own environment
                                            * out so its captures drop; a no-op otherwise */
-            char ft[160];
+            char ft[400];                 /* inside a template (M6.4c6b) the finaliser is a
+                                           * template too, over the environment's parameters */
             if (ownenv) {
-                sprintf(fin, "__fin_E_%d", lamno);
-                sprintf(ft, "fn %s(_env: addr) {\n    __p := _env as *__E_%d;\n    __e := __p[0];\n}\n\n", fin, lamno);
+                sprintf(fin, "__fin_E_%d%s", lamno, targs);
+                sprintf(ft, "fn %s(_env: addr) {\n    __p := _env as *__E_%d%s;\n    __e := __p[0];\n}\n\n", fin, lamno, targs);
             } else {
                 sprintf(fin, "__nop_fin_%d", lamno);
                 sprintf(ft, "fn %s(_env: addr) { }\n\n", fin);
@@ -2558,6 +2560,17 @@ static int stmt_end(int t) {
     return -1;
 }
 
+/* Does the type span [ts, te) name one of item fi's type parameters?
+ * (M6.4c6b: a FnOnce signature over a template parameter has no struct
+ * name yet — its calls are rewritten by the closure pass that follows
+ * the generic pass, on the instantiated, concrete signature.) */
+static int span_names_tp(const Item* fi, int ts, int te) {
+    for (int u = ts; u < te; u++)
+        if (TOKS[u].k == T_IDENT)
+            for (int q = 0; q < fi->ntp; q++) if (tokspan_eq(fi->tp[q], u)) return 1;
+    return 0;
+}
+
 /* The closure pass (M6.4c1), after the lambdas are lifted: every `Fn(...)`
  * type slot becomes its struct name (the structs declared once, ahead of
  * the first struct or function), calls through closure-typed parameters,
@@ -2610,9 +2623,10 @@ static char* closure_pass(const char* prog) {
                 for (int u = t; u < e && !generic; u++) if (tokspan_eq(q, u)) generic = 1;
                 if (TOKS[q + 1].k != T_COMMA) break;
             }
-        if (generic) { t = e - 1; continue; }
         if (is_once(t)) {                 /* M6.4c6: a FnOnce field would be an own value inside
-                                           * its holder — a parameter, a local or a return only */
+                                           * its holder — a parameter, a local or a return only
+                                           * (judged before the generic skip: a template's field
+                                           * is refused whether or not it is ever instantiated) */
             int q = itemfirst;
             while (q < t && TOKS[q].k != T_KW_STRUCT && TOKS[q].k != T_KW_FN && TOKS[q].k != T_KW_ENUM &&
                    TOKS[q].k != T_KW_IMPL) q++;
@@ -2620,6 +2634,7 @@ static char* closure_pass(const char* prog) {
                 die("%s:%d: a FnOnce field needs an own struct holding it (N v0.25) — pass the closure as a parameter instead (M6.4c6)",
                     FILENAME, TOKS[t].line);
         }
+        if (generic) { t = e - 1; continue; }
         reg_sigs(t, e, signm, sigtx, &nsig);
         /* A struct or enum the signature names by value must be laid out
          * first (N emits layouts in declaration order, and a struct field
@@ -2644,6 +2659,7 @@ static char* closure_pass(const char* prog) {
         char* cls[128];                   /* M6.4c6: a FnOnce name's signature, else NULL */
         for (int p = 0; p < fi->np; p++) {
             if (range_is_Fn(fi->pts[p], fi->pte[p])) {
+                if (is_once(fi->pts[p]) && span_names_tp(fi, fi->pts[p], fi->pte[p])) continue;   /* M6.4c6b: pass 2 */
                 if (ncl < 128) { cls[ncl] = is_once(fi->pts[p]) ? sig_name(fi->pts[p], fi->pte[p]) : NULL; cl[ncl++] = fi->pname[p]; }
             } else if (fi->pte[p] == fi->pts[p] + 1) {
                 int s = stt_find(fi->pts[p]);
@@ -2688,6 +2704,7 @@ static char* closure_pass(const char* prog) {
                 int g = fnt_find(r);
                 if (g < 0) continue;
                 if (range_is_Fn(FNT[g].rts, FNT[g].rte)) {
+                    if (is_once(FNT[g].rts) && span_names_tp(&FNT[g], FNT[g].rts, FNT[g].rte)) continue;   /* M6.4c6b: pass 2 */
                     if (ncl < 128) { cls[ncl] = is_once(FNT[g].rts) ? sig_name(FNT[g].rts, FNT[g].rte) : NULL; cl[ncl++] = u; }
                 } else if (FNT[g].rts >= 0 && FNT[g].rte == FNT[g].rts + 1) {
                     int s = stt_find(FNT[g].rts);

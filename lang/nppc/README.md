@@ -375,12 +375,34 @@ a second call is *use of 'f' after move*, a FnOnce never called drops
 at scope end through its finaliser, and a FnOnce handed to an `Fn`
 slot is a type mismatch. The limit at this rung: a `FnOnce` **field**
 is refused (*a FnOnce field needs an own struct holding it (N v0.25) —
-pass the closure as a parameter instead (M6.4c6)*), and a FnOnce
-lambda inside a generic template is not supported yet. The own-capture
+pass the closure as a parameter instead (M6.4c6)*), in a generic struct
+too — judged before the template is ever instantiated. The own-capture
 refusal in an `Fn` slot now names both fixes: *bind the lambda with :=
 and call it once, or make the slot FnOnce(...)*.
 [`../examples/fnonce.npp`](../examples/fnonce.npp) is the worked
 example, held by stage [10x].
+
+**FnOnce inside generic templates (M6.4c6b).** A `FnOnce(T) -> T`
+over a template's type parameter lowers the way an `Fn` one does
+(M6.4c3): the template's lambda lifts as a template of its own —
+`__c_N<T>`, its environment `__E_N<T>` with the maker `__mk_E_N<T>`,
+and, when the environment owns something, a finaliser `__fin_E_N<T>` —
+instantiated with the template that uses them, so `keeper<i64>` and
+`keeper<str>` each get their own copies; the owning struct is one per
+CONCRETE signature (`__FnOnce_i64__i64`, `__FnOnce_str__str`),
+declared by the closure pass that runs after the generic pass, which is
+also where a call through a FnOnce parameter or local typed over T is
+rewritten into `__call_once_…` — the closure pass before it leaves
+`f(x)` alone while the signature still names a type parameter, because
+the struct it would name does not exist yet. An `own` capture flows
+through a generic consumer unchanged (`consume<i64>` handed a closure
+that owns a File closes it after the one call). The one shape still
+refused is an `own` capture in a lambda born INSIDE a template —
+*an own capture in a FnOnce lambda inside generic 'keeper' is not
+supported yet — pass 'h' as a parameter* — since its environment would
+have to be an own struct template.
+[`../examples/gfnonce.npp`](../examples/gfnonce.npp) is the worked
+example, held by stage [10y].
 
 [`../examples/closure.npp`](../examples/closure.npp) is the worked
 example: four lambdas — an argument, a struct field, another argument,

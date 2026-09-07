@@ -1,0 +1,59 @@
+// gfnonce.npp — owning closures meet generics (M6.4c6b).
+//
+// `FnOnce(T) -> T` may appear in a generic template like any other type
+// over T: `consume<T>` takes one and makes its one call, `keeper<T>`
+// builds one whose lambda captures a plain `seed: T` and an `n: i64`.
+// The template's lambda lifts as a template of its own, as M6.4b–c3
+// do for `fn` and `Fn` lambdas — the lifted body `__c_N<T>`, the
+// environment `__E_N<T>` with its maker `__mk_E_N<T>`, and (when the
+// environment owns something) its finaliser `__fin_E_N<T>` — all
+// instantiated with the template that uses them; the owning struct
+// itself is one per CONCRETE signature, `__FnOnce_i64__i64` and
+// `__FnOnce_str__str` here, declared by the closure pass that runs after
+// the generic pass, which also rewrites every `f(x)` on a FnOnce name
+// into `__call_once_…(f, x)` once the signature is concrete. An `own`
+// capture flows through a generic CONSUMER the same way — `consume<i64>`
+// is handed a closure that owns a File, and the File closes when the
+// closure's one call ends. The one limit at this rung: an own capture in
+// a lambda born INSIDE a template is still refused (its environment
+// would be an own struct template).
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+#[drop(close_file)]
+own struct File { fd: i64 }
+
+fn close_file(f: File) {
+    put("closing {f.fd}\n");
+}
+
+// A generic consumer: the closure's one call, at whatever T.
+fn consume<T>(f: FnOnce(T) -> T, x: T) -> T {
+    f(x)
+}
+
+// A generic maker: the lambda captures the seed (a T) and a number.
+fn keeper<T>(seed: T, n: i64) -> FnOnce(T) -> T {
+    fn(x: T) -> T { put("keeper {n}\n"); seed }
+}
+
+fn main() -> i64 {
+    f := File{ fd: 3 };
+    a := consume<i64>(fn(x: i64) -> i64 { x + f.fd }, 39);
+    put("a = {a}\n");
+    s := consume<str>(fn(t: str) -> str { t }, "hi");
+    put("s = {s}\n");
+    u := keeper<i64>(5, 7);
+    v := keeper<str>("seed", 8);
+    b := u(1);
+    put("b = {b}\n");
+    w := v("x");
+    put("w = {w}\n");
+    0
+}
