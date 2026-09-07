@@ -57,6 +57,8 @@ void sadd(nyx_i64* st, nyx_i64 ss, nyx_i64 sl, nyx_i64 nf, nyx_i64 fst, nyx_i64 
 nyx_i64 sfind(nyx_u8* p, nyx_i64* st, nyx_i64 ss, nyx_i64 sl);
 T sfty(nyx_i64* st, nyx_i64 si, nyx_i64 q);
 nyx_bool tyown(nyx_u8* p, nyx_i64* st, T t);
+nyx_bool typtrown(nyx_u8* p, nyx_i64* st, T t);
+void eptrown(nyx_u8* p, nyx_i64* st, T t, nyx_i64 ns, nyx_i64 nl);
 void eadd(nyx_i64* st, nyx_i64 ss, nyx_i64 sl, nyx_i64 nv, nyx_i64 vst);
 nyx_i64 efind(nyx_u8* p, nyx_i64* st, nyx_i64 ss, nyx_i64 sl);
 nyx_i64 vfindx(nyx_u8* p, nyx_i64* st, nyx_i64 ei, nyx_i64 vs, nyx_i64 vl);
@@ -907,6 +909,27 @@ nyx_bool tyown(nyx_u8* p, nyx_i64* st, T t) {
     }
     nyx_i64* sa = (nyx_i64*)(st[49]);
     return (sa[((si * 8) + 4)] == 1);
+}
+
+nyx_bool typtrown(nyx_u8* p, nyx_i64* st, T t) {
+    if (((t.l == 0) || (t.pt == 0))) {
+        return 0;
+    }
+    nyx_i64 si = sfind(p, st, t.s, t.l);
+    if ((si < 0)) {
+        return 0;
+    }
+    nyx_i64* sa = (nyx_i64*)(st[49]);
+    return (sa[((si * 8) + 4)] == 1);
+}
+
+void eptrown(nyx_u8* p, nyx_i64* st, T t, nyx_i64 ns, nyx_i64 nl) {
+    put(((nyx_str){" pointers to own type '", 23}));
+    put_span(p, t.s, t.l);
+    put(((nyx_str){"' are not allowed (in ", 22}));
+    put_span(p, ns, nl);
+    put(((nyx_str){")\n", 2}));
+    st[41] = 1;
 }
 
 void eadd(nyx_i64* st, nyx_i64 ss, nyx_i64 sl, nyx_i64 nv, nyx_i64 vst) {
@@ -5305,6 +5328,10 @@ void cdecls(nyx_u8* p, nyx_i64* st) {
     while ((si2 < st[50])) {
         nyx_i64 q = 0;
         while ((q < sa[((si2 * 8) + 2)])) {
+            if (typtrown(p, st, sfty(st, si2, q))) {
+                eptrown(p, st, sfty(st, si2, q), sa[(si2 * 8)], sa[((si2 * 8) + 1)]);
+                return;
+            }
             if ((tyown(p, st, sfty(st, si2, q)) && (sa[((si2 * 8) + 4)] != 1))) {
                 nyx_i64 r = (sa[((si2 * 8) + 3)] + (q * 6));
                 put(((nyx_str){" own type in field '", 20}));
@@ -5323,8 +5350,16 @@ void cdecls(nyx_u8* p, nyx_i64* st) {
     nyx_i64 fi2 = 0;
     while ((fi2 < st[38])) {
         if ((ft2[((fi2 * 8) + 6)] == 0)) {
+            if (typtrown(p, st, frty(st, fi2))) {
+                eptrown(p, st, frty(st, fi2), ft2[(fi2 * 8)], ft2[((fi2 * 8) + 1)]);
+                return;
+            }
             nyx_i64 q2 = 0;
             while ((q2 < ft2[((fi2 * 8) + 2)])) {
+                if (typtrown(p, st, fpty(st, fi2, q2))) {
+                    eptrown(p, st, fpty(st, fi2, q2), ft2[(fi2 * 8)], ft2[((fi2 * 8) + 1)]);
+                    return;
+                }
                 if (tyown(p, st, fpty(st, fi2, q2))) {
                     put(((nyx_str){" own type in syscall '", 22}));
                     put_span(p, ft2[(fi2 * 8)], ft2[((fi2 * 8) + 1)]);
@@ -5337,6 +5372,24 @@ void cdecls(nyx_u8* p, nyx_i64* st) {
         }
         fi2 = (fi2 + 1);
     }
+    nyx_i64 fi3 = 0;
+    while ((fi3 < st[38])) {
+        if ((ft2[((fi3 * 8) + 6)] == 1)) {
+            if (typtrown(p, st, frty(st, fi3))) {
+                eptrown(p, st, frty(st, fi3), ft2[(fi3 * 8)], ft2[((fi3 * 8) + 1)]);
+                return;
+            }
+            nyx_i64 q3 = 0;
+            while ((q3 < ft2[((fi3 * 8) + 2)])) {
+                if (typtrown(p, st, fpty(st, fi3, q3))) {
+                    eptrown(p, st, fpty(st, fi3, q3), ft2[(fi3 * 8)], ft2[((fi3 * 8) + 1)]);
+                    return;
+                }
+                q3 = (q3 + 1);
+            }
+        }
+        fi3 = (fi3 + 1);
+    }
     nyx_i64* ea = (nyx_i64*)(st[51]);
     nyx_i64 ei = 0;
     while ((ei < st[52])) {
@@ -5347,6 +5400,10 @@ void cdecls(nyx_u8* p, nyx_i64* st) {
             while ((f2 < al[(vb + 2)])) {
                 nyx_i64 r2 = (al[(vb + 3)] + (f2 * 6));
                 T t2 = ((T){.pt = al[(r2 + 2)], .us = al[(r2 + 3)], .s = al[(r2 + 4)], .l = al[(r2 + 5)]});
+                if (typtrown(p, st, t2)) {
+                    eptrown(p, st, t2, ea[(ei * 4)], ea[((ei * 4) + 1)]);
+                    return;
+                }
                 if (tyown(p, st, t2)) {
                     put(((nyx_str){" own type in variant '", 22}));
                     put_span(p, ea[(ei * 4)], ea[((ei * 4) + 1)]);
@@ -5381,6 +5438,18 @@ void cdecls(nyx_u8* p, nyx_i64* st) {
             put(((nyx_str){"' \342\200\224 by-value self would move the receiver (v0.17)\n", 52}));
             st[41] = 1;
             return;
+        }
+        if (typtrown(p, st, mrty(st, mi))) {
+            eptrown(p, st, mrty(st, mi), ma[((mi * 8) + 2)], ma[((mi * 8) + 3)]);
+            return;
+        }
+        nyx_i64 q6 = 0;
+        while ((q6 < ma[((mi * 8) + 4)])) {
+            if (typtrown(p, st, mpty(st, mi, q6))) {
+                eptrown(p, st, mpty(st, mi, q6), ma[((mi * 8) + 2)], ma[((mi * 8) + 3)]);
+                return;
+            }
+            q6 = (q6 + 1);
         }
         mi = (mi + 1);
     }

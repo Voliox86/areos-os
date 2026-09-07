@@ -600,11 +600,15 @@ the cast local, the indexed store, the peek and the take were already
 what ncc, check.n and gen.n did, and
 [`ownbox.n`](../examples/ownbox.n) now holds them under every
 differential (the host output, the check.n silent set, the gen
-differential). One mirror gap is on record: a pointer to an own type
-in a signature or field — *pointers to own type 'Env' are not allowed
-(in peek)*, a file-level ncc error — is not yet refused by check.n or
-gen.n's checker half; the corpus row and the mirror are the next
-selfhost rung. A second, latent one surfaced while lowering N++'s
+differential). One mirror gap was on record and is closed: a pointer to
+an own type in a signature or field — *pointers to own type 'Env' are
+not allowed (in peek)*, a file-level ncc error — is now refused by
+check.n and gen.n's checker half exactly where ncc's `validate_ty`
+refuses it, and in ncc's order: every struct's fields (before the
+nesting check), every extern's return and parameters (before the
+kernel-is-not-an-owner check), every function's return and parameters,
+every variant payload, and every method's return and parameters. The
+corpus is **seventy-seven rows** with `bad_own_ptr_sig.n`. A second, latent one surfaced while lowering N++'s
 `FnOnce` (M6.4c6): ncc checks a block's tail expression before it
 judges whether any auto-drop is pending (`check_expr(b->tail)` marks
 the moves of call arguments inside the tail), while gen.n marks those

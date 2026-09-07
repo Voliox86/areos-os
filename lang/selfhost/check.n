@@ -612,6 +612,28 @@ fn tyown(p: *u8, st: *i64, t: T) -> bool {
     return sa[si * 8 + 4] == 1;
 }
 
+// Is t a POINTER to an `own struct` type? (ncc's validate_ty, v0.17:
+// no aliasing an owner — refused in every signature and field; the
+// v0.26 door is a local born from a cast, which no table records.)
+fn typtrown(p: *u8, st: *i64, t: T) -> bool {
+    if t.l == 0 || t.pt == 0 { return false; }
+    si := sfind(p, st, t.s, t.l);
+    if si < 0 { return false; }
+    sa := st[49] as *i64;
+    return sa[si * 8 + 4] == 1;
+}
+
+// The refusal itself, at file level — ncc's `%s: pointers to own type
+// '%s' are not allowed (in %s)`, the place being the item's name.
+fn eptrown(p: *u8, st: *i64, t: T, ns: i64, nl: i64) {
+    put(" pointers to own type '");
+    put_span(p, t.s, t.l);
+    put("' are not allowed (in ");
+    put_span(p, ns, nl);
+    put(")\n");
+    st[41] = 1;
+}
+
 // The enum table (ncc's ENUMS/enum_lookup): 4-word records — name
 // span, variant count, variant-record start. Variant records (also
 // 4-word: span, payload count, payload-field start) and their
@@ -3880,6 +3902,10 @@ fn cdecls(p: *u8, st: *i64) {
     while si2 < st[50] {                   // own cannot nest in fields —
         mut q := 0;                        // except an OWN container's
         while q < sa[si2 * 8 + 2] {        // (v0.25)
+            if typtrown(p, st, sfty(st, si2, q)) {   // ncc: validate_ty first
+                eptrown(p, st, sfty(st, si2, q), sa[si2 * 8], sa[si2 * 8 + 1]);
+                return;
+            }
             if tyown(p, st, sfty(st, si2, q)) && sa[si2 * 8 + 4] != 1 {
                 r := sa[si2 * 8 + 3] + q * 6;
                 put(" own type in field '");
@@ -3898,8 +3924,16 @@ fn cdecls(p: *u8, st: *i64) {
     mut fi2 := 0;
     while fi2 < st[38] {                   // the kernel is not an owner
         if ft2[fi2 * 8 + 6] == 0 {
+            if typtrown(p, st, frty(st, fi2)) {      // ncc: the return, then
+                eptrown(p, st, frty(st, fi2), ft2[fi2 * 8], ft2[fi2 * 8 + 1]);
+                return;                    // each parameter, validated
+            }                              // before the own check
             mut q2 := 0;
             while q2 < ft2[fi2 * 8 + 2] {
+                if typtrown(p, st, fpty(st, fi2, q2)) {
+                    eptrown(p, st, fpty(st, fi2, q2), ft2[fi2 * 8], ft2[fi2 * 8 + 1]);
+                    return;
+                }
                 if tyown(p, st, fpty(st, fi2, q2)) {
                     put(" own type in syscall '");
                     put_span(p, ft2[fi2 * 8], ft2[fi2 * 8 + 1]);
@@ -3912,6 +3946,24 @@ fn cdecls(p: *u8, st: *i64) {
         }
         fi2 = fi2 + 1;
     }
+    mut fi3 := 0;                          // then every fn's signature —
+    while fi3 < st[38] {                   // its return, then its params
+        if ft2[fi3 * 8 + 6] == 1 {         // (ncc: validate_ty per fn)
+            if typtrown(p, st, frty(st, fi3)) {
+                eptrown(p, st, frty(st, fi3), ft2[fi3 * 8], ft2[fi3 * 8 + 1]);
+                return;
+            }
+            mut q3 := 0;
+            while q3 < ft2[fi3 * 8 + 2] {
+                if typtrown(p, st, fpty(st, fi3, q3)) {
+                    eptrown(p, st, fpty(st, fi3, q3), ft2[fi3 * 8], ft2[fi3 * 8 + 1]);
+                    return;
+                }
+                q3 = q3 + 1;
+            }
+        }
+        fi3 = fi3 + 1;
+    }
     ea := st[51] as *i64;
     mut ei := 0;
     while ei < st[52] {                    // nor an enum variant
@@ -3922,6 +3974,10 @@ fn cdecls(p: *u8, st: *i64) {
             while f2 < al[vb + 2] {
                 r2 := al[vb + 3] + f2 * 6;
                 t2 := T{ pt: al[r2 + 2], us: al[r2 + 3], s: al[r2 + 4], l: al[r2 + 5] };
+                if typtrown(p, st, t2) {   // ncc: validate_ty first
+                    eptrown(p, st, t2, ea[ei * 4], ea[ei * 4 + 1]);
+                    return;
+                }
                 if tyown(p, st, t2) {
                     put(" own type in variant '");
                     put_span(p, ea[ei * 4], ea[ei * 4 + 1]);
@@ -3956,6 +4012,18 @@ fn cdecls(p: *u8, st: *i64) {
             put("' — by-value self would move the receiver (v0.17)\n");
             st[41] = 1;
             return;
+        }
+        if typtrown(p, st, mrty(st, mi)) {         // ncc: the method's return,
+            eptrown(p, st, mrty(st, mi), ma[mi * 8 + 2], ma[mi * 8 + 3]);
+            return;                        // then its parameters
+        }
+        mut q6 := 0;
+        while q6 < ma[mi * 8 + 4] {
+            if typtrown(p, st, mpty(st, mi, q6)) {
+                eptrown(p, st, mpty(st, mi, q6), ma[mi * 8 + 2], ma[mi * 8 + 3]);
+                return;
+            }
+            q6 = q6 + 1;
         }
         mi = mi + 1;
     }

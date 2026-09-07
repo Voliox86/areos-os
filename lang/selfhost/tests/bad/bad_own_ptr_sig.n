@@ -1,0 +1,3 @@
+own struct Env { tag: i64 }
+fn peek(p: *Env) -> i64 { p[0].tag }
+fn main() -> i64 { 0 }
