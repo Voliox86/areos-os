@@ -466,7 +466,7 @@ static const command_t commands[] = {
     {"tr",        cmd_tr,        "Translate/delete/squeeze chars: tr [-ds] SET1 [SET2] <file>", false},
     {"sed",       cmd_sed,       "Substitute text: sed s/old/new/[g] <file>", false},
     {"patch",     cmd_patch,     "Apply a unified diff to a file in place: patch <file> <diff>", false},
-    {"fold",      cmd_fold,      "Wrap long lines to a width: fold [-w width] <file>", false},
+    {"fold",      cmd_fold,      "Wrap long lines to a width: fold [-s] [-w width] <file>", false},
     {"pr",        cmd_pr,        "Paginate text for printing: pr [-l lines] <file>", false},
     {"fmt",       cmd_fmt,       "Reflow text to fill lines up to a width: fmt [-w width] <file>", false},
     {"nl",        cmd_nl,        "Number lines: nl [-b a|t|n] [-w N] [-s SEP] <file>", false},
@@ -1071,7 +1071,7 @@ static const man_page_t man_pages[] = {
     {"sed",      "Substitute text with the s command: sed s/old/new/[g] <file> replaces the literal string <old> with <new> on each line (the first match per line, or every match with the g flag) and prints the result — the file itself is not changed. Any character right after the s works as the delimiter, so s|a|b|g is the same as s/a/b/g. Matching is literal (NyxOS has no regex engine); unlike tr, which works one character at a time, sed replaces whole strings."},
     {"patch",    "Apply a unified diff to a file IN PLACE: `patch <file> <diff>` reads the unified diff in <diff> (the format `diff -u` and git produce) and edits <file> accordingly — added (`+`) lines inserted, removed (`-`) lines dropped, context (` `) lines kept. It is fail-safe: every hunk's context and removed lines must match <file> exactly at the hunk's position, or the whole patch is rejected with a reason and the file is left completely unchanged (no partial application). `---`/`+++` headers and `\\ No newline` markers are ignored. The read side of the existing `diff` — together they let you produce a diff, ship it, and apply it in-OS. Pinned by the `patch` self-test (insert/delete/change hunks + context-mismatch rejection)."},
     {"tr",       "Translate, delete or squeeze characters read from <file>. With two sets, each character of <file> that appears in SET1 is replaced by the character at the same position in SET2 (a shorter SET2 repeats its last character). -d deletes every SET1 character instead; -s collapses each run of a repeated result character into one; -c (or -C) complements SET1 so the operation applies to the bytes NOT listed (e.g. `tr -cd '0-9'` keeps only the digits). Sets may use ascending ranges such as a-z or 0-9 and C-style escapes \\n \\t \\r \\\\ and \\NNN (octal), so e.g. `tr '\\n' ' '` or `tr -d '\\r'`."},
-    {"fold",     "Wrap the lines of <file> so no output line is longer than the given width (80 by default, or -w width). A line longer than the width is broken with a hard newline at exactly that many characters; shorter lines and existing line breaks are left alone."},
+    {"fold",     "Wrap the lines of <file> so no output line is longer than the given width (80 by default, or -w width). A line longer than the width is broken with a hard newline at exactly that many characters; shorter lines and existing line breaks are left alone. With -s the break is placed at a word boundary instead — after the last space or tab that fits, so words aren't split (a run with no blank still hard-breaks at the width)."},
     {"pr",       "Paginate a text file for printing: `pr [-l lines] <file>` splits it into pages of `lines` content lines (56 by default) and prints a `--- Page N ---` header before each. Useful for chunking long output into page-sized sections."},
     {"fmt",      "Reflow (rewrap) the prose in <file> to fill lines up to a width (75 by default, or -w width) -- the paragraph formatter. Unlike `fold`, which only hard-breaks over-long lines at a fixed column, fmt COLLAPSES each paragraph's internal whitespace and repacks its words greedily, so short lines are joined and long ones split at word boundaries. A blank line separates paragraphs and is preserved as a single blank line; a word longer than the width is left whole on its own line rather than broken. Reads one bounded chunk of the file (like head/fold)."},
     {"nl",       "Number the lines of <file>. By default only non-empty lines are numbered (-b t); -b a numbers every line and -b n numbers none. Each line number is right-justified in a field N columns wide (6 by default, or -w N) and followed by a separator (a tab by default, or -s SEP), then the line text."},
@@ -3671,14 +3671,24 @@ static void cmd_pr(int argc, char** argv) {
 static void fold_putchar_emit(char c, void* ctx) { (void)ctx; putchar(c); }
 
 static void cmd_fold(int argc, char** argv) {
-    int width = 80, ai = 1;
-    if (ai < argc && argv[ai][0] == '-' && argv[ai][1] == 'w') {
-        if (argv[ai][2] != '\0') { width = atoi(argv[ai] + 2); ai++; }        // -wN
-        else if (ai + 1 < argc)  { width = atoi(argv[ai + 1]); ai += 2; }     // -w N
-        else { printf("Usage: fold [-w width] <file>\n"); return; }
+    int width = 80, at_spaces = 0, ai = 1;
+    while (ai < argc && argv[ai][0] == '-' && argv[ai][1]) {
+        const char* a = argv[ai];
+        int took_next = 0;
+        for (int k = 1; a[k]; k++) {
+            if (a[k] == 's') at_spaces = 1;                                   // -s: break at spaces
+            else if (a[k] == 'w') {                                          // -w takes the rest / next arg
+                if (a[k + 1]) width = atoi(&a[k + 1]);                        // -wN
+                else if (ai + 1 < argc) { width = atoi(argv[ai + 1]); took_next = 1; }  // -w N
+                else { printf("Usage: fold [-s] [-w width] <file>\n"); return; }
+                break;
+            }
+            else { printf("fold: invalid option -- '%c'\n", a[k]); return; }
+        }
+        ai += took_next ? 2 : 1;
     }
     if (width < 1) width = 1;
-    if (ai >= argc) { printf("Usage: fold [-w width] <file>\n"); return; }
+    if (ai >= argc) { printf("Usage: fold [-s] [-w width] <file>\n"); return; }
 
     int fd = vfs_open(argv[ai], 0, 0);
     if (fd < 0) { printf("fold: cannot open '%s'\n", argv[ai]); return; }
@@ -3687,7 +3697,9 @@ static void cmd_fold(int argc, char** argv) {
     vfs_close(fd);
     if (bytes <= 0) return;
 
-    fold_run(buf, bytes, width, fold_putchar_emit, 0);   // shared, unit-tested (kernel/core/fold.c)
+    // shared, unit-tested wrap logic (kernel/core/fold.c): -s breaks at word boundaries
+    if (at_spaces) fold_s_run(buf, bytes, width, fold_putchar_emit, 0);
+    else           fold_run(buf, bytes, width, fold_putchar_emit, 0);
 }
 
 // Greedy word-wrap reflow, the core of `fmt`. Collapses each paragraph's internal
