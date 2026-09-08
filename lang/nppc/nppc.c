@@ -1541,8 +1541,11 @@ static char* modules_pass(const char* prog) {
         if (NITEMS >= MAXITEMS) die("%s: too many top-level items", FILENAME);
         ITEMS[NITEMS].tok = i + 1;
         ITEMS[NITEMS].owner = mod_owner(TOKS[i].start);
-        ITEMS[NITEMS].pub = i > 0 && TOKS[i - 1].k == T_IDENT && TOKS[i - 1].slen == 3 &&
-                            !memcmp(TOKS[i - 1].s, "pub", 3);
+        int p = i - 1;                    /* `pub` may stand before `own` and an attribute —
+                                           * `pub #[drop(f)] own struct S` (M6.5e) */
+        while (p > 0 && (TOKS[p].k == T_KW_OWN || TOKS[p].k == T_ATTR_DROP || TOKS[p].k == T_ATTR_CAPS_SYSCALL)) p--;
+        ITEMS[NITEMS].pub = p >= 0 && TOKS[p].k == T_IDENT && TOKS[p].slen == 3 &&
+                            !memcmp(TOKS[p].s, "pub", 3);
         NITEMS++;
     }
     /* References: refuse a cross-file use of a private item; rename a
@@ -1552,6 +1555,32 @@ static char* modules_pass(const char* prog) {
     for (int t = 0; t + 1 < NTOK; t++) {
         if (TOKS[t].k == T_LB) depth++;
         else if (TOKS[t].k == T_RB) depth--;
+        if (TOKS[t].k == T_ATTR_DROP) {   /* `#[drop(f)]` names an item too (M6.5e): a private
+                                           * f of this module is renamed inside the attribute
+                                           * (the name sits between `#[drop(` and `)]`), and
+                                           * another module's private f is refused */
+            int aowner = mod_owner(TOKS[t].start);
+            const char* fname = TOKS[t].s;
+            int fl = (int)strlen(fname);
+            int alocal = -1, aforeign = -1;
+            for (int k = 0; k < NITEMS; k++) {
+                if (TOKS[ITEMS[k].tok].slen != fl || memcmp(TOKS[ITEMS[k].tok].s, fname, (size_t)fl)) continue;
+                if (ITEMS[k].owner == aowner) alocal = k;
+                else if (!ITEMS[k].pub && aforeign < 0) aforeign = k;
+            }
+            if (alocal < 0 && aforeign >= 0) {
+                int fo = ITEMS[aforeign].owner;
+                die("%s:%d: '%s' is private to %s (mark it pub to use it here)",
+                    FILENAME, TOKS[t].line, fname, fo >= 0 ? MODS[fo].name : FILENAME);
+            }
+            if (alocal >= 0 && !ITEMS[alocal].pub && aowner >= 0) {
+                if (ne >= MAXITEMS * 4) die("%s: too many private references", FILENAME);
+                char* mn = xmalloc(strlen(MODS[aowner].name) + (size_t)fl + 8);
+                sprintf(mn, "__m_%s_%s", mod_stem(MODS[aowner].name), fname);
+                es[ne] = TOKS[t].start + 7; ee[ne] = TOKS[t].end - 2; er[ne] = mn; ne++;
+            }
+            continue;
+        }
         if (TOKS[t].k != T_IDENT) continue;
         int isdecl = t > 0 && (TOKS[t - 1].k == T_KW_FN || TOKS[t - 1].k == T_KW_STRUCT ||
                                TOKS[t - 1].k == T_KW_ENUM);
@@ -1618,7 +1647,10 @@ static void strip_pub(void) {
         else if (TOKS[i].k == T_RB) depth--;
         if (depth != 0 || TOKS[i].k != T_IDENT || TOKS[i].slen != 3 ||
             memcmp(TOKS[i].s, "pub", 3)) continue;
-        TK nx = TOKS[i + 1].k;
+        int j = i + 1;                    /* over `own` and attributes: `pub #[drop(f)] own
+                                           * struct S`, `pub #[caps(syscall)] fn f` (M6.5e) */
+        while (TOKS[j].k == T_KW_OWN || TOKS[j].k == T_ATTR_DROP || TOKS[j].k == T_ATTR_CAPS_SYSCALL) j++;
+        TK nx = TOKS[j].k;
         if (nx != T_KW_FN && nx != T_KW_STRUCT && nx != T_KW_ENUM && nx != T_KW_IMPL)
             die("%s:%d: pub must precede fn, struct, enum, or impl", FILENAME, TOKS[i].line);
         if (NEDIT >= MAXG + MAXI) die("%s: too many rewrites", FILENAME);

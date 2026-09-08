@@ -142,7 +142,16 @@ program the suite's stages [10i]–[10n] hold — lowered, agreed on by
 private call, and an unreached export refused;
 [`../examples/modreexp.npp`](../examples/modreexp.npp) reaches modlib
 through [`../examples/modutil.npp`](../examples/modutil.npp)'s `pub use`.
-Nothing is pending on the module front.
+An own struct crosses a module boundary like any item, destructor
+included (M6.5e): `pub #[drop(f)] own struct S<T>` exports the template
+with its attribute (`pub` may stand before `own` and the attribute), a
+`#[drop(f)]` counts as a reference to `f` — a private drop function of
+the same module is renamed inside the attribute with the rest of the
+module's privates (the drop function always lives beside its struct: it
+names the struct's type, so no other file could declare it without a
+`use` cycle) — so an exported `Guard<T>` released by a private
+`release<T>` instantiates from the main file exactly as it would from
+its own. Nothing is pending on the module front.
 
 ## Closures (M6.4), plainly
 
@@ -317,7 +326,9 @@ scope end through its captures; the body may peek at an own capture but
 not move it out (v0.25's rule on fields). The limits: such a closure
 cannot be passed where an `Fn(…)` is expected (that slot's environment
 is by address, non-owning — the capture is refused with the fix named),
-and it cannot be born inside a generic template yet.
+and this `:=`-bound form cannot be born inside a generic template — the
+`FnOnce` slot form can, since M6.4c6c, and is the shape to reach for
+there.
 [`../examples/owncap.npp`](../examples/owncap.npp) is the worked
 example, held by stage [10v].
 

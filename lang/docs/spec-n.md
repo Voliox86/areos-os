@@ -1273,7 +1273,7 @@ String interpolation is handled lexically: the lexer emits
 `HEAD { expr } [MID { expr }]* TAIL` token runs with a brace-depth stack, so
 interpolated expressions are parsed by the ordinary expression grammar.
 
-## 9. Limitations (honest list, current as of v0.24)
+## 9. Limitations (honest list, current as of v0.26)
 
 The bootstrap grew through the staged N++ plan until nearly all of it
 shipped in `ncc` itself — the static checker (v0.3–0.4), `struct` (v0.5),
@@ -1281,16 +1281,19 @@ shipped in `ncc` itself — the static checker (v0.3–0.4), `struct` (v0.5),
 match-as-expression (v0.9), `?` over structural result enums (v0.10),
 counted `for` loops (v0.11), `#[user]` checked pointers (v0.12),
 `pageflags` W^X (v0.13), capabilities (v0.14), raw index writes (v0.16),
-and `own` types with branch-aware tracking and `#[drop]` destructors
-(v0.17–0.19). The language is also **self-hosted**: `lang/selfhost/gen.n`
-reimplements the whole pipeline in N and emits byte-identical C, verified
-on the host and inside NyxOS (see `docs/selfhost.md`). What genuinely
-remains:
+`own` types with branch-aware tracking and `#[drop]` destructors
+(v0.17–0.19), own fields inside own structs (v0.25, §4.6) and own values
+behind a cast-born raw pointer (v0.26, §4.6). The language is also
+**self-hosted**: `lang/selfhost/gen.n` reimplements the whole pipeline in
+N and emits byte-identical C, verified on the host and inside NyxOS (see
+`docs/selfhost.md`). What genuinely remains:
 
-1. **Missing constructs:** closures, modules/`use`, and generic
-   `Result<T, E>` (monomorphized generics in general) — specified in the
-   N++ design document; they are the substance of a future `n++`
-   front-end rather than of this bootstrap.
+1. **Constructs that live in N++, not in N:** closures, modules/`use`,
+   and monomorphized generics (`Result<T, E>` among them). All three
+   have shipped in the `n++` front-end, `nppc`, which lowers them to the
+   plain N this document describes (`lang/nppc/`, design §6.2 — the
+   generic, module and closure ladders are complete, destructors on
+   templates included); N itself keeps none of them, by design.
 2. **Match-expression and `?` positions are limited** (§5.6.1, §5.8):
    statement value positions only — no general expression nesting
    until the lowering needs it.
@@ -1321,7 +1324,10 @@ and carries format controls (hex in v0.20, width and zero-padding in
 v0.21); `mut` is enforced; v0.22 added missing-return flow analysis; v0.23
 added program arguments (§6.7); v0.24 emits type layouts in declaration
 order, so a struct may hold an enum by value (§4.3), and adds function
-types (§3.4); and the generated C is strict C99 with no GNU extensions
+types (§3.4); v0.25 lets an own struct hold own fields, dropped in
+reverse order after the container's own destructor (§4.6); v0.26 lets an
+own value live behind a raw pointer born from a cast — stored, peeked,
+taken (§4.6); and the generated C is strict C99 with no GNU extensions
 (TinyCC-compatible).
 
 ## 10. Toolchain
