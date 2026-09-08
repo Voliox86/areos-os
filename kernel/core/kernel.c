@@ -11370,6 +11370,36 @@ void nyxfetch(void) {
     set_terminal_color(vga_entry_color(VGA_LIGHT_GREEN, VGA_BLACK));
 }
 
+// Serial-console command tokenizer: split `str` (modified in place) into argv,
+// honouring "..."/'...' quoting via the shared shell_tokenize, then expanding a
+// bare $VAR token unless it was single-quoted ('...' is literal, like bash and
+// the GUI terminal). A line with no quote byte and no leading '$' tokenizes
+// exactly like the old strtok(" ") loop this replaces. The serial shell is a
+// serialised single-command REPL and each parsed command is fully consumed
+// before the next parse, so one static expansion buffer is reused across calls.
+// Returns argc (<= max, capped at MAX_CMD_ARGS); sets *overflow on a token cap.
+static int serial_parse_argv(char* str, char** argv, int max, int* overflow) {
+    static char exp[MAX_CMD_ARGS][256];
+    char had_sq[MAX_CMD_ARGS];
+    if (max > MAX_CMD_ARGS) max = MAX_CMD_ARGS;
+    int argc = shell_tokenize(str, argv, had_sq, max, overflow);
+    for (int i = 0; i < argc; i++) {
+        if (had_sq[i] || argv[i][0] != '$' || !argv[i][1]) continue;
+        const char* name = argv[i] + 1;
+        int nlen = (int)strlen(name);
+        for (int e = 0; e < env_count; e++) {
+            char* eq = strchr(env_vars[e], '=');
+            if (eq && (int)(eq - env_vars[e]) == nlen && strncmp(env_vars[e], name, nlen) == 0) {
+                strncpy(exp[i], eq + 1, 255);
+                exp[i][255] = '\0';
+                argv[i] = exp[i];
+                break;
+            }
+        }
+    }
+    return argc;
+}
+
 // ============================================================
 // launch_shell
 // ============================================================
@@ -11461,34 +11491,10 @@ void launch_shell(void) {
                 char* left_str = cmd_line;
                 char* right_str = pipe_pos_ptr + 1;
                 while (*right_str == ' ') right_str++;
-                // Parse left command
+                // Parse left command (quote-aware, $VAR-expanding)
                 char* argv_left[10];
-                char expanded_left[10][256];
-                int argc_left = 0;
-                char* token = strtok(left_str, " ");
-                while (token != NULL && argc_left < 10) {
-                    if (token[0] == '$' && strlen(token) > 1) {
-                        char varname[64];
-                        strncpy(varname, token + 1, 63);
-                        varname[63] = '\0';
-                        int found = 0;
-                        for (int e = 0; e < env_count; e++) {
-                            char *eq = strchr(env_vars[e], '=');
-                            if (eq && strncmp(env_vars[e], varname, eq - env_vars[e]) == 0 && (int)strlen(varname) == (int)(eq - env_vars[e])) {
-                                strncpy(expanded_left[argc_left], eq + 1, 255);
-                                expanded_left[argc_left][255] = '\0';
-                                argv_left[argc_left] = expanded_left[argc_left];
-                                found = 1;
-                                break;
-                            }
-                        }
-                        if (!found) argv_left[argc_left] = token;
-                    } else {
-                        argv_left[argc_left] = token;
-                    }
-                    argc_left++;
-                    token = strtok(NULL, " ");
-                }
+                int ov_left = 0;
+                int argc_left = serial_parse_argv(left_str, argv_left, 10, &ov_left);
                 if (argc_left > 0) {
                     pipe_start();
                     int cmd_found = 0;
@@ -11513,35 +11519,11 @@ void launch_shell(void) {
                     }
                     // Parse and execute right command with /tmp/pipe as file arg
                     char* argv_right[10];
-                    char expanded_right[10][256];
-                    int argc_right = 0;
                     char right_copy[256];
                     strncpy(right_copy, right_str, 255);
                     right_copy[255] = '\0';
-                    token = strtok(right_copy, " ");
-                    while (token != NULL && argc_right < 9) {
-                        if (token[0] == '$' && strlen(token) > 1) {
-                            char varname[64];
-                            strncpy(varname, token + 1, 63);
-                            varname[63] = '\0';
-                            int found = 0;
-                            for (int e = 0; e < env_count; e++) {
-                                char *eq = strchr(env_vars[e], '=');
-                                if (eq && strncmp(env_vars[e], varname, eq - env_vars[e]) == 0 && (int)strlen(varname) == (int)(eq - env_vars[e])) {
-                                    strncpy(expanded_right[argc_right], eq + 1, 255);
-                                    expanded_right[argc_right][255] = '\0';
-                                    argv_right[argc_right] = expanded_right[argc_right];
-                                    found = 1;
-                                    break;
-                                }
-                            }
-                            if (!found) argv_right[argc_right] = token;
-                        } else {
-                            argv_right[argc_right] = token;
-                        }
-                        argc_right++;
-                        token = strtok(NULL, " ");
-                    }
+                    int ov_right = 0;
+                    int argc_right = serial_parse_argv(right_copy, argv_right, 9, &ov_right);
                     if (argc_right > 0) {
                         argv_right[argc_right] = "/tmp/pipe";
                         argc_right++;
@@ -11562,33 +11544,9 @@ void launch_shell(void) {
                 }
             } else {
                 char* argv[MAX_CMD_ARGS];
-                static char expanded[MAX_CMD_ARGS][256];   /* static: the shell parse is serialised, keeps 8 KB off the stack */
-                int argc = 0;
-                char* token = strtok(cmd_line, " ");
-                while (token != NULL && argc < MAX_CMD_ARGS) {
-                    if (token[0] == '$' && strlen(token) > 1) {
-                        char varname[64];
-                        strncpy(varname, token + 1, 63);
-                        varname[63] = '\0';
-                        int found = 0;
-                        for (int e = 0; e < env_count; e++) {
-                            char *eq = strchr(env_vars[e], '=');
-                            if (eq && strncmp(env_vars[e], varname, eq - env_vars[e]) == 0 && (int)strlen(varname) == (int)(eq - env_vars[e])) {
-                                strncpy(expanded[argc], eq + 1, 255);
-                                expanded[argc][255] = '\0';
-                                argv[argc] = expanded[argc];
-                                found = 1;
-                                break;
-                            }
-                        }
-                        if (!found) argv[argc] = token;
-                    } else {
-                        argv[argc] = token;
-                    }
-                    argc++;
-                    token = strtok(NULL, " ");
-                }
-                if (token != NULL) {          /* more tokens than the cap: report, don't silently drop */
+                int overflow = 0;
+                int argc = serial_parse_argv(cmd_line, argv, MAX_CMD_ARGS, &overflow);
+                if (overflow) {              /* more tokens than the cap: report, don't silently drop */
                     set_terminal_color(vga_entry_color(VGA_LIGHT_RED, VGA_BLACK));
                     printf("Too many arguments (max %d)\n", MAX_CMD_ARGS);
                 } else if (argc > 0) {
