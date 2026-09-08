@@ -889,6 +889,23 @@ static int shell_tokenize(char* line, char** argv, char* had_sq, int max, int* o
     return argc;
 }
 
+// Find the first pipe '|' in `line` that is OUTSIDE "..."/'...', mirroring
+// shell_tokenize's quote rules, so `echo "a|b"` is one command not a pipe.
+// A line with no quote byte behaves exactly like strchr(line, '|'). Returns a
+// pointer to the separator (writable, the caller splits there) or NULL.
+static char* shell_find_pipe(char* line) {
+    int in_sq = 0;
+    int in_dq = 0;
+    for (char* p = line; *p; p++) {
+        if (in_sq) { if (*p == '\'') in_sq = 0; }
+        else if (in_dq) { if (*p == '"') in_dq = 0; }
+        else if (*p == '\'') in_sq = 1;
+        else if (*p == '"') in_dq = 1;
+        else if (*p == '|') return p;
+    }
+    return 0;
+}
+
 void execute_command(const char* cmd_line) {
     if (!cmd_line || !*cmd_line) return;
     // Alias expansion (ITERATIVE, before tokenizing — no recursion, so the 4 KB kernel
@@ -11485,7 +11502,7 @@ void launch_shell(void) {
 
         if (strlen(cmd_line) > 0) {
             add_history(cmd_line);
-            char* pipe_pos_ptr = strchr(cmd_line, '|');
+            char* pipe_pos_ptr = shell_find_pipe(cmd_line);
             if (pipe_pos_ptr) {
                 *pipe_pos_ptr = '\0';
                 char* left_str = cmd_line;
