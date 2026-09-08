@@ -90,37 +90,32 @@ builds an owning closure on exactly that), strict-C99 output — and is
 verified three ways:
 
 1. **Real programs run on NyxOS.** The in-OS TinyCC builds the current
-   `ncc` from source inside the running system, and that compiler
-   transpiles, compiles, and runs the **entire example suite** — all
-   twenty-two programs, v0.1 through v0.22 — in a single boot, with
-   output identical to the host runs: the fs bindings exercise real
-   kernel `open`/`read`/`close`, the `pageflags` demo performs a live
-   anonymous `mmap` through the W^X-typed flags, the `own`-struct demo
-   moves a must-consume handle through its whole life (branch-aware
-   consumption and `#[drop]` auto-close included), and the M5 chain — a
-   lexer covering comments, string literals, and two-char operators (and
-   real `.n` files read off the ext2 disk), a toy compiler whose full
-   surface — typed strings with make/compare/measure, the complete
-   comparison and logical operator set, else-if chains, comments, and
-   disk-file compilation — is exercised on target every batch, a parser
-   that builds whole program bodies as a *checked, folded* AST — statements included — and
-   compiles them from a token buffer to stack code (refusing unknown
-   variables and type errors with located messages, resolving string
-   `==`/`!=` to byte-comparing STREQ/STRNEQ and string `+` to a
-   table-appending CONCAT — at run time or folded at compile time
-   through one shared
-   cursor — honoring line comments, carrying the full comparison set,
-   and emitting a 10-word program where the unfolded tree needs 19 —
-   all verified on target), and the VM that executes the emitted code —
-   **runs the whole toy compiler loop inside NyxOS**. (This
-   workload also uncovered — and, run after run, profiled to a pin — a
-   kernel VFS node-pool exhaustion,
-   [#66](https://github.com/kazah-png/nyx-os/issues/66): twenty batch
-   censuses narrowed the leak to unreclaimed `/proc` process entries,
-   ~4 nodes per exec; the kernel fix (v6.4.364) is **census-verified** —
-   the same 67-exec suite that used to end at 478/512 pool nodes now
-   ends at 214 with entries recycling — the language toolchain doubles
-   as a real regression test for the OS.)
+   `ncc` from source inside the running system (`xbm install ncc`), and
+   that compiler transpiles, compiles, and runs **every example the
+   language ships** — all twenty-nine `.n` programs — in a single boot,
+   each output identical to the same program's host run, line for line:
+   the fs bindings exercise real kernel `open`/`read`/`close` on files
+   read off the ext2 disk (the one difference being the error number a
+   missing file yields — the OS's own), `args` receives its argv, the
+   `pageflags` demo performs a live anonymous `mmap` through the
+   W^X-typed flags, the `own`-struct demos move must-consume handles
+   through their whole lives (branch-aware consumption, `#[drop]`
+   auto-close, own-in-own nesting, the owning closure behind a raw
+   pointer, the tail-move order), function values are called through
+   fields, and the whole M5 toy-compiler chain — a lexer over real `.n`
+   files, a parser building a *checked, folded* AST, the emitter and the
+   VM that runs its code, and [nparse.n](examples/nparse.n) compiling
+   `hello.n` and `countdown.n` themselves off the disk — runs on target.
+   [nwin.n](examples/nwin.n) opens a real window and presents its sixty
+   frames in the same batch; its output is recorded rather than
+   compared, since the host has no desktop. The batch of 2026-09-08, at
+   commit 4dac2cd: 29 in-OS `ncc` runs, 30 TinyCC compiles, 88 clean
+   exits, no panic, all of it 18 seconds after boot. (This workload also
+   uncovered — and, run after run, profiled to a pin — a kernel VFS
+   node-pool exhaustion,
+   [#66](https://github.com/kazah-png/nyx-os/issues/66): the kernel fix
+   (v6.4.364) is **census-verified**, entries recycling — the language
+   toolchain doubles as a real regression test for the OS.)
 2. **Generated C is clean.** Output compiles warning-free with the OS
    freestanding flags and links with the standard NyxOS `crt0` + `nyxrt`.
 3. **Behavioral tests run on the dev machine.** A host shim maps NyxOS syscall
