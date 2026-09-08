@@ -851,6 +851,44 @@ static int shell_glob_token(const char* tok, char (*out)[256], int start) {
     }
     return start;
 }
+// Quote-aware command tokenizer: split `line` (modified IN PLACE) into argv[], with "..." and
+// '...' grouping their spaces into one token and stripped from it. A line containing NO quote
+// byte tokenizes byte-for-byte like strtok(line, " ") — so every existing flow (incl. the cc
+// self-host) is unchanged. had_sq[i] is set when token i held a single-quoted span, so the
+// caller can suppress $/~ expansion + globbing for it (bash: '...' is literal). Returns argc
+// (<= max); sets *overflow if the line held more tokens than `max`. Compaction only ever
+// removes quote bytes, so the write cursor never runs ahead of the read cursor.
+static int shell_tokenize(char* line, char** argv, char* had_sq, int max, int* overflow) {
+    int argc = 0;
+    *overflow = 0;
+    char* p = line;
+    for (;;) {
+        while (*p == ' ') p++;                    // skip separators between tokens
+        if (!*p) break;
+        if (argc >= max) { *overflow = 1; break; }
+        char* out = p;                            // dequoted token compacted here (w <= p always)
+        char* w = p;
+        int sq = 0;
+        while (*p && *p != ' ') {
+            if (*p == '"' || *p == '\'') {
+                char q = *p++;
+                if (q == '\'') sq = 1;
+                while (*p && *p != q) *w++ = *p++;   // copy the quoted span verbatim (spaces kept)
+                if (*p == q) p++;                    // consume the closing quote (unterminated: stop at EOL)
+            } else {
+                *w++ = *p++;
+            }
+        }
+        int had_space = (*p == ' ');
+        *w = '\0';                                // terminate the token (w is at or before *p)
+        argv[argc]   = out;
+        had_sq[argc] = (char)sq;
+        argc++;
+        if (had_space) p++;                       // step past the separator we stopped on
+    }
+    return argc;
+}
+
 void execute_command(const char* cmd_line) {
     if (!cmd_line || !*cmd_line) return;
     // Alias expansion (ITERATIVE, before tokenizing — no recursion, so the 4 KB kernel
@@ -884,38 +922,39 @@ void execute_command(const char* cmd_line) {
     strncpy(cmd_copy, cmd_line, 255);
     cmd_copy[255] = '\0';
     char* argv[MAX_CMD_ARGS];
-    // Expand $VAR / ${VAR} / $((..)) / leading ~ only when the line contains a '$' or '~'.
-    // Other commands take the original path byte-for-byte, so nothing the shell already ran changes behaviour
-    // (including the cc self-host, which runs `cc …` through here). The expansion scratch
-    // (MAX_CMD_ARGS*256 = 8 KB) is kmalloc'd per call — off the 4 KB kernel stack, and
-    // re-entrant when a command runs another via execute_command; a failed alloc harmlessly
-    // falls back to no expansion.
-    char (*argbuf)[256] = (strchr(cmd_copy, '$') != NULL || strchr(cmd_copy, '~') != NULL)
-                          ? (char (*)[256])kmalloc(MAX_CMD_ARGS * 256) : NULL;
-    int argc = 0;
-    char* token = strtok(cmd_copy, " ");
-    while (token != NULL && argc < MAX_CMD_ARGS) {
-        if (argbuf) { shell_expand_vars(token, argbuf[argc], 256); argv[argc] = argbuf[argc]; }
-        else        { argv[argc] = token; }
-        argc++;
-        token = strtok(NULL, " ");
-    }
-    if (token != NULL) {          /* more tokens than the cap: refuse rather than silently truncate */
+    // Quote-aware split: "..." / '...' group their spaces into one arg (a line with no quote
+    // byte tokenizes exactly like the old strtok, so the cc self-host + every existing flow is
+    // byte-for-byte unchanged). Detect $/~ on the raw line BEFORE the in-place tokenize edits it.
+    int may_expand = (strchr(cmd_copy, '$') != NULL || strchr(cmd_copy, '~') != NULL);
+    char had_sq[MAX_CMD_ARGS];
+    int overflow = 0;
+    int argc = shell_tokenize(cmd_copy, argv, had_sq, MAX_CMD_ARGS, &overflow);
+    if (overflow) {               /* more tokens than the cap: refuse rather than silently truncate */
         printf("error: too many arguments (max %d)\n", MAX_CMD_ARGS);
-        if (argbuf) kfree(argbuf);
         return;
     }
-    if (argc == 0) { if (argbuf) kfree(argbuf); return; }
+    if (argc == 0) return;
+    // Expand $VAR / ${VAR} / $((..)) / leading ~ per token — but NOT a single-quoted token
+    // (bash: '...' is literal). Scratch (MAX_CMD_ARGS*256 = 8 KB) is kmalloc'd off the 4 KB
+    // kernel stack, re-entrant across nested execute_command; a failed alloc skips expansion.
+    char (*argbuf)[256] = may_expand ? (char (*)[256])kmalloc(MAX_CMD_ARGS * 256) : NULL;
+    if (argbuf) {
+        for (int i = 0; i < argc; i++) {
+            if (had_sq[i]) { strncpy(argbuf[i], argv[i], 255); argbuf[i][255] = '\0'; }
+            else           { shell_expand_vars(argv[i], argbuf[i], 256); }
+            argv[i] = argbuf[i];
+        }
+    }
     // Filesystem glob: expand any arg with a wildcard (*,?,[) into the matching files.
     // Guarded — a command with NO wildcard token is byte-for-byte unchanged (so the cc
     // self-host and every existing flow are untouched); an unmatched pattern stays literal.
     char (*globbuf)[256] = NULL;
     int any_glob = 0;
-    for (int i = 0; i < argc; i++) if (glob_has_magic(argv[i])) { any_glob = 1; break; }
+    for (int i = 0; i < argc; i++) if (!had_sq[i] && glob_has_magic(argv[i])) { any_glob = 1; break; }
     if (any_glob && (globbuf = (char (*)[256])kmalloc(MAX_CMD_ARGS * 256)) != NULL) {
         int gargc = 0, ovf = 0;
         for (int i = 0; i < argc && !ovf; i++) {
-            if (glob_has_magic(argv[i])) {
+            if (!had_sq[i] && glob_has_magic(argv[i])) {
                 int r = shell_glob_token(argv[i], globbuf, gargc);
                 if (r < 0) ovf = 1; else gargc = r;
             } else if (gargc < MAX_CMD_ARGS) {
