@@ -11388,31 +11388,23 @@ void nyxfetch(void) {
 }
 
 // Serial-console command tokenizer: split `str` (modified in place) into argv,
-// honouring "..."/'...' quoting via the shared shell_tokenize, then expanding a
-// bare $VAR token unless it was single-quoted ('...' is literal, like bash and
-// the GUI terminal). A line with no quote byte and no leading '$' tokenizes
-// exactly like the old strtok(" ") loop this replaces. The serial shell is a
-// serialised single-command REPL and each parsed command is fully consumed
-// before the next parse, so one static expansion buffer is reused across calls.
-// Returns argc (<= max, capped at MAX_CMD_ARGS); sets *overflow on a token cap.
+// honouring "..."/'...' quoting via the shared shell_tokenize, then running each
+// non-single-quoted token through the SAME shell_expand_vars the GUI terminal
+// uses — so $VAR, ${VAR}, $((expr)) and a leading ~ all behave identically in
+// both shells ('...' stays literal, like bash). A plain token is copied
+// unchanged. The serial shell is a serialised single-command REPL and each
+// parsed command is fully consumed before the next parse, so one static
+// expansion buffer is reused across calls. Returns argc (<= max, capped at
+// MAX_CMD_ARGS); sets *overflow on a token cap.
 static int serial_parse_argv(char* str, char** argv, int max, int* overflow) {
     static char exp[MAX_CMD_ARGS][256];
     char had_sq[MAX_CMD_ARGS];
     if (max > MAX_CMD_ARGS) max = MAX_CMD_ARGS;
     int argc = shell_tokenize(str, argv, had_sq, max, overflow);
     for (int i = 0; i < argc; i++) {
-        if (had_sq[i] || argv[i][0] != '$' || !argv[i][1]) continue;
-        const char* name = argv[i] + 1;
-        int nlen = (int)strlen(name);
-        for (int e = 0; e < env_count; e++) {
-            char* eq = strchr(env_vars[e], '=');
-            if (eq && (int)(eq - env_vars[e]) == nlen && strncmp(env_vars[e], name, nlen) == 0) {
-                strncpy(exp[i], eq + 1, 255);
-                exp[i][255] = '\0';
-                argv[i] = exp[i];
-                break;
-            }
-        }
+        if (had_sq[i]) continue;                       // single-quoted: literal (bash)
+        shell_expand_vars(argv[i], exp[i], 256);
+        argv[i] = exp[i];
     }
     return argc;
 }
