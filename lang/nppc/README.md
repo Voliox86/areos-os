@@ -13,7 +13,7 @@ file.npp ──nppc──► file.n ──ncc / toolbox──► C ──cc/tcc�
 ```
 
 The right-hand end of that pipeline is real, not a diagram: the lowered
-N of every program in [../examples](../examples) — twenty-four of them
+N of every program in [../examples](../examples) — twenty-five of them
 — has been compiled and run inside NyxOS by the in-OS `ncc`
 (`xbm install ncc`, then `ncc /mnt/X.n -o /mnt/X_gen.c`,
 `cc /mnt/X_gen.c /mnt/nyxrt.c -I/mnt -o /mnt/bin/nX`, `nX`), each
@@ -323,12 +323,21 @@ closure drops through its fields, so the captured owns are consumed
 right after the call ("the environment inherits must-consume"); a
 second `h(…)` is a use after move; a closure never called drops at
 scope end through its captures; the body may peek at an own capture but
-not move it out (v0.25's rule on fields). The limits: such a closure
+not move it out (v0.25's rule on fields). The limit: such a closure
 cannot be passed where an `Fn(…)` is expected (that slot's environment
-is by address, non-owning — the capture is refused with the fix named),
-and this `:=`-bound form cannot be born inside a generic template — the
-`FnOnce` slot form can, since M6.4c6c, and is the shape to reach for
-there.
+is by address, non-owning — the capture is refused with the fix named).
+Born inside a generic template, this `:=`-bound form lifts as templates
+too (M6.4c4b): `own struct __E_N<T>`, `own struct __O_N<T> { env:
+__E_N<T> }` and `fn __c_N<T>(__self: __O_N<T>, …)`, over the type
+parameters the lambda or one of its captures names, with the birth
+`__O_N<T>{ env: __E_N<T>{ … } }` and every call `__c_N<T>(h, …)`
+nested generic uses the generic pass instantiates with the enclosing
+function — exactly as it does for a template's `Fn` and `FnOnce`
+lambdas; a lambda that names no parameter lifts plain and is called
+from the template like any function.
+[`../examples/gowncap.npp`](../examples/gowncap.npp) is the worked
+example (`keep<T>` captures its `seed: T` and a File born beside it; the
+File closes as each call ends), held by stage [10v2].
 [`../examples/owncap.npp`](../examples/owncap.npp) is the worked
 example, held by stage [10v].
 

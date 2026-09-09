@@ -2220,10 +2220,11 @@ static int is_own_type(const char* ty) {
  * inside an own container — and the closure value's own struct
  * `__O_N { env: __E_N }`. No maker: the closure is built by value, in
  * place, and is consumed by its one call. */
-static char* once_text(int* caps, int ncap, int lamno, char** tys) {
-    char en[32], on[32];
-    sprintf(en, "__E_%d", lamno);
-    sprintf(on, "__O_%d", lamno);
+static char* once_text(int* caps, int ncap, int lamno, char** tys, const char* targs) {
+    char en[96], on[96];                  /* inside a template (M6.4c4b) both are templates
+                                           * over the parameters the lambda or a capture names */
+    sprintf(en, "__E_%d%s", lamno, targs);
+    sprintf(on, "__O_%d%s", lamno, targs);
     size_t cap = 256, n = 0;
     char* b = xmalloc(cap);
     b[0] = 0;
@@ -2247,13 +2248,15 @@ static char* once_text(int* caps, int ncap, int lamno, char** tys) {
 
 /* Its birth: `__O_N{ env: __E_N{ a: a, b: b } }` — every captured own
  * local moves in, as N's struct-literal rule says. */
-static char* once_birth(int* caps, int ncap, int lamno) {
+static char* once_birth(int* caps, int ncap, int lamno, const char* targs) {
     size_t cap = 128, n = 0;
     char* b = xmalloc(cap);
     b[0] = 0;
-    char en[32], on[32];
-    sprintf(en, "__E_%d", lamno);
-    sprintf(on, "__O_%d", lamno);
+    char en[96], on[96];                  /* `__O_N<T>{ env: __E_N<T>{ … } }` inside a template:
+                                           * nested generic uses the generic pass instantiates
+                                           * with the enclosing function (M6.4c4b) */
+    sprintf(en, "__E_%d%s", lamno, targs);
+    sprintf(on, "__O_%d%s", lamno, targs);
     apps(&b, &n, &cap, on);
     apps(&b, &n, &cap, "{ env: ");
     apps(&b, &n, &cap, en);
@@ -2405,9 +2408,6 @@ static char* lambda_pass(const char* prog) {
             if (!anyown)
                 die("%s:%d: lambda captures '%.*s', a local of the enclosing function — only a lambda in a closure slot (an Fn type) can capture; pass it as a parameter",
                     FILENAME, TOKS[caps[0]].line, TOKS[caps[0]].slen, TOKS[caps[0]].s);
-            if (gname >= 0)
-                die("%s:%d: an own capture inside generic '%.*s' is not supported yet — pass '%.*s' as a parameter",
-                    FILENAME, TOKS[i].line, TOKS[gname].slen, TOKS[gname].s, TOKS[caps[0]].slen, TOKS[caps[0]].s);
             for (int c = 0; c < ncap; c++)
                 if (!otys[c])
                     die("%s:%d: cannot capture '%.*s': its type is not evident — bind it with a literal, a call or a struct literal, or pass it as a parameter",
@@ -2481,15 +2481,15 @@ static char* lambda_pass(const char* prog) {
             apps(&acc, &an, &acap, ft);
         }
         if (once) {                       /* the own environment and the closure's own struct */
-            apps(&acc, &an, &acap, once_text(caps, ncap, lamno, otys));
+            apps(&acc, &an, &acap, once_text(caps, ncap, lamno, otys, targs));
             apps(&acc, &an, &acap, "\n\n");
         }
         app(&acc, &an, &acap, "fn ", 3);
         app(&acc, &an, &acap, name, strlen(name));
         if (once) {                       /* the closure itself comes first, held: its
                                            * fields — the captured owns — drop at the end */
-            char on[32];
-            sprintf(on, "__O_%d", lamno);
+            char on[96];
+            sprintf(on, "__O_%d%s", lamno, targs);
             apps(&acc, &an, &acap, "(__self: ");
             apps(&acc, &an, &acap, on);
             if (TOKS[i + 2].k != T_RP) app(&acc, &an, &acap, ", ", 2);
@@ -2548,10 +2548,11 @@ static char* lambda_pass(const char* prog) {
         led[ne].end = TOKS[end].end;
         led[ne].repl = oslot ? once_value(slot, birth, name, fin)
                      : closure ? closure_value(slot, birth, name)
-                     : once ? once_birth(caps, ncap, lamno) : name;
+                     : once ? once_birth(caps, ncap, lamno, targs) : name;
         ne++;
         if (once) {                       /* every call `h(args)` after the binding, in this
-                                           * function: `__c_N(h, args)` — the call consumes h */
+                                           * function: `__c_N(h, args)` — the call consumes h
+                                           * (`__c_N<T>(h, args)` inside a template, M6.4c4b) */
             int depth2 = 0;
             for (int u = end + 1; u + 1 < NTOK; u++) {
                 if (TOKS[u].k == T_LB) depth2++;
@@ -2561,8 +2562,8 @@ static char* lambda_pass(const char* prog) {
                 if (TOKS[u].k != T_IDENT || TOKS[u + 1].k != T_LP || !tokspan_eq(u, bname)) continue;
                 if (u > 0 && TOKS[u - 1].k == T_DOT) continue;
                 if (ne >= MAXI) die("%s: too many lambdas", FILENAME);
-                char* r = xmalloc(48 + (size_t)TOKS[u].slen);
-                sprintf(r, "__c_%d(%.*s%s", lamno, TOKS[u].slen, TOKS[u].s, TOKS[u + 2].k == T_RP ? "" : ", ");
+                char* r = xmalloc(48 + (size_t)TOKS[u].slen + strlen(targs));
+                sprintf(r, "__c_%d%s(%.*s%s", lamno, targs, TOKS[u].slen, TOKS[u].s, TOKS[u + 2].k == T_RP ? "" : ", ");
                 led[ne].start = TOKS[u].start;
                 led[ne].end = TOKS[u + 1].end;
                 led[ne].repl = r;

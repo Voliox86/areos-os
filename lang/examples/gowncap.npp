@@ -1,0 +1,44 @@
+// gowncap.npp — a call-once closure born inside a generic template (M6.4c4b).
+//
+// A `:=`-bound lambda that captures an own local is a call-once closure
+// (M6.4c4): its environment is an own struct, the closure another own
+// struct holding it, and its one call consumes it — the captures drop
+// when the call's body ends. Born inside a generic function, all three
+// lift as templates over the type parameters the lambda or its captures
+// name — `own struct __E_N<T>`, `own struct __O_N<T> { env: __E_N<T> }`,
+// `fn __c_N<T>(__self: __O_N<T>, …)` — and the generic pass instantiates
+// them with the function, exactly as it does for a template's `Fn` and
+// `FnOnce` lambdas. `keep<T>` captures its `seed: T` and a File born
+// beside it; the one call peeks the seed, and the File closes as the
+// call ends.
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+#[drop(close_file)]
+own struct File { fd: i64 }
+
+fn close_file(f: File) {
+    put("closing {f.fd}\n");
+}
+
+// The seed (a T) and a File born here are captured; the one call reads
+// both and returns the argument plus the descriptor.
+fn keep<T>(seed: T, fd: i64) -> i64 {
+    h := File{ fd: fd };
+    once := fn(n: i64) -> i64 { put("seed {seed} fd {h.fd}\n"); n + h.fd };
+    once(1)
+}
+
+fn main() -> i64 {
+    a := keep<i64>(5, 3);
+    put("a = {a}\n");
+    b := keep<str>("s", 4);
+    put("b = {b}\n");
+    0
+}
