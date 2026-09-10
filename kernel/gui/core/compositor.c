@@ -4061,6 +4061,11 @@ static int scheme_lookup(const char* name, const char** wp, const char** accent)
         { "abyss",     "Astral",     "Azul"     },
         { "forest",    "Cordillera", "Verde"    },
         { "mono",      "Plano",      "Pizarra"  },
+        { "clean",     "Limpio",     "Morado"   },   // minimal: just the brand gradient
+        { "starfield", "Estrellas",  "Azul"     },   // deep-blue twinkling night sky
+        { "fireflies", "Luces",      "Lima"     },   // green-gold meadow with drifting orbs
+        { "ripple",    "Ondas",      "Turquesa" },   // moonlit water ripples
+        { "rain",      "Lluvia",     "Carbon"   },   // stormy dark falling rain
     };
     for (int i = 0; i < (int)(sizeof(S) / sizeof(S[0])); i++)
         if (strcmp(name, S[i].name) == 0) { *wp = S[i].wp; *accent = S[i].accent; return 1; }
@@ -4076,7 +4081,8 @@ int scheme_selftest(void) {
     if (strcmp(wp, "Nightfall") || strcmp(ac, "Morado")) return 2;
     if (!scheme_lookup("aurora", &wp, &ac)) return 3;
     if (strcmp(wp, "Aurora") || strcmp(ac, "Turquesa")) return 4;
-    static const char* names[] = { "nightfall", "aurora", "ember", "nebula", "abyss", "forest", "mono" };
+    static const char* names[] = { "nightfall", "aurora", "ember", "nebula", "abyss", "forest", "mono",
+                                    "clean", "starfield", "fireflies", "ripple", "rain" };
     for (int i = 0; i < (int)(sizeof(names) / sizeof(names[0])); i++) {
         if (!scheme_lookup(names[i], &wp, &ac)) return 5;
         if (wallpaper_style_from_name(wp) < 0) return 6;   // a real wallpaper style
