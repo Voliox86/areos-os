@@ -889,11 +889,11 @@ static int shell_tokenize(char* line, char** argv, char* had_sq, int max, int* o
     return argc;
 }
 
-// Find the first pipe '|' in `line` that is OUTSIDE "..."/'...', mirroring
-// shell_tokenize's quote rules, so `echo "a|b"` is one command not a pipe.
-// A line with no quote byte behaves exactly like strchr(line, '|'). Returns a
-// pointer to the separator (writable, the caller splits there) or NULL.
-static char* shell_find_pipe(char* line) {
+// Find the first `ch` in `line` that is OUTSIDE "..."/'...', mirroring shell_tokenize's
+// quote rules — so a metacharacter inside quotes (`echo "a|b"`, `echo "a;b"`) is literal.
+// A line with no quote byte behaves exactly like strchr(line, ch). Returns a pointer to
+// the match (writable, the caller may split there) or NULL.
+static char* shell_scan_unquoted(char* line, char ch) {
     int in_sq = 0;
     int in_dq = 0;
     for (char* p = line; *p; p++) {
@@ -901,10 +901,12 @@ static char* shell_find_pipe(char* line) {
         else if (in_dq) { if (*p == '"') in_dq = 0; }
         else if (*p == '\'') in_sq = 1;
         else if (*p == '"') in_dq = 1;
-        else if (*p == '|') return p;
+        else if (*p == ch) return p;
     }
     return 0;
 }
+// The pipe separator for launch_shell (unchanged behavior; `echo "a|b"` is one command).
+static char* shell_find_pipe(char* line) { return shell_scan_unquoted(line, '|'); }
 
 // Classify a shell token as an output/error redirect operator, tolerating a
 // filename glued to the operator (`>out`, `2>err`) as well as the spaced form
@@ -927,7 +929,28 @@ static int shell_redir_op(const char* tok, int* kind, int* append, const char** 
     return 1;
 }
 
+static void execute_one_command(const char* cmd_line);   // fwd: the per-segment runner
+
+// Public shell entry: run each ';'-separated segment (outside quotes) in order, so
+// `echo a; echo b` runs both commands. A line with no unquoted ';' is a single segment,
+// byte-identical to before. Sequencing lives here so both the GUI terminal and every
+// execute_command() caller get it (internal callers pass single commands, so unchanged).
 void execute_command(const char* cmd_line) {
+    if (!cmd_line || !*cmd_line) return;
+    char work[256];
+    strncpy(work, cmd_line, sizeof(work) - 1);
+    work[sizeof(work) - 1] = '\0';
+    char* seg = work;
+    for (;;) {
+        char* semi = shell_scan_unquoted(seg, ';');
+        if (semi) *semi = '\0';
+        execute_one_command(seg);
+        if (!semi) break;
+        seg = semi + 1;
+    }
+}
+
+static void execute_one_command(const char* cmd_line) {
     if (!cmd_line || !*cmd_line) return;
     // Alias expansion (ITERATIVE, before tokenizing — no recursion, so the 4 KB kernel
     // stack is safe): while the first word is a defined alias, rewrite the line with the
