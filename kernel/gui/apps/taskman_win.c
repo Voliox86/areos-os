@@ -14,6 +14,7 @@
 #define COL_PID   40          // x offset where the Name column starts (leaves room for "PID")
 #define COL_NAME  190         // ...where State starts
 #define COL_STATE 300         // ...where CPU starts
+#define COL_CPU   380         // ...where HEAP (per-process heap size) starts
 
 #define GRAPH_H   56          // plot height of each performance graph
 #define LABEL_H   15          // caption row above each graph
@@ -164,6 +165,7 @@ void taskman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     font_draw_string(cx + COL_PID + 4,   list_y + 2, "Name",  fb_rgb(255,200,100), THEME_PANEL_HEADER);
     font_draw_string(cx + COL_NAME + 4,  list_y + 2, "State", fb_rgb(255,200,100), THEME_PANEL_HEADER);
     font_draw_string(cx + COL_STATE + 4, list_y + 2, "CPU",   fb_rgb(255,200,100), THEME_PANEL_HEADER);
+    font_draw_string(cx + COL_CPU + 4,   list_y + 2, "HEAP",  fb_rgb(255,200,100), THEME_PANEL_HEADER);
 
     int rows_y   = list_y + HEADER_H;
     int status_y = cy + (int)ch - HEADER_H;
@@ -195,6 +197,14 @@ void taskman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
         char cpu_str[16];
         snprintf(cpu_str, sizeof(cpu_str), "%u", p->cpu_time);
         font_draw_string(cx + COL_STATE + 4, ry + 1, cpu_str, fb_rgb(200,200,200), bg);
+
+        // HEAP: the process's heap footprint (program_break - heap_start), in KB. Scalar reads
+        // only (no page-table walk), so it is as cheap and safe as the CPU column; a kernel
+        // thread with no user heap shows 0K.
+        char mem_str[16];
+        uint64_t heap_b = (p->program_break > p->heap_start) ? (p->program_break - p->heap_start) : 0;
+        snprintf(mem_str, sizeof(mem_str), "%uK", (uint32_t)(heap_b / 1024));
+        font_draw_string(cx + COL_CPU + 4, ry + 1, mem_str, fb_rgb(200,200,200), bg);
     }
 
     // --- Status bar ---
