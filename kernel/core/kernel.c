@@ -929,7 +929,8 @@ static int shell_redir_op(const char* tok, int* kind, int* append, const char** 
     return 1;
 }
 
-static void execute_one_command(const char* cmd_line);   // fwd: the per-segment runner
+static void execute_one_command(const char* cmd_line);   // fwd: the single-command runner
+static void execute_segment(char* seg);                  // fwd: one ';'-segment (may hold a pipe)
 
 // Public shell entry: run each ';'-separated segment (outside quotes) in order, so
 // `echo a; echo b` runs both commands. A line with no unquoted ';' is a single segment,
@@ -944,10 +945,36 @@ void execute_command(const char* cmd_line) {
     for (;;) {
         char* semi = shell_scan_unquoted(seg, ';');
         if (semi) *semi = '\0';
-        execute_one_command(seg);
+        execute_segment(seg);
         if (!semi) break;
         seg = semi + 1;
     }
+}
+
+// One ';'-segment: if it has an unquoted '|', run it as a pipe — capture the left
+// command's stdout (pipe_start/pipe_stop) into /tmp/pipe, then run the right command with
+// /tmp/pipe appended as its last (file) argument. Single pipe only (a | b), matching the
+// serial console; both sides go through execute_one_command so builtins pipe as expected
+// (`ls | grep x`, `echo hi | wc -c`). No '|' -> the segment runs unchanged.
+static void execute_segment(char* seg) {
+    char* bar = shell_find_pipe(seg);
+    if (!bar) { execute_one_command(seg); return; }
+    *bar = '\0';
+    char* right = bar + 1;
+    while (*right == ' ') right++;
+    pipe_start();                                  // capture the left command's stdout
+    execute_one_command(seg);
+    int plen = pipe_stop();
+    int fd = vfs_open("/tmp/pipe", O_CREAT | O_TRUNC, 0);
+    if (fd >= 0) { if (plen > 0) vfs_pwrite(fd, pipe_get_data(), (uint32_t)plen, 0); vfs_close(fd); }
+    // Right command + " /tmp/pipe": execute_one_command re-tokenizes, so the temp file
+    // becomes the right command's last argument (readers wc/cat/grep/sort take a file).
+    char rbuf[256];
+    int n = 0;
+    for (const char* s = right; *s && n < 245; s++) rbuf[n++] = *s;
+    for (const char* s = " /tmp/pipe"; *s && n < 255; s++) rbuf[n++] = *s;
+    rbuf[n] = '\0';
+    execute_one_command(rbuf);
 }
 
 static void execute_one_command(const char* cmd_line) {

@@ -89,10 +89,15 @@ void scroll_up(void) {
 
 int putchar(int c) {
     char ch = (char)c;
-    if (putchar_hook) putchar_hook(c);
-    if (pipe_active && pipe_pos < 4096) {
-        pipe_buffer[pipe_pos++] = ch;
+    // While a pipe is capturing the left command's stdout, buffer the byte and DO NOT echo
+    // it (to the terminal hook, serial, or VGA) — the left output belongs to the pipe, not
+    // the screen. Without this a pipe tees (`ls | grep x` would show all of ls). pipe_stop()
+    // clears pipe_active, so the right command prints normally.
+    if (pipe_active) {
+        if (pipe_pos < 4096) pipe_buffer[pipe_pos++] = ch;
+        return c;
     }
+    if (putchar_hook) putchar_hook(c);
     serial_putchar(ch);
     if (ch == '\n') {
         cursor_x = 0;
