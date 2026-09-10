@@ -906,6 +906,27 @@ static char* shell_find_pipe(char* line) {
     return 0;
 }
 
+// Classify a shell token as an output/error redirect operator, tolerating a
+// filename glued to the operator (`>out`, `2>err`) as well as the spaced form
+// (`>` `out`). On a match returns 1 and sets *kind (0=stdout `>`, 1=stderr `2>`),
+// *append (1 for `>>`/`2>>`) and *file (the glued filename, or NULL to take the
+// next argv token). `2>&1`-style fd duplication is unsupported, so a `&` right
+// after the operator is left as a literal argument (returns 0).
+static int shell_redir_op(const char* tok, int* kind, int* append, const char** file) {
+    const char* p = tok;
+    int k = 0;
+    if (*p == '2') { k = 1; p++; }
+    if (*p != '>') return 0;
+    p++;
+    int ap = 0;
+    if (*p == '>') { ap = 1; p++; }
+    if (*p == '&') return 0;
+    *kind = k;
+    *append = ap;
+    *file = (*p) ? p : (const char*)0;
+    return 1;
+}
+
 void execute_command(const char* cmd_line) {
     if (!cmd_line || !*cmd_line) return;
     // Alias expansion (ITERATIVE, before tokenizing — no recursion, so the 4 KB kernel
@@ -997,19 +1018,21 @@ void execute_command(const char* cmd_line) {
         // (`2>`/`2>>`) to files (issue #88 + stderr follow-up — the exec path used to pass
         // the operator + filename as args and print to the console). Builtins keep self-
         // handling their own `>` (e.g. echo), so only the user-ELF path is touched here.
-        // Real args end at the FIRST operator; each `op file` pair is consumed (both may
-        // appear, e.g. `cc x.c > out 2> errs`).
+        // Real args end at the FIRST operator; the filename may be glued (`>out`) or the
+        // next token (`> out`); both may appear, e.g. `cc x.c >out 2> errs`.
         const char *out_p = (const char*)0, *err_p = (const char*)0;
         int out_ap = 0, err_ap = 0, rargc = argc;
-        for (int i = 1; i + 1 < argc; i++) {
-            const char* a = argv[i];
-            int is_out = (strcmp(a, ">") == 0 || strcmp(a, ">>") == 0);
-            int is_err = (strcmp(a, "2>") == 0 || strcmp(a, "2>>") == 0);
-            if (!is_out && !is_err) continue;
+        for (int i = 1; i < argc; i++) {
+            int kind, ap;
+            const char* glued;
+            if (!shell_redir_op(argv[i], &kind, &ap, &glued)) continue;
             if (rargc == argc) rargc = i;                 // real args end at the first operator
-            if (is_out) { out_p = argv[i + 1]; out_ap = (a[1] == '>'); }
-            else        { err_p = argv[i + 1]; err_ap = (a[2] == '>'); }  // "2>>" -> a[2]
-            i++;                                          // consume the filename argument
+            const char* fname;
+            if (glued) fname = glued;                     // `>out`
+            else if (i + 1 < argc) fname = argv[++i];     // `> out` — consume the next token
+            else break;                                   // trailing bare operator, no filename
+            if (kind == 0) { out_p = fname; out_ap = ap; }
+            else           { err_p = fname; err_ap = ap; }
         }
         run_foreground_elf_redir(path, argv, rargc, out_p, out_ap, err_p, err_ap);
         if (argbuf) kfree(argbuf);
@@ -1509,20 +1532,26 @@ static void cmd_ac97(int argc, char** argv) {
 
 static void cmd_echo(int argc, char** argv) {
     if (argc < 2) { putchar('\n'); return; }
-    // Redirect operator: ">" truncates, ">>" appends. (">>" was previously unrecognized, so
-    // `echo x >> f` printed the literal "x >> f".)
+    // Redirect operator: ">" truncates, ">>" appends. The filename may be glued (`echo x >out`)
+    // or the next token (`echo x > out`); echo redirects stdout only, so a `2>` stays literal.
     int redir_idx = -1, append = 0;
+    const char* glued_file = (const char*)0;
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], ">")  == 0) { redir_idx = i; append = 0; break; }
-        if (strcmp(argv[i], ">>") == 0) { redir_idx = i; append = 1; break; }
+        int kind, ap;
+        const char* g;
+        if (shell_redir_op(argv[i], &kind, &ap, &g) && kind == 0) {
+            redir_idx = i; append = ap; glued_file = g; break;
+        }
     }
     if (redir_idx < 0) {
         for (int i = 1; i < argc; i++) printf("%s ", argv[i]);
         printf("\n");
         return;
     }
-    if (redir_idx + 1 >= argc) { printf("echo: no file specified\n"); return; }
-    const char* path = argv[redir_idx + 1];
+    const char* path;
+    if (glued_file) path = glued_file;
+    else if (redir_idx + 1 < argc) path = argv[redir_idx + 1];
+    else { printf("echo: no file specified\n"); return; }
     // Build the whole line, then write it ONCE. vfs_write has no per-fd position and replaces
     // the entire file, so the old arg-by-arg loop left only its final "\n" — `echo a b c > f`
     // produced a 1-byte file. One vfs_pwrite fixes that; pwrite at the current EOF appends (>>).
