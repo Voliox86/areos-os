@@ -6480,16 +6480,6 @@ static int pkg_valid_name(const char* s) {
  * `bin:`); `xbm search <substr>` greps the repo by name; `xbm list` shows available
  * packages and `xbm list --installed` shows what's in /mnt/bin. `pkg` is a hidden alias.
  * (No network fetch / deps / versions yet — see the package-manager roadmap.) */
-// Parse an `http://host[:port]/path` URL into host/port/path (bounded). Returns 0 on
-// success, -1 if it is not an http:// URL. (https is a later step — it needs the TLS
-// path; for now xbm fetches over plain HTTP.) Mirrors the parser in cmd_httpget.
-static int xbm_parse_url(const char* url, char* host, int hostsz, uint16_t* port, char* path, int pathsz) {
-    int https = 0;
-    if (url_parse(url, host, hostsz, port, path, pathsz, &https) != 0) return -1;
-    if (https) return -1;                    // xbm fetches over plain HTTP only (no TLS)
-    return 0;
-}
-
 // Given an ALREADY-PARSED HTTP response, save its body to `outpath` (truncating any
 // existing file). Requires a 200 with a body. This is the deterministic core of the
 // network fetch — it takes an http_response_t, not a socket, so it is unit-testable
@@ -6504,20 +6494,77 @@ static int xbm_save_resp_body(const http_response_t* r, const char* outpath) {
     return (wrote == (int)r->body_len) ? 0 : -1;
 }
 
-// Fetch an http:// URL and save its body to `outpath`. Returns 0 on success. The
-// socket half (http_get) can't be exercised headless; the parse + save half is what
-// the self-test covers via xbm_save_resp_body on a canned response.
+// Fetch an http:// OR https:// URL and save its body to `outpath`. http:// goes over the
+// plain HTTP client; https:// runs a TLS 1.2 handshake + encrypted GET (tls_https_request)
+// and the decrypted reply is parsed like any HTTP response. Returns 0 on success. The
+// parse + save half is unit-tested via xbm_save_resp_body on a canned response.
 static int xbm_fetch_url(const char* url, const char* outpath) {
-    char host[128], path[256]; uint16_t port;
-    if (xbm_parse_url(url, host, sizeof(host), &port, path, sizeof(path)) != 0) return -1;
+    char host[128], path[256]; uint16_t port = 0; int https = 0;
+    if (url_parse(url, host, sizeof(host), &port, path, sizeof(path), &https) != 0) return -1;
     int iface = -1;
     for (int i = 0; i < 8; i++)
         if (net_interfaces[i].name[0] && strcmp(net_interfaces[i].name, "lo") != 0) { iface = i; break; }
     http_response_t resp;
-    if (http_get(host, port, path, &resp, iface) < 0) return -1;
+    if (https) {
+        // Decrypt the whole TLS reply into an off-stack buffer (xbm runs serially), then
+        // parse it as an HTTP response. tls_https_request returns the decrypted length or -1.
+        static uint8_t tls_resp[262144];
+        int len = tls_https_request(host, path, "GET", (const uint8_t*)0, 0, iface, tls_resp, sizeof(tls_resp), 0);
+        if (len < 0) return -1;
+        if (http_parse_response(tls_resp, (uint32_t)len, &resp) != 0) return -1;
+    } else {
+        if (http_get(host, port, path, &resp, iface) < 0) return -1;
+    }
     int rc = xbm_save_resp_body(&resp, outpath);
     http_free(&resp);
     return rc;
+}
+
+// KAT for the xbm fetch wiring (v6.5.185 https support): the https branch of xbm_fetch_url feeds
+// the TLS client's decrypted reply straight into http_parse_response, then xbm_save_resp_body
+// writes the body to the package source path — the SAME parse+save the http:// branch has used
+// since v6.4.73. This pins that composition on canned 200 responses (a Content-Length body and
+// the chunked framing raw.githubusercontent.com actually sends): parse -> save -> read the file
+// back -> assert it equals the decoded body; and that a non-200 reply writes nothing. The TLS
+// transport itself is proven separately (Selene + the tlskeys/GCM KATs). 0 = PASS, else case #.
+static int xbm_fetch_wire_selftest(void) {
+    http_response_t resp;
+    static uint8_t rb[256];
+    int fd, n;
+
+    // 1) Content-Length 200 -> the 21-byte body is written verbatim.
+    static uint8_t r1[] = "HTTP/1.1 200 OK\r\nContent-Length: 21\r\n\r\nint main(){return 0;}";
+    if (http_parse_response(r1, (uint32_t)(sizeof(r1) - 1), &resp) != 0) return 1;
+    if (resp.status_code != 200 || resp.body_len != 21) { http_free(&resp); return 2; }
+    if (xbm_save_resp_body(&resp, "/tmp/xbmwire.c") != 0) { http_free(&resp); return 3; }
+    http_free(&resp);
+    fd = vfs_open("/tmp/xbmwire.c", 0, 0);
+    if (fd < 0) return 4;
+    n = vfs_read(fd, rb, sizeof(rb) - 1); vfs_close(fd);
+    if (n != 21) return 5;
+    rb[n] = '\0';
+    if (strcmp((char*)rb, "int main(){return 0;}") != 0) return 6;
+
+    // 2) chunked 200 (raw.githubusercontent.com's framing): "hello()" + ";" -> "hello();".
+    static uint8_t r2[] = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n7\r\nhello()\r\n1\r\n;\r\n0\r\n\r\n";
+    if (http_parse_response(r2, (uint32_t)(sizeof(r2) - 1), &resp) != 0) return 7;
+    if (resp.status_code != 200) { http_free(&resp); return 8; }
+    if (xbm_save_resp_body(&resp, "/tmp/xbmwire.c") != 0) { http_free(&resp); return 9; }
+    http_free(&resp);
+    fd = vfs_open("/tmp/xbmwire.c", 0, 0);
+    if (fd < 0) return 10;
+    n = vfs_read(fd, rb, sizeof(rb) - 1); vfs_close(fd);
+    if (n != 8) return 11;
+    rb[n] = '\0';
+    if (strcmp((char*)rb, "hello();") != 0) return 12;
+
+    // 3) a non-200 reply (404) must be refused — xbm_save_resp_body writes nothing.
+    static uint8_t r3[] = "HTTP/1.1 404 Not Found\r\nContent-Length: 3\r\n\r\nnop";
+    if (http_parse_response(r3, (uint32_t)(sizeof(r3) - 1), &resp) != 0) return 13;
+    if (resp.status_code != 404) { http_free(&resp); return 14; }
+    if (xbm_save_resp_body(&resp, "/tmp/xbmwire.c") == 0) { http_free(&resp); return 15; }
+    http_free(&resp);
+    return 0;
 }
 
 // ---- xbm package integrity: SHA-256 manifests (apt/pacman-style tamper detection) ----------
@@ -10800,6 +10847,7 @@ static void run_selftests(void) {
         {"json-query",   json_query_selftest},
         {"json-fmt",     json_fmt_selftest},
         {"pkg-hash",     pkg_hash_selftest},
+        {"xbm-wire",     xbm_fetch_wire_selftest},
         {"ppm",          ppm_selftest},
         {"png-encode",   png_encode_selftest},
         {"auth-lockout", auth_lockout_selftest},
