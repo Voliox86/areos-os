@@ -6494,30 +6494,106 @@ static int xbm_save_resp_body(const http_response_t* r, const char* outpath) {
     return (wrote == (int)r->body_len) ? 0 : -1;
 }
 
-// Fetch an http:// OR https:// URL and save its body to `outpath`. http:// goes over the
-// plain HTTP client; https:// runs a TLS 1.2 handshake + encrypted GET (tls_https_request)
-// and the decrypted reply is parsed like any HTTP response. Returns 0 on success. The
-// parse + save half is unit-tested via xbm_save_resp_body on a canned response.
+// Resolve a redirect Location against the scheme+host of the URL just fetched, into an absolute
+// URL in out[cap]. Handles an absolute "http(s)://..." target, a scheme-relative "//host/path"
+// (keeps the current scheme), and a root-relative "/path" (keeps the current scheme+host); a bare
+// relative path is unsupported. Returns 0 on success, -1 if the Location is empty/unusable or the
+// result would not fit (no truncation). Pure — no network — so xbm_redirect_selftest can pin it.
+static int xbm_redirect_url(int cur_https, const char* cur_host, const char* loc, char* out, int cap) {
+    if (!loc || !loc[0] || cap < 2) return -1;
+    if (strncmp(loc, "http://", 7) == 0 || strncmp(loc, "https://", 8) == 0) {
+        int i = 0;
+        while (loc[i] && i < cap - 1) { out[i] = loc[i]; i++; }
+        out[i] = '\0';
+        return loc[i] == '\0' ? 0 : -1;                    // reject if it didn't fully fit
+    }
+    if (loc[0] == '/' && loc[1] == '/') {                  // scheme-relative "//host/path"
+        int n = snprintf(out, (size_t)cap, "%s:%s", cur_https ? "https" : "http", loc);
+        return (n > 0 && n < cap) ? 0 : -1;
+    }
+    if (loc[0] == '/') {                                   // root-relative "/path"
+        int n = snprintf(out, (size_t)cap, "%s://%s%s", cur_https ? "https" : "http", cur_host, loc);
+        return (n > 0 && n < cap) ? 0 : -1;
+    }
+    return -1;                                             // bare relative path: unsupported
+}
+
+// Fetch an http:// OR https:// URL and save its body to `outpath`, following up to 4 redirects
+// (301/302/303/307/308) — a package URL commonly redirects (an http->https upgrade, a CDN hop).
+// http:// goes over the plain HTTP client; https:// runs a TLS 1.2 handshake + encrypted GET
+// (tls_https_request) and the decrypted reply is parsed like any HTTP response. Returns 0 on
+// success. The parse + save half is unit-tested via xbm_save_resp_body, the redirect-target
+// resolution via xbm_redirect_url, both on canned data.
 static int xbm_fetch_url(const char* url, const char* outpath) {
-    char host[128], path[256]; uint16_t port = 0; int https = 0;
-    if (url_parse(url, host, sizeof(host), &port, path, sizeof(path), &https) != 0) return -1;
     int iface = -1;
     for (int i = 0; i < 8; i++)
         if (net_interfaces[i].name[0] && strcmp(net_interfaces[i].name, "lo") != 0) { iface = i; break; }
+    char cur[HTTP_MAX_URL];
+    strncpy(cur, url, sizeof(cur) - 1); cur[sizeof(cur) - 1] = '\0';
     http_response_t resp;
-    if (https) {
-        // Decrypt the whole TLS reply into an off-stack buffer (xbm runs serially), then
-        // parse it as an HTTP response. tls_https_request returns the decrypted length or -1.
-        static uint8_t tls_resp[262144];
-        int len = tls_https_request(host, path, "GET", (const uint8_t*)0, 0, iface, tls_resp, sizeof(tls_resp), 0);
-        if (len < 0) return -1;
-        if (http_parse_response(tls_resp, (uint32_t)len, &resp) != 0) return -1;
-    } else {
-        if (http_get(host, port, path, &resp, iface) < 0) return -1;
+    int have_resp = 0;
+    for (int hop = 0; hop < 5; hop++) {                    // initial fetch + up to 4 redirects
+        char host[128], path[256]; uint16_t port = 0; int https = 0;
+        if (url_parse(cur, host, sizeof(host), &port, path, sizeof(path), &https) != 0) return -1;
+        if (https) {
+            // Decrypt the whole TLS reply into an off-stack buffer (xbm runs serially), then
+            // parse it as an HTTP response. tls_https_request returns the decrypted length or -1.
+            static uint8_t tls_resp[262144];
+            int len = tls_https_request(host, path, "GET", (const uint8_t*)0, 0, iface, tls_resp, sizeof(tls_resp), 0);
+            if (len < 0) return -1;
+            if (http_parse_response(tls_resp, (uint32_t)len, &resp) != 0) return -1;
+        } else {
+            if (http_get(host, port, path, &resp, iface) < 0) return -1;
+        }
+        have_resp = 1;
+        int sc = resp.status_code;
+        if ((sc == 301 || sc == 302 || sc == 303 || sc == 307 || sc == 308) && resp.location[0]) {
+            char next[HTTP_MAX_URL];
+            if (xbm_redirect_url(https, host, resp.location, next, sizeof(next)) != 0) { http_free(&resp); return -1; }
+            http_free(&resp); have_resp = 0;
+            strncpy(cur, next, sizeof(cur) - 1); cur[sizeof(cur) - 1] = '\0';
+            continue;                                      // follow the redirect
+        }
+        break;                                             // final (non-redirect) response
     }
+    if (!have_resp) return -1;                             // redirect budget exhausted
     int rc = xbm_save_resp_body(&resp, outpath);
     http_free(&resp);
     return rc;
+}
+
+// KAT for redirect-target resolution (v6.5.186): xbm_fetch_url follows up to 4 redirects, using
+// xbm_redirect_url to turn a Location header into the next absolute URL. Pins absolute, scheme-
+// relative and root-relative Locations (incl. an http origin keeping its scheme), and that an
+// empty / bare-relative / over-long Location is refused. Pure (no network). 0 = PASS, else case #.
+static int xbm_redirect_selftest(void) {
+    char out[128];
+    // 1) absolute https target -> copied verbatim.
+    if (xbm_redirect_url(0, "old.example", "https://cdn.example/pkg/foo.c", out, sizeof(out)) != 0) return 1;
+    if (strcmp(out, "https://cdn.example/pkg/foo.c") != 0) return 2;
+    // 2) absolute http target from an https origin (copied verbatim, scheme taken from the target).
+    if (xbm_redirect_url(1, "old.example", "http://plain.example/x", out, sizeof(out)) != 0) return 3;
+    if (strcmp(out, "http://plain.example/x") != 0) return 4;
+    // 3) root-relative -> keep the current scheme+host (https).
+    if (xbm_redirect_url(1, "host.example", "/new/path.c", out, sizeof(out)) != 0) return 5;
+    if (strcmp(out, "https://host.example/new/path.c") != 0) return 6;
+    // 4) root-relative on an http origin.
+    if (xbm_redirect_url(0, "h.example", "/p", out, sizeof(out)) != 0) return 7;
+    if (strcmp(out, "http://h.example/p") != 0) return 8;
+    // 5) scheme-relative "//host/path" -> current scheme.
+    if (xbm_redirect_url(1, "old.example", "//other.example/pkg", out, sizeof(out)) != 0) return 9;
+    if (strcmp(out, "https://other.example/pkg") != 0) return 10;
+    // 6) empty Location -> refused.
+    if (xbm_redirect_url(1, "h", "", out, sizeof(out)) == 0) return 11;
+    // 7) bare relative path (no leading '/') -> refused.
+    if (xbm_redirect_url(1, "h", "relative/path", out, sizeof(out)) == 0) return 12;
+    // 8) over-long absolute target (~210 chars into out[128]) -> refused, not truncated.
+    { char big[300]; int o = 0; const char* pre = "https://x/";
+      for (const char* q = pre; *q; q++) big[o++] = *q;
+      for (int i = 0; i < 200; i++) big[o++] = 'a';
+      big[o] = '\0';
+      if (xbm_redirect_url(0, "h", big, out, sizeof(out)) == 0) return 13; }
+    return 0;
 }
 
 // KAT for the xbm fetch wiring (v6.5.185 https support): the https branch of xbm_fetch_url feeds
@@ -10848,6 +10924,7 @@ static void run_selftests(void) {
         {"json-fmt",     json_fmt_selftest},
         {"pkg-hash",     pkg_hash_selftest},
         {"xbm-wire",     xbm_fetch_wire_selftest},
+        {"xbm-redirect", xbm_redirect_selftest},
         {"ppm",          ppm_selftest},
         {"png-encode",   png_encode_selftest},
         {"auth-lockout", auth_lockout_selftest},
