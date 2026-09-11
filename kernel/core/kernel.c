@@ -536,7 +536,7 @@ static const command_t commands[] = {
     {"sb16play",  cmd_sb16play,  "Test SB16 playback: sb16play [freq] [ms]", false},
     {"exec",      cmd_exec,      "Run ELF in foreground (waits): exec <file>", false},
     {"cc",        cmd_cc,        "Compile/link C in-OS: cc [-c] [--self-libc] <in.c/.o ...> [-o out]", false},
-    {"xbm",       cmd_xbm,       "Package manager: xbm install|remove|verify|deps <name> | xbm search <str> | xbm list [--installed]", false},
+    {"xbm",       cmd_xbm,       "Package manager: xbm install|remove|verify|deps|info <name> | xbm search <str> | xbm list [--installed]", false},
     {"pkg",       cmd_xbm,       "Alias for xbm (package manager)", true},
     {"spawn",     cmd_spawn,     "Run ELF in background: spawn <file>", false},
     {"doom",      cmd_doom,      "Play DOOM in a window (Ctrl-C to quit)", false},
@@ -6855,7 +6855,7 @@ static int xbm_install_one(const char* name, const char* prog) {
 
 static void cmd_xbm(int argc, char** argv) {
     const char* prog = argv[0];   // "xbm" (or the "pkg" alias) — echo whatever was typed
-    if (argc < 2) { printf("Usage: %s install|remove|verify|deps <name> | %s search <str> | %s list [--installed]\n", prog, prog, prog); return; }
+    if (argc < 2) { printf("Usage: %s install|remove|verify|deps|info <name> | %s search <str> | %s list [--installed]\n", prog, prog, prog); return; }
 
     if (strcmp(argv[1], "list") == 0) {
         // `xbm list` = packages available in the repo; `xbm list --installed` = binaries in /mnt/bin.
@@ -6876,6 +6876,51 @@ static void cmd_xbm(int argc, char** argv) {
         }
         vfs_close(fd);
         if (installed && count == 0) printf("  (none)\n");
+        return;
+    }
+
+    if (strcmp(argv[1], "info") == 0 || strcmp(argv[1], "show") == 0) {
+        // `xbm info <name>` — apt-show/pacman-Si: the package's recipe metadata plus whether its
+        // binary is installed and, if so, the recorded SHA-256 integrity manifest.
+        if (argc < 3) { printf("Usage: %s info <name>\n", prog); return; }
+        const char* name = argv[2];
+        if (!pkg_valid_name(name)) { printf("%s: invalid package name '%s'\n", prog, name); return; }
+        char rpath[160];
+        snprintf(rpath, sizeof(rpath), "/usr/pkg/%s/recipe", name);
+        int fd = vfs_open(rpath, 0, 0);
+        if (fd < 0) { printf("%s: package '%s' not found\n", prog, name); return; }
+        char rbuf[512];
+        int n = vfs_read(fd, rbuf, sizeof(rbuf) - 1);
+        vfs_close(fd);
+        if (n <= 0) { printf("%s: empty recipe for '%s'\n", prog, name); return; }
+        rbuf[n] = '\0';
+        char v[256], bin[64];
+        printf("Package: %s\n", name);
+        if (pkg_recipe_value(rbuf, "source", v, sizeof(v))) printf("Source:  %s\n", v);
+        bin[0] = '\0';
+        if (pkg_recipe_value(rbuf, "bin", bin, sizeof(bin))) printf("Binary:  %s\n", bin);
+        printf("Deps:    %s\n", pkg_recipe_value(rbuf, "deps", v, sizeof(v)) ? v : "(none)");
+        printf("Fetch:   %s\n", pkg_recipe_value(rbuf, "url", v, sizeof(v)) ? v : "(builds from local source)");
+        if (bin[0]) {
+            char outp[128];
+            snprintf(outp, sizeof(outp), "/mnt/bin/%s", bin);
+            int ifd = vfs_open(outp, 0, 0);
+            if (ifd >= 0) {
+                vfs_close(ifd);
+                printf("Status:  installed (%s)\n", outp);
+                char mpath[160];
+                snprintf(mpath, sizeof(mpath), "/usr/pkg/%s/sha256", name);
+                int mfd = vfs_open(mpath, 0, 0);
+                if (mfd >= 0) {
+                    char mbuf[80];
+                    int mn = vfs_read(mfd, mbuf, sizeof(mbuf) - 1);
+                    vfs_close(mfd);
+                    if (mn >= 8) { mbuf[mn > 64 ? 64 : mn] = '\0'; printf("SHA-256: %s\n", mbuf); }
+                }
+            } else {
+                printf("Status:  not installed\n");
+            }
+        }
         return;
     }
 
